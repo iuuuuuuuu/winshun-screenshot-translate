@@ -1,5 +1,6 @@
 ﻿param([Parameter(Mandatory)][string]$Plugin)
 $ErrorActionPreference = 'Stop'
+# Historical native regression.
 Add-Type -AssemblyName System.Security
 $data = Join-Path ([IO.Path]::GetTempPath()) ('screenshot-common-proxy-' + [guid]::NewGuid().ToString('N'))
 $null = [IO.Directory]::CreateDirectory($data)

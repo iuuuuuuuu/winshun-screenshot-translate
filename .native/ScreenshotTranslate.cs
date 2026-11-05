@@ -1,5 +1,5 @@
 // MIT. Protocol, service defaults and OCR spacing follow WinShun's documented APIs.
-// Compiled during installation, never at plugin startup.
+// Historical 0.1.10 native implementation; excluded from community packages.
 using System;
 using System.Collections;
 using System.Collections.Concurrent;

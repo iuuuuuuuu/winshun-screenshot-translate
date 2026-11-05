@@ -1,5 +1,6 @@
 ﻿param([Parameter(Mandatory)][string]$Plugin)
 $ErrorActionPreference = 'Stop'
+# Historical native regression.
 $data = Join-Path ([IO.Path]::GetTempPath()) ('screenshot-trigger-test-' + [guid]::NewGuid().ToString('N'))
 $null = [IO.Directory]::CreateDirectory($data)
 $server = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)

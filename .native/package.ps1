@@ -1,5 +1,6 @@
 ﻿param([string]$OutputDirectory = (Join-Path $PSScriptRoot 'dist'))
 $ErrorActionPreference = 'Stop'
+# Historical native package; not used by the community release.
 Add-Type -AssemblyName System.IO.Compression
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 $manifest = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'plugin.json') -Raw | ConvertFrom-Json

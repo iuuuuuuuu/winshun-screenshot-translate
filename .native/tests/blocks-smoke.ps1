@@ -1,5 +1,6 @@
 ﻿param([Parameter(Mandatory)][string]$Plugin)
 $ErrorActionPreference = 'Stop'
+# Historical native regression.
 $parts = @('Pull requests','Agents','Security and quality','Insights')
 $translations = @("拉取`n请求",'代理','安全与质量','洞察')
 foreach ($case in @('google','zvo','microsoft','deepl','openai','google-numeric','openai-numeric','deepl-large')) {

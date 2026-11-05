@@ -5,7 +5,7 @@
     "zh": "截图翻译",
     "en": "Screenshot Translate"
   },
-  "version": "0.1.10",
+  "version": "0.2.0",
   "settingsWindow": true,
   "description": {
     "zh": "Windows OCR 截图翻译，译文按原位置显示，支持对照、剪贴板翻译及独立渠道配置。",
@@ -17,19 +17,22 @@
   "minWinShun": "0.19.0",
   "runtime": {
     "mode": "resident",
-    "program": "ScreenshotTranslate.exe",
+    "program": "python",
+    "script": "broker.py",
+    "env": {"PYTHONDONTWRITEBYTECODE": "1"},
     "timeoutMs": 10000,
     "debounceMs": 300,
     "start": "eager",
     "idleExitSec": 0,
-    "memoryMB": 768
+    "memoryMB": 512
   },
   "permissions": [
     "ui",
     "clipboard:read",
     "clipboard:write",
     "network",
-    "files:write"
+    "files:write",
+    "processes"
   ],
   "commands": [
     {

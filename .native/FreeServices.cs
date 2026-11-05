@@ -1,3 +1,4 @@
+// Historical native source, not part of the community runtime.
 using System;
 using System.Collections.Generic;
 using System.IO;

@@ -8,3 +8,6 @@ services.json
 mymemory-usage.json
 *.log
 *.tmp
+__pycache__/
+*.pyc
+.test-output/

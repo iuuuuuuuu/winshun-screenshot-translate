@@ -10,9 +10,11 @@ WinShun 截图翻译插件，使用本机 Windows OCR 识别文字，再通过�
 2. WinShun 设置 → 插件 → 从压缩包安装，选择该文件。
 3. 审阅权限并启用插件。基础设置选择翻译渠道、目标语言和共用代理；「设置」窗口只编辑每个渠道自己的密钥、地址、模型和区域。
 
-需要 Windows 10 / 11、.NET Framework 4.8、WinShun 0.19.0 或更新版本，以及至少一种已安装的 Windows OCR 语言包。英文语言的 OCR 可选组件可改善英文识别；插件不会自动安装系统组件。
+需要 Windows 10 / 11、Python 3.10+（包含 tkinter）、Windows PowerShell 5.1、WinShun 0.19.0 或更新版本，以及至少一种已安装的 Windows OCR 语言包。标准 Windows Python 安装通常包含 tkinter；插件不自动安装依赖。英文 OCR 可选组件可改善英文识别；插件不会自动安装系统组件。
 
-**发布方式说明：** 本插件使用预编译 `.exe`，不加载常驻 PowerShell 或浏览器运行时。按照 [WinShun-plugins 投稿规则](https://github.com/LingCore/WinShun-plugins/blob/main/CONTRIBUTING.md#规矩)，社区插件库不分发原生程序，但允许作者自行发布供压缩包安装。因此本项目只在自己的 GitHub Release 分发，不提交插件库条目，也不使用官方原生白名单或社区脚本的打包工作流。
+**社区版 0.2.0：** 常驻入口为 `broker.py`，不加载 tkinter、OCR 或 .NET。用户发起操作后才启动本仓库的 Python 窗口脚本；Windows OCR 使用系统 PowerShell 执行随包的 `ocr.ps1`，识别结束就退出。译图和设置都关闭后，窗口进程也退出，整个界面运行时随进程释放。不会下载、编译或运行额外二进制；社区安装包仅包含可审阅脚本与文档，使用 [官方社区检查和打包工作流](https://github.com/LingCore/WinShun-plugins/blob/main/CONTRIBUTING.md)。收录需维护者审核，不等于已经收录。旧 `0.1.10` 原生 Release 保持不变。
+
+公开版 `0.1.10` 升级为 `0.2.0` 保留同一个数据目录、DPAPI 加密标识和独立渠道配置；不必重新填写公开版密钥。新增 `processes` 权限需要用户重新同意。旧原生源码保存在仓库 `.native/`，不进入新包，不参与运行。
 
 早期本地开发版使用过 `winshun.screenshot-translate`。公开版改用作者前缀，数据目录和密钥加密标识独立；不会自动读取或改写旧插件数据。安装公开版后请重新填写配置，并停用旧版以避免关键字和热键冲突。不要把旧版截图、配置或日志提交到本仓库。
 
@@ -43,13 +45,14 @@ WinShun 截图翻译插件，使用本机 Windows OCR 识别文字，再通过�
 
 | 权限 | 用途 |
 |---|---|
-| `ui` | 框选、译图和设置窗口；请求宿主代注册热键及剪贴板结果搜索框 |
+| `ui` | 框选、译图和设置窗口；宿主代注册热键；剪贴板结果可回到搜索框，截图不唤起搜索框 |
 | `clipboard:read` | 用户请求剪贴板翻译时读取文字 |
 | `clipboard:write` | 复制原文或译文 |
 | `network` | 向所选翻译服务提交文字 |
-| `files:write` | 在插件数据目录保存截图诊断、独立配置和 MyMemory 本地用量 |
+| `files:write` | 在插件数据目录保存独立配置和 MyMemory 本地用量 |
+| `processes` | 按需启动同仓库 Python 窗口脚本及系统 PowerShell OCR / UI Automation 脚本；结束后退出 |
 
-不要求管理员权限，不声明 `elevated`、`processes` 或监听网络权限；正常运行不启动子进程、不下载执行程序、不提供遥测。
+不要求管理员权限，不声明 `elevated` 或监听网络权限；不下载执行程序、不编译二进制、不提供遥测。子进程入口固定为本插件脚本及已安装的 Python / 系统 PowerShell，不通过配置加载代码。
 
 截图和 OCR 在本机完成。**识别出的文字会发送至用户选择的服务，不要翻译不希望交给该服务的敏感内容。** 原始截图不上传。默认地址如下；自定义接口则请求用户配置的地址：
 
@@ -70,33 +73,35 @@ WinShun 截图翻译插件，使用本机 Windows OCR 识别文字，再通过�
 
 - `services.json`：独立渠道配置，API 密钥使用 Windows DPAPI 当前用户加密；地址、模型、区域不是秘密存储。
 - `mymemory-usage.json`：本机日期的提交量估算。
-- `shots/`：保留最新 30 组截图 PNG 与诊断 JSON。截图可能包含敏感信息，可手动删除；卸载时由宿主询问是否删除数据。
+- 截图只在本次工作进程内存中处理，社区版不自动保存截图或 OCR 原文。旧版 `shots/` 保持不变，不自动读取或删除；卸载时由宿主询问是否删除数据。
 - stderr 诊断由宿主写入 `plugins.log`，记录版本、类型、尺寸、块数和排队时长，不记录识别文本或密钥。服务返回的错误信息仍可能在用户界面显示。
 
 ## 限制
 
 Windows OCR 对极小文字、低对比度、图标和混合语言可能误识别，包括 `I/l` 混淆。多文字块保留相对坐标，不保证字体、字重和背景像素完全一致。渐变、图片背景、紧密排版、硬件加速和受保护窗口可能产生色差、残影或抓取失败。
 
-HTTP 请求预算为八秒。空闲时回收托管对象，关闭窗口释放位图；内存依赖截图尺寸、显示器数量和已加载系统 DLL，不能承诺全程 20 MB。后台空闲测量不能当作实际截图内存上限。
+HTTP 请求预算为八秒，OCR 工作进程限时二十秒。译图关闭时取消当前操作；进行中的 HTTP 最迟在请求预算结束后退出。常驻进程不保留位图或窗口运行库；所有窗口关闭后，工作进程退出。截图和设置打开时的瞬时总内存仍可能超过 100 MB，不能承诺全程 20 MB。截图最多 1600 万像素，大于 Windows OCR 尺寸限制时仅对识别输入缩小并把坐标映射回原图。
+
+2026-11-06 本机离屏压力测试：连续创建并关闭 12 个合成译图（含 2560×1440），实际调用 4 次 Windows OCR；窗口工作进程退出后，常驻进程工作集 26.8 MB，私有内存 18.1 MB，60 秒后工作集仍为 26.8 MB。该数字不是其他机器或实际截图峰值的保证，也不是整夜测试。
+
+启动工作进程需要冷启动时间。社区版是 Python / tkinter 实现，窗口外观不与官方 Qt 窗口逐像素相同；明暗主题、横向配置标签、底部操作条和置顶行为沿用原交互约定。
 
 实际框选、置顶、跨屏拖动和热键手感需要人工验证。离屏测试不替代这些检查。
 
 ## 构建与测试
 
-在 Windows 使用系统 .NET Framework 编译器和 WinRT 元数据，不需要下载 NuGet 包：
+无编译步骤，无第三方 Python 包。Windows 后台测试：
 
 ```powershell
-.\build.ps1
-.\ScreenshotTranslate.exe --self-test
-.\tests\trigger-queue-test.ps1 -Plugin "$PWD\ScreenshotTranslate.exe"
-.\tests\blocks-smoke.ps1 -Plugin "$PWD\ScreenshotTranslate.exe"
-.\tests\shared-proxy-test.ps1 -Plugin "$PWD\ScreenshotTranslate.exe"
-.\package.ps1
+python -B -m unittest discover -s .tests -v
+python -B .tests/broker_memory_probe.py 60
+python path\to\WinShun-plugins\tools\check.py . --id iuuuuuuuu.screenshot-translate
+python path\to\WinShun-plugins\tools\build.py . --out dist
 ```
 
-`--self-test` 需要可用的本机 OCR，会写合成测试图片，但不会显示窗口。协议测试使用独立进程、假凭据、本地 HTTP 和从未显示的窗口，不注册真实测试热键、不抓取桌面。`--input-test` 仅供测试，将截图 / 取词动作替换为诊断；正常清单不会传入该参数。
+测试仅使用合成图片、假凭据、本地 HTTP 和从未显示的窗口，不注册真实热键、不抓取桌面、不访问个人配置、不模拟输入。OCR 集成测试需要本机英文 OCR 组件；没有组件时不能把测试失败算作通过。`broker.py --input-test` 仅供测试，替换截图 / 取词动作；正常清单不会传入该参数。
 
-发布工作流在 Windows 编译并运行无桌面交互的协议回归，只按固定白名单打包源码、当前程序和文档。`.git`、工作流、测试产物、密钥、个人截图和日志不会进入安装包。推送 `v<version>` 标签发布正式 Release，标签必须匹配清单；已发布附件不替换，修订时升版本。
+发布前在 Windows 运行无桌面交互的协议回归，随后调用官方社区打包工作流。仅收录 Git 跟踪文件，点目录（`.native`、`.tests`、`.github`）不进包；EXE/DLL、字节码、密钥、个人截图和日志不进包。推送 `v<version>` 标签发布正式 Release，标签必须匹配清单；已发布附件不替换，修订时升版本。
 
 ## 许可
 
@@ -106,6 +111,6 @@ MIT，见 [LICENSE](LICENSE) 与 [NOTICE.md](NOTICE.md)。遵循 WinShun 的公�
 
 An independent WinShun screenshot translator using local Windows OCR and per-service translation profiles. It preserves text-block positions, supports source comparison, closes with Esc or double-click, and drops busy or stale hotkey triggers rather than replaying them later.
 
-Install the `.wsplugin` from this repository's Releases through WinShun's **Install from archive**, review permissions and enable it. Requires Windows, .NET Framework 4.8, WinShun 0.19.0+ and an installed OCR language. This native community plugin is **not distributed through the WinShun plugin index** under its current submission rules.
+Install the `.wsplugin` from this repository's Releases through WinShun's **Install from archive**, review permissions and enable it. Requires Windows, Python 3.10+ with tkinter, Windows PowerShell, WinShun 0.19.0+ and an installed OCR language. Version 0.2.0 uses only reviewable scripts and the official community packaging workflow; inclusion in the index still requires maintainer review.
 
-Recognized text is sent only to the selected translation provider or custom endpoint; screenshots stay local. Local diagnostic screenshots are retained in the plugin data directory. Provider keys are encrypted with current-user Windows DPAPI. Read the permissions, endpoint table and limitations above before use. This project is not affiliated with WinShun.
+Recognized text is sent only to the selected translation provider or custom endpoint; screenshots stay in the disposable worker's memory. The resident broker has no UI/OCR runtime; the GUI worker exits after its windows close, and the OCR worker exits before translation. Provider keys retain the public 0.1.10 current-user DPAPI format. Read the permissions, endpoint table and limitations above before use. This project is not affiliated with WinShun.

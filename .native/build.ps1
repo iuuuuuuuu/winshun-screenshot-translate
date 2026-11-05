@@ -1,5 +1,6 @@
 ﻿param([string]$Output = '')
 $ErrorActionPreference = 'Stop'
+# Historical native build; not used by the community release.
 if (-not $Output) {
     $manifest = Get-Content (Join-Path $PSScriptRoot 'plugin.json') -Raw | ConvertFrom-Json
     $Output = Join-Path $PSScriptRoot $manifest.runtime.program

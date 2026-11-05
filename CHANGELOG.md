@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.2.0
+
+- Convert to a community-eligible Python entry and text-only package.
+- Keep the resident broker free of tkinter, OCR and .NET runtime caches.
+- Start GUI and system PowerShell OCR workers only on user requests; exit them
+  after recognition or after all GUI windows close.
+- Preserve public DPAPI profiles, ten provider routes, common proxy and host
+  channel selection without uploading or migrating private development data.
+- Preserve coordinate-based overlays, comparison, bottom toolbar and close actions.
+- Drop busy/stale inputs across the broker and GUI worker boundary.
+- Stop automatically retaining diagnostic screenshots.
+- Use the official community checker/packer and add background regressions.
+
 ## 0.1.10
 
 First public release of `iuuuuuuuu.screenshot-translate`.
