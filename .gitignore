@@ -1,0 +1,10 @@
+*.exe
+*.dll
+*.pdb
+dist/
+*.data/
+shots/
+services.json
+mymemory-usage.json
+*.log
+*.tmp

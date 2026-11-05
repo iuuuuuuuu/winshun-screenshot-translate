@@ -1,0 +1,59 @@
+name: Native Manual-Install Release
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check version and compile
+        shell: pwsh
+        run: |
+          $manifest = Get-Content plugin.json -Raw | ConvertFrom-Json
+          if ($env:GITHUB_REF_TYPE -eq 'tag' -and $env:GITHUB_REF_NAME -ne "v$($manifest.version)") {
+            throw 'Tag does not match plugin.json'
+          }
+          .\build.ps1
+      - name: Run background protocol regressions
+        shell: pwsh
+        run: |
+          .\tests\trigger-queue-test.ps1 -Plugin "$PWD\ScreenshotTranslate.exe"
+          .\tests\blocks-smoke.ps1 -Plugin "$PWD\ScreenshotTranslate.exe"
+          .\tests\shared-proxy-test.ps1 -Plugin "$PWD\ScreenshotTranslate.exe"
+      - name: Package native archive
+        shell: pwsh
+        run: .\package.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-manual-install
+          path: dist/*
+          if-no-files-found: error
+  publish:
+    if: github.ref_type == 'tag'
+    needs: build
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: native-manual-install
+          path: dist
+      - name: Publish immutable version
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $assets = Get-ChildItem dist -File | Select-Object -ExpandProperty FullName
+          gh release create $env:GITHUB_REF_NAME @assets --verify-tag --title $env:GITHUB_REF_NAME --notes-file CHANGELOG.md
+          if ($LASTEXITCODE -ne 0) { throw 'Release creation failed; existing assets were not overwritten' }

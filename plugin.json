@@ -1,0 +1,311 @@
+{
+  "manifest": 1,
+  "id": "iuuuuuuuu.screenshot-translate",
+  "name": {
+    "zh": "截图翻译",
+    "en": "Screenshot Translate"
+  },
+  "version": "0.1.10",
+  "settingsWindow": true,
+  "description": {
+    "zh": "Windows OCR 截图翻译，译文按原位置显示，支持对照、剪贴板翻译及独立渠道配置。",
+    "en": "Translate screen regions with Windows OCR, preserve text positions, compare the source, and configure each service independently."
+  },
+  "author": "iuuuuuuuu",
+  "homepage": "https://github.com/iuuuuuuuu/winshun-screenshot-translate",
+  "license": "MIT",
+  "minWinShun": "0.19.0",
+  "runtime": {
+    "mode": "resident",
+    "program": "ScreenshotTranslate.exe",
+    "timeoutMs": 10000,
+    "debounceMs": 300,
+    "start": "eager",
+    "idleExitSec": 0,
+    "memoryMB": 768
+  },
+  "permissions": [
+    "ui",
+    "clipboard:read",
+    "clipboard:write",
+    "network",
+    "files:write"
+  ],
+  "commands": [
+    {
+      "id": "shot",
+      "title": {
+        "zh": "截图翻译",
+        "en": "Screenshot translate"
+      },
+      "description": {
+        "zh": "框选屏幕区域，识别文字并翻译；不用鼠标时可选全屏或当前窗口。",
+        "en": "Select a screen region, recognize the text, and translate it; full screen or the active window work without the mouse."
+      },
+      "hint": {
+        "zh": "Enter 框选区域，Ctrl+Enter 全屏，Shift+Enter 当前窗口",
+        "en": "Enter selects a region, Ctrl+Enter uses the full screen, Shift+Enter the active window"
+      },
+      "icon": "glyph:U+E8C1",
+      "keyword": [
+        "jst",
+        "截图翻译"
+      ],
+      "mode": "list",
+      "actions": [
+        {
+          "id": "start-region",
+          "title": {
+            "zh": "框选区域",
+            "en": "Select a region"
+          },
+          "key": "Enter"
+        },
+        {
+          "id": "start-full",
+          "title": {
+            "zh": "全屏",
+            "en": "Full screen"
+          },
+          "key": "Ctrl+Enter"
+        },
+        {
+          "id": "start-window",
+          "title": {
+            "zh": "当前窗口",
+            "en": "Active window"
+          },
+          "key": "Shift+Enter"
+        }
+      ]
+    },
+    {
+      "id": "jsel",
+      "title": {
+        "zh": "划词翻译",
+        "en": "Selection translate"
+      },
+      "description": {
+        "zh": "读取当前窗口里选中的文字并翻译；不使用鼠标钩子，也不模拟按键。",
+        "en": "Reads the text selected in the active window and translates it; no mouse hook and no simulated keys."
+      },
+      "hint": {
+        "zh": "先选中文字，再按划词热键；关键字模式读不到其他窗口的选区",
+        "en": "Select text, then press the selection hotkey; keyword mode cannot read another window's selection"
+      },
+      "icon": "glyph:U+E8C1",
+      "keyword": [
+        "jsel",
+        "划词翻译"
+      ],
+      "mode": "list"
+    },
+    {
+      "id": "clip",
+      "title": {
+        "zh": "剪贴板翻译",
+        "en": "Clipboard translate"
+      },
+      "description": {
+        "zh": "读取剪贴板里的文字并翻译；也可以在关键字后直接输入要翻译的文字。",
+        "en": "Translate the text on the clipboard, or type the text after the keyword."
+      },
+      "hint": {
+        "zh": "留空读取剪贴板；也可以直接输入要翻译的文字",
+        "en": "Leave it empty to read the clipboard, or type the text to translate"
+      },
+      "icon": "glyph:U+E8C1",
+      "keyword": [
+        "jft",
+        "剪贴板翻译"
+      ],
+      "mode": "list",
+      "actions": [
+        {
+          "id": "copy-translation",
+          "title": {
+            "zh": "复制译文",
+            "en": "Copy translation"
+          },
+          "key": "Enter"
+        },
+        {
+          "id": "copy-source",
+          "title": {
+            "zh": "复制原文",
+            "en": "Copy source"
+          },
+          "key": "Ctrl+Enter"
+        },
+        {
+          "id": "retry-clip",
+          "title": {
+            "zh": "重新读取剪贴板",
+            "en": "Read the clipboard again"
+          },
+          "key": "Shift+Enter"
+        }
+      ]
+    }
+  ],
+  "settings": [
+    {
+      "key": "provider",
+      "type": "choice",
+      "title": {
+        "zh": "翻译渠道",
+        "en": "Translation service"
+      },
+      "default": "mymemory",
+      "options": [
+        { "value": "mymemory", "title": { "zh": "MyMemory", "en": "MyMemory" } },
+        { "value": "google", "title": { "zh": "Google", "en": "Google" } },
+        { "value": "edge", "title": { "zh": "Edge", "en": "Edge" } },
+        { "value": "zvo", "title": { "zh": "Zvo", "en": "Zvo" } },
+        { "value": "microsoft", "title": { "zh": "微软", "en": "Microsoft" } },
+        { "value": "deepl", "title": { "zh": "DeepL", "en": "DeepL" } },
+        { "value": "ai", "title": { "zh": "模型服务", "en": "AI models" } }
+      ]
+    },
+    {
+      "key": "aiProvider",
+      "type": "choice",
+      "title": { "zh": "模型渠道", "en": "AI service" },
+      "hint": {
+        "zh": "上方选择「模型服务」时使用；Zvo 即 translate.js。密钥和模型在「设置」中分别配置",
+        "en": "Used when AI models is selected above. Zvo is translate.js. Configure each service's key and model in Settings"
+      },
+      "default": "openai",
+      "options": [
+        { "value": "openai", "title": { "zh": "OpenAI", "en": "OpenAI" } },
+        { "value": "deepseek", "title": { "zh": "DeepSeek", "en": "DeepSeek" } },
+        { "value": "doubao", "title": { "zh": "豆包", "en": "Doubao" } },
+        { "value": "hunyuan", "title": { "zh": "混元", "en": "Hunyuan" } }
+      ]
+    },
+    {
+      "key": "proxy",
+      "type": "text",
+      "title": {
+        "zh": "共用代理",
+        "en": "Shared proxy"
+      },
+      "hint": {
+        "zh": "所有翻译渠道共用；HTTP / HTTPS 地址，不含账号密码。留空使用环境或系统代理",
+        "en": "Shared by all services; an HTTP/HTTPS URL without credentials. Empty uses environment or system proxy"
+      },
+      "default": ""
+    },
+    {
+      "key": "target",
+      "type": "choice",
+      "title": {
+        "zh": "目标语言",
+        "en": "Target language"
+      },
+      "hint": {
+        "zh": "自动：中文译成英文，其他译成中文",
+        "en": "Automatic: Chinese to English, anything else to Chinese"
+      },
+      "default": "auto",
+      "options": [
+        {
+          "value": "auto",
+          "title": {
+            "zh": "自动",
+            "en": "Automatic"
+          }
+        },
+        {
+          "value": "zh",
+          "title": {
+            "zh": "中文",
+            "en": "Chinese"
+          }
+        },
+        {
+          "value": "en",
+          "title": {
+            "zh": "英文",
+            "en": "English"
+          }
+        },
+        {
+          "value": "ja",
+          "title": {
+            "zh": "日文",
+            "en": "Japanese"
+          }
+        }
+      ]
+    },
+    {
+      "key": "shotMode",
+      "type": "choice",
+      "title": {
+        "zh": "全屏截图范围",
+        "en": "Full-screen range"
+      },
+      "hint": {
+        "zh": "框选始终覆盖所有显示器；这里只影响 Ctrl+Enter 的全屏截图",
+        "en": "Region selection always spans all monitors; this only affects the Ctrl+Enter full-screen capture"
+      },
+      "default": "multi",
+      "options": [
+        {
+          "value": "multi",
+          "title": {
+            "zh": "多屏截图（所有显示器）",
+            "en": "All monitors"
+          }
+        },
+        {
+          "value": "single",
+          "title": {
+            "zh": "单屏截图（仅鼠标所在屏幕）",
+            "en": "Only the monitor with the pointer"
+          }
+        }
+      ]
+    },
+    {
+      "key": "shotHotkey",
+      "type": "hotkey",
+      "title": {
+        "zh": "截图翻译热键",
+        "en": "Screenshot hotkey"
+      },
+      "hint": {
+        "zh": "清空即关闭；旧版 Win顺 不支持插件热键时仍可用关键字 jst",
+        "en": "Clear to disable; on older WinShun versions use the jst keyword"
+      },
+      "default": "Alt+Shift+T"
+    },
+    {
+      "key": "clipHotkey",
+      "type": "hotkey",
+      "title": {
+        "zh": "剪贴板翻译热键",
+        "en": "Clipboard hotkey"
+      },
+      "hint": {
+        "zh": "清空即关闭；旧版 Win顺 不支持插件热键时仍可用关键字 jft",
+        "en": "Clear to disable; on older WinShun versions use the jft keyword"
+      },
+      "default": "Alt+Shift+C"
+    },
+    {
+      "key": "selectionHotkey",
+      "type": "hotkey",
+      "title": {
+        "zh": "划词翻译热键",
+        "en": "Selection hotkey"
+      },
+      "hint": {
+        "zh": "留空关闭；用 UI Automation 读取当前窗口的选中文字，不改剪贴板、不模拟按键；很多应用不支持",
+        "en": "Empty disables it; reads the active window's selected text through UI Automation without touching the clipboard or sending keys; unsupported in many apps"
+      },
+      "default": ""
+    }
+  ]
+}
