@@ -6,6 +6,7 @@
 *.yml text eol=lf
 *.py text eol=lf
 *.qml text eol=lf
+*.patch text eol=lf -whitespace
 *.wsplugin binary
 *.ttf binary
 *.png binary

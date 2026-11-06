@@ -1,126 +1,116 @@
 # 截图翻译 / Screenshot Translate
 
-WinShun 截图翻译插件，使用本机 Windows OCR 识别文字，再通过选定的服务翻译。译文按文字块原位置显示，保留截图中的图标和数字徽标；可切换上下对照。
+WinShun 截图翻译插件，使用 Windows OCR 识别文字，译文按文字块原位置显示。支持原文对照、剪贴板翻译、独立渠道配置和有记忆的自动降级。
 
-插件 ID：`iuuuuuuuu.screenshot-translate`。这是独立社区项目，不是 WinShun 官方插件。
+插件 ID：`iuuuuuuuu.screenshot-translate`。这是已收录到 WinShun 插件库的独立社区项目，当前版本 **0.3.3**。
 
-## 安装
+## 界面与安装
 
-1. 从 [Releases](https://github.com/iuuuuuuuu/winshun-screenshot-translate/releases) 下载 `<id>-<version>.wsplugin`，可用同一 Release 的 `.sha256` 文件核对 SHA-256。
-2. WinShun 设置 → 插件 → 从压缩包安装，选择该文件。
-3. 审阅权限并启用插件。基础设置选择翻译渠道、目标语言和共用代理；「设置」窗口只编辑每个渠道自己的密钥、地址、模型和区域。
+使用 Qt/QML，复用 WinShun 的 FlatButton、InputBox、换行选择控件、主题颜色与 Phosphor 图标。设置窗口只编辑各渠道配置；启用渠道、共用代理、自动恢复间隔、对照顺序和点击外部关闭行为由 WinShun 基础插件面板管理。
 
-需要 Windows 10 / 11、Python 3.10+（包含 tkinter）、Windows PowerShell 5.1、WinShun 0.19.0 或更新版本，以及至少一种已安装的 Windows OCR 语言包。标准 Windows Python 安装通常包含 tkinter；插件不自动安装依赖。英文 OCR 可选组件可改善英文识别；插件不会自动安装系统组件。
+<img src=".screenshots/settings-0.3.3.png" alt="0.3.3 渠道配置" width="49%"> <img src=".screenshots/comparison-0.3.3.png" alt="0.3.3 上下双语对照" width="49%">
 
-**社区版 0.2.1（低内存架构从 0.2.0 开始）：** 常驻入口为 `broker.py`，不加载 tkinter、OCR 或 .NET。用户发起操作后才启动本仓库的 Python 窗口脚本；Windows OCR 使用系统 PowerShell 执行随包的 `ocr.ps1`，识别结束就退出。译图和设置都关闭后，窗口进程也退出，整个界面运行时随进程释放。不会下载、编译或运行额外二进制；社区安装包仅包含可审阅脚本与文档，使用 [官方社区检查和打包工作流](https://github.com/LingCore/WinShun-plugins/blob/main/CONTRIBUTING.md)。收录需维护者审核，不等于已经收录。旧 `0.1.10` 原生 Release 保持不变。
+截图由真实新版界面在独立测试桌面渲染，使用合成原图和固定示例译文。
 
-公开版 `0.1.10` 升级为 `0.2.0` 保留同一个数据目录、DPAPI 加密标识和独立渠道配置；不必重新填写公开版密钥。新增 `processes` 权限需要用户重新同意。旧原生源码保存在仓库 `.native/`，不进入新包，不参与运行。
+需要 Windows 10/11、Python 3.10+、PySide6-Essentials、Windows PowerShell 5.1、WinShun 0.19.0+ 和至少一种 Windows OCR 语言包。安装界面依赖：
 
-早期本地开发版使用过 `winshun.screenshot-translate`。公开版改用作者前缀，数据目录和密钥加密标识独立；不会自动读取或改写旧插件数据。安装公开版后请重新填写配置，并停用旧版以避免关键字和热键冲突。不要把旧版截图、配置或日志提交到本仓库。
+```powershell
+python -m pip install --user -r requirements.txt
+```
 
-### 确认加载的版本
+先安装上述依赖，再从 WinShun 插件库更新，或从 [Releases](https://github.com/iuuuuuuuu/winshun-screenshot-translate/releases/tag/v0.3.3) 取得 `.wsplugin`，在 WinShun 设置 → 插件 → 从压缩包安装，检查权限并启用。升级后卡片应显示 **0.3.3**。从 0.2.1 升级时也需要安装新增的 PySide6-Essentials 依赖。插件不会在运行中自动下载依赖或安装 OCR 系统组件。
 
-安装包发布不等于本机已经更新。WinShun 已安装卡片应显示 `iuuuuuuuu.screenshot-translate`、版本 `0.2.1`。任务管理器若仍显示 `ScreenshotTranslate-0.1.10.exe`，运行的是旧原生版，不含新内存架构。
+常驻入口 `broker.py` 不加载 Qt、OCR 或 .NET。框选热键先由轻量原生窗口立即显示双屏蒙版，选定区域后才启动 `main.py --ui-worker` 加载译图界面；启动进程不显示 Windows 忙碌光标。OCR 用系统 PowerShell 执行 `ocr.ps1`，识别结束立即退出。所有译图和设置窗口关闭后，Qt 工作进程立即退出，不等待网络超时或后台线程；Windows 进程作业负责清理其 OCR 子进程。包内没有 EXE、DLL 或字节码，只有 Python、PowerShell、QML、文档和授权字体。
 
-新版常驻的是执行 `broker.py` 的 Python 进程。截图期间按需出现 `main.py --ui-worker` 和系统 PowerShell；识别结束后 OCR 进程退出，译图与设置都关闭后 GUI 进程退出。窗口还开着时，100 MB 以上的工作进程并不等于空闲常驻占用。检查进程完整命令行，避免把别的 Python 应用算成此插件。
+公开版从 0.1.10 升级继续使用同一数据目录与 DPAPI 加密标识。早期本地 `winshun.screenshot-translate` 的数据目录独立，不自动迁移或改写。旧源码保存在 `.native/`，不进入安装包。不要同时启用两个版本，避免入口和热键冲突。
 
 ## 使用
 
 | 入口 | 操作 |
 |---|---|
 | `jst` / `截图翻译` | Enter 框选；Ctrl+Enter 全屏；Shift+Enter 当前窗口 |
-| `jft` / `剪贴板翻译` | 留空读取剪贴板，也可直接输入 `jft hello world` |
-| `jsel` / `划词翻译` | 按已配置的划词热键读取当前窗口选中文字；默认关闭 |
-| `Alt+Shift+T` | 直接框选截图 |
-| `Alt+Shift+C` | 直接翻译剪贴板 |
+| `jft` / `剪贴板翻译` | 留空读取剪贴板，也可输入 `jft hello world` |
+| `jsel` / `划词翻译` | 按配置的划词热键读取当前窗口选中文字；默认关闭 |
+| `Alt+Shift+T` | 框选截图 |
+| `Alt+Shift+C` | 翻译剪贴板 |
 
-截图完成后不唤起搜索框。识别和翻译的 loading、错误直接显示在截图区域，操作条在截图下方。Esc 或双击关闭，拖动移动，「对照」切换上下对照，语言选择可重新翻译，右键复制原文 / 译文。长文可滚动阅读；密集多块排版放不下的译文局部省略，复制仍保留完整文字。
+每块屏幕分别显示完整框选蒙版，支持跨屏拖选和不同缩放比例。截图后显示识别/翻译动画，工具条位于截图下方，语言菜单在独立窗口中完整展开。对照始终上下排列，默认译文在上，可在 WinShun 插件面板改为原文在上；原图与译图使用同一滚动区域。大图按工作区等比缩放，小图不被工具条撑宽。
 
-截图、OCR 和翻译进行期间，重复热键不排队，旧触发不在结束后补执行；结束后的新按键立即响应。划词只使用 UI Automation，不模拟 Ctrl+C，也不安装鼠标 / 键盘钩子；部分应用不支持取词。
+Esc 或双击关闭；默认点击其他区域也会关闭贴图，可在 WinShun 插件面板关闭此行为。独立线程接收异步鼠标输入，界面忙时不会阻塞系统点击或丢失关闭通知；贴图、工具条、语言菜单和渠道配置窗口内的点击保留贴图。关闭先隐藏窗口、取消任务，立即释放截图入口。拖动译图同时移动工具条。内容溢出时滚轮滚动，否则调节透明度，Ctrl+滚轮始终调节透明度。右键复制原文/译文、重译、重新截图或查看完整译文。译文保留文字块坐标，邻近图标和数字徽标不重新排版。单块长译文放不下时使用正常字号的换行视图。
 
-## 翻译渠道
+翻译失败仍保留识别原文，可以复制、换语言重译或重新截图。忙碌期间重复热键不排队，结束后的新按键立即响应。连续输入取消旧查询后保留最新查询。划词使用 UI Automation，不模拟按键；部分应用不支持。
 
-只有一项「翻译渠道」，直接选择 MyMemory、Google、Edge、Zvo（translate.js）、微软、DeepL、OpenAI、DeepSeek、豆包或混元，不再分出「模型渠道」。配置窗口的横向标签在窄窗口自动换行，浏览标签和保存配置不改变启用渠道。
+## 十个渠道
 
-基础设置由 WinShun 绘制。当前宿主的 `choice` 控件仅在整组选项能放进标题旁边时平铺，放不下就自动变成菜单；插件清单没有强制平铺或换行的协议字段。合并渠道不代表宿主窄面板已支持十项平铺，这一部分需要 WinShun 的控件支持，不能通过配置窗口替代基础设置。
+所有渠道在一个互斥选择组中。配置窗口浏览标签或保存不会改变启用渠道。
 
-从两级渠道的公开版升级后，若此前使用「模型服务」，请在基础设置重新选择一次具体服务。各家保存的密钥、地址和模型不变；协议仍兼容包含旧 `aiProvider` 的输入，但该项不再显示。
+| 渠道 | 默认地址 | 配置 |
+|---|---|---|
+| MyMemory | `https://api.mymemory.translated.net/get` | 无密钥；显示本插件今日提交量 |
+| Google | `https://translate.googleapis.com/translate_a/single` | 无密钥；浏览器请求头与多 client 重试 |
+| Edge | `https://api-edge.cognitive.microsofttranslator.com/translate` | 无密钥；旧取票失败时尝试 Bing 翻译 |
+| translate.js / Zvo | `https://api.translate.zvo.cn/translate.json` | 免费无需密钥；企业地址可配置密钥 |
+| 微软 Azure | `https://api.cognitive.microsofttranslator.com` | API 密钥和资源区域 |
+| DeepL | `https://api-free.deepl.com` | API 密钥；按密钥类型区分免费/付费地址 |
+| OpenAI | `https://api.openai.com/v1` | API 密钥、地址、模型，默认 `gpt-4o-mini` |
+| DeepSeek | `https://api.deepseek.com` | API 密钥、地址、模型，默认 `deepseek-flash` |
+| 豆包 | `https://ark.cn-beijing.volces.com/api/v3` | API 密钥和已开通的模型/接入点 ID |
+| 混元 | `https://api.hunyuan.cloud.tencent.com/v1` | API 密钥、地址、模型，默认 `hunyuan-turbos-latest` |
 
-- MyMemory 无需密钥。设置页显示本插件按本机日期统计的提交字符数，不是服务端余额，也不包含其他应用或共享 IP 的用量。匿名额度和服务限制以服务商为准。
-- Google、Edge、Zvo 提供免密钥通道，可能限流或变更。Google 在部分网络需要代理；Edge / Zvo 已实现接入，但不保证在每个网络环境可用。
-- DeepL、微软及模型服务需要自己的密钥；豆包还需要模型或接入点 ID。兼容模型地址可填 `/v1` 或完整 `/chat/completions`。
-- 共用代理支持不含账号密码的 HTTP / HTTPS 地址，只影响插件网络请求，不修改 Windows 设置。留空依次检查 `OPENAPI_TRANSLATE_PROXY`、`HTTPS_PROXY`、`HTTP_PROXY`、`ALL_PROXY` 和系统代理。
+独立设置里的「测试当前」和「测试全部渠道」发送 `Hello world`，使用共用代理，不切换主渠道，也不自动降级，以便准确诊断各服务。全部测试最多同时请求三个渠道，展示每个渠道的成功、错误或未配置结果；使用当前配置草稿，付费渠道未配置密钥时跳过。测试期间可切换配置标签，点击「查看测试结果」返回结果列表。
 
-## 权限与隐私
+2026-11-06 本机网络验证：代理出口的 Google、MyMemory 返回 HTTP 429，Edge 旧取票失败，Bing 备选请求返回 HTTP 401。此前五块合成导航截图曾通过 **Google 失败 → translate.js 成功** 返回译文；后续 translate.js 单句测试成功，但多块截图请求和再次单句请求也出现连接失败或超时。因此不保证免费渠道始终在线。界面回归、双屏覆盖、不同 DPI 和 GPU 渲染检查使用合成数据独立验证。付费渠道只做协议验证，未使用真实密钥发起计费请求。
 
-| 权限 | 用途 |
-|---|---|
-| `ui` | 框选、译图和设置窗口；宿主代注册热键；剪贴板结果可回到搜索框，截图不唤起搜索框 |
-| `clipboard:read` | 用户请求剪贴板翻译时读取文字 |
-| `clipboard:write` | 复制原文或译文 |
-| `network` | 向所选翻译服务提交文字 |
-| `files:write` | 在插件数据目录保存独立配置和 MyMemory 本地用量 |
-| `processes` | 按需启动同仓库 Python 窗口脚本及系统 PowerShell OCR / UI Automation 脚本；结束后退出 |
+基础选择控件由宿主绘制，插件包无法修改宿主程序。`.host/` 保存本地 WinShun 0.20.0 的换行选择与 eager 插件重载修复源码补丁；需要对应修复的宿主才能使长渠道组始终平铺。该修改没有公开发布为 WinShun 官方版本。
 
-不要求管理员权限，不声明 `elevated` 或监听网络权限；不下载执行程序、不编译二进制、不提供遥测。子进程入口固定为本插件脚本及已安装的 Python / 系统 PowerShell，不通过配置加载代码。
+## 自动降级与恢复
 
-截图和 OCR 在本机完成。**识别出的文字会发送至用户选择的服务，不要翻译不希望交给该服务的敏感内容。** 原始截图不上传。默认地址如下；自定义接口则请求用户配置的地址：
+默认开启「自动降级」，恢复间隔默认 **10 分钟**，可在 WinShun 插件面板配置 **1–1440 分钟**。
 
-| 服务 | 默认网络地址 |
-|---|---|
-| MyMemory | `https://api.mymemory.translated.net/get` |
-| Google | `https://translate.googleapis.com/translate_a/single`；失败时可尝试 `https://translate.google.com/translate_a/single` |
-| Edge | 临时授权 `https://edge.microsoft.com/translate/auth`；翻译 `https://api-edge.cognitive.microsofttranslator.com/translate` |
-| Zvo | `https://api.translate.zvo.cn/translate.json` |
-| 微软 | `https://api.cognitive.microsofttranslator.com/translate` |
-| DeepL | `https://api.deepl.com/v2/translate` 或 `https://api-free.deepl.com/v2/translate` |
-| OpenAI | `https://api.openai.com/v1/chat/completions` |
-| DeepSeek | `https://api.deepseek.com/chat/completions` |
-| 豆包 | `https://ark.cn-beijing.volces.com/api/v3/chat/completions` |
-| 混元 | `https://api.hunyuan.cloud.tencent.com/v1/chat/completions` |
+主渠道失败时，尝试 translate.js、MyMemory、Google、Edge，再尝试已有密钥的其他服务；未配置的付费渠道跳过。临时使用的实际服务显示在工具条，鼠标悬停可看恢复说明。共用代理应用于所有尝试，不自动绕过它。
 
-数据存放在宿主提供的 `WS_DATA_DIR`，通常是 `%LOCALAPPDATA%\WinShun\plugins\iuuuuuuuu.screenshot-translate.data`：
+失败渠道与时间保存在 `service-health.json`，关闭窗口、退出插件后仍记得。冷却期内跳过已失败渠道；间隔到后，在下一次翻译中优先重新尝试选定主渠道。不会在空闲时不断访问服务，也不会改写选定主渠道。修改地址、密钥或代理立即重试；缩短恢复间隔也会立即生效。
 
-- `services.json`：独立渠道配置，API 密钥使用 Windows DPAPI 当前用户加密；地址、模型、区域不是秘密存储。
-- `mymemory-usage.json`：本机日期的提交量估算。
-- 截图只在本次工作进程内存中处理，社区版不自动保存截图或 OCR 原文。旧版 `shots/` 保持不变，不自动读取或删除；卸载时由宿主询问是否删除数据。
-- stderr 诊断由宿主写入 `plugins.log`，记录版本、类型、尺寸、块数和排队时长，不记录识别文本或密钥。服务返回的错误信息仍可能在用户界面显示。
+所有候选都失败时显示错误，不循环请求。单渠道请求通常最多 8 秒，Edge 的页面认证路径最多 14 秒；整次降级请求总预算 20 秒。免费服务会限流，已配置的付费备选可能产生相应服务费用。
 
-## 限制
+## 数据与权限
 
-Windows OCR 对极小文字、低对比度、图标和混合语言可能误识别，包括 `I/l` 混淆。多文字块保留相对坐标，不保证字体、字重和背景像素完全一致。渐变、图片背景、紧密排版、硬件加速和受保护窗口可能产生色差、残影或抓取失败。
+插件申请 UI、进程、网络、剪贴板读写和数据目录写入权限。截图识别在本机完成；识别文字发送到选定或临时降级的渠道，也可能发送到用户配置的自定义地址。截图本身不上传。
 
-HTTP 请求预算为八秒，OCR 工作进程限时二十秒。译图关闭时取消当前操作；进行中的 HTTP 最迟在请求预算结束后退出。常驻进程不保留位图或窗口运行库；所有窗口关闭后，工作进程退出。截图和设置打开时的瞬时总内存仍可能超过 100 MB，不能承诺全程 20 MB。截图最多 1600 万像素，大于 Windows OCR 尺寸限制时仅对识别输入缩小并把坐标映射回原图。
+`%LOCALAPPDATA%\WinShun\plugins\iuuuuuuuu.screenshot-translate.data` 保存：
 
-2026-11-06 本机离屏压力测试：连续创建并关闭 12 个合成译图（含 2560×1440），实际调用 4 次 Windows OCR；窗口工作进程退出后，常驻进程工作集 26.8 MB，私有内存 18.1 MB，60 秒后工作集仍为 26.8 MB。该数字不是其他机器或实际截图峰值的保证，也不是整夜测试。
+- `services.json`：独立配置，密钥使用 Windows DPAPI 当前用户加密；地址、模型和区域为普通字段。
+- `mymemory-usage.json`：按本机日期统计的提交量估算，非服务器余额。
+- `service-health.json`：渠道名和失败/恢复时间，配置指纹采用 SHA-256，不记录文字或密钥。
 
-启动工作进程需要冷启动时间。社区版是 Python / tkinter 实现，窗口外观不与官方 Qt 窗口逐像素相同；明暗主题、横向配置标签、底部操作条和置顶行为沿用原交互约定。
+截图仅在工作进程内存中处理，不自动保存截图或 OCR 原文。旧 `shots/` 不自动读取或删除。日志只记录版本、服务、错误类型、状态和文字块数量，不记录请求正文或密钥。
 
-实际框选、置顶、跨屏拖动和热键手感需要人工验证。离屏测试不替代这些检查。
-
-## 构建与测试
-
-无编译步骤，无第三方 Python 包。Windows 后台测试：
+## 验证与限制
 
 ```powershell
 python -B -m unittest discover -s .tests -v
-python -B .tests/broker_memory_probe.py 60
-python path\to\WinShun-plugins\tools\check.py . --id iuuuuuuuu.screenshot-translate
-python path\to\WinShun-plugins\tools\build.py . --out dist
+python -B .tests/qt_probe.py
+python -B .tests/qt_probe.py --network
+python -B .tests/broker_memory_probe.py 5
+python -B .host/package_local.py
 ```
 
-测试仅使用合成图片、假凭据、本地 HTTP 和从未显示的窗口，不注册真实热键、不抓取桌面、不访问个人配置、不模拟输入。OCR 集成测试需要本机英文 OCR 组件；没有组件时不能把测试失败算作通过。`broker.py --input-test` 仅供测试，替换截图 / 取词动作；正常清单不会传入该参数。
+Qt 视觉/行为验证在从不切换到前台的独立 Windows 桌面运行，使用合成图片和临时配置。网络测试向本机 `127.0.0.1:7890` 代理发送合成文字，不读取个人凭据。官方社区检查器和打包器在隔离的源码副本中运行，不改源仓库暂存区。
 
-发布前在 Windows 运行无桌面交互的协议回归，随后调用官方社区打包工作流。仅收录 Git 跟踪文件，点目录（`.native`、`.tests`、`.github`）不进包；EXE/DLL、字节码、密钥、个人截图和日志不进包。推送 `v<version>` 标签发布正式 Release，标签必须匹配清单；已发布附件不替换，修订时升版本。
+Windows OCR 会误识别极小文字、图标和混合语言。位置保留不等于字体、背景像素完全相同；图片/渐变背景、受保护窗口可能产生残影或抓取失败。多块长译文不能保证都在原区域放下，完整文本可查看和复制。
 
-## 许可
-
-MIT，见 [LICENSE](LICENSE) 与 [NOTICE.md](NOTICE.md)。遵循 WinShun 的公开协议并参考其 MIT 授权的规则与设计；不重新分发 Qt、WinShun 程序或字体。
+可见窗口期间的工作进程仍可能超过 100 MB；关闭窗口后整个 Qt/OCR 运行时退出，常驻 broker 不保留位图。真实桌面上的框选、跨屏、置顶和快捷键手感仍需人工使用确认，离屏测试不能替代它们。
 
 ## English
 
-An independent WinShun screenshot translator using local Windows OCR and per-service translation profiles. It preserves text-block positions, supports source comparison, closes with Esc or double-click, and drops busy or stale hotkey triggers rather than replaying them later.
+An independent community plugin listed in the WinShun plugin library, with local Windows OCR, coordinate-preserving overlays, stacked bilingual comparison and independent service profiles. Version 0.3.3 uses a disposable PySide6/QML worker with WinShun controls and Phosphor icons. The resident broker shows native per-monitor selection windows before loading Qt or OCR; outside-click dismissal runs independently of the Qt event loop.
 
-Install the `.wsplugin` from this repository's Releases through WinShun's **Install from archive**, review permissions and enable it. Requires Windows, Python 3.10+ with tkinter, Windows PowerShell, WinShun 0.19.0+ and an installed OCR language. Version 0.2.0 uses only reviewable scripts and the official community packaging workflow; inclusion in the index still requires maintainer review.
+Requires Windows, Python 3.10+, PySide6-Essentials, Windows PowerShell, WinShun 0.19.0+ and installed OCR languages. Install the UI dependency with `python -m pip install --user -r requirements.txt`, then install or update the `.wsplugin` through WinShun. Upgrading from 0.2.1 also requires this new dependency; the plugin never downloads it automatically.
 
-Recognized text is sent only to the selected translation provider or custom endpoint; screenshots stay in the disposable worker's memory. The resident broker has no UI/OCR runtime; the GUI worker exits after its windows close, and the OCR worker exits before translation. Provider keys retain the public 0.1.10 current-user DPAPI format. Read the permissions, endpoint table and limitations above before use. This project is not affiliated with WinShun.
+Automatic fallback remembers unavailable services across worker restarts and retries the preferred service on the next translation after a configurable 1–1440 minute interval. It preserves host selection and shows the actual service. Free alternatives and configured paid services may receive recognized text; paid fallback can incur provider charges. Credentials use current-user DPAPI. Screenshots stay local.
+
+Network checks still find rate limits and unavailable Edge/Bing authentication; translate.js availability has also varied between requests. Earlier real OCR with Google failure followed by translate.js success was verified; live paid services were not tested. The plugin's own service settings use wrapping exclusive choices. Long choice groups in the host's basic plugin panel follow the host version's UI behavior.
+
+## 许可
+
+MIT，见 [LICENSE](LICENSE)、[NOTICE.md](NOTICE.md) 和 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。复用的 WinShun 控件与 Phosphor 字体均包含完整 MIT 通知；PySide6 采用其上游 LGPL/商业许可，作为外部依赖安装。包中不包含 Qt DLL 或 WinShun 程序。
