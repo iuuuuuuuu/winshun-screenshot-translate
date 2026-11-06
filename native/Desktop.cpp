@@ -33,12 +33,6 @@ BITMAPINFO bitmapInfo(int width,int height)
     BITMAPINFO bi{};bi.bmiHeader.biSize=sizeof(BITMAPINFOHEADER);bi.bmiHeader.biWidth=width;
     bi.bmiHeader.biHeight=-height;bi.bmiHeader.biPlanes=1;bi.bmiHeader.biBitCount=32;bi.bmiHeader.biCompression=BI_RGB;return bi;
 }
-void blit(HDC dc,const QImage& image,const QRect& dest,const QRect& src)
-{
-    auto bi=bitmapInfo(image.width(),image.height());
-    StretchDIBits(dc,dest.x(),dest.y(),dest.width(),dest.height(),src.x(),src.y(),src.width(),src.height(),
-        image.constBits(),&bi,DIB_RGB_COLORS,SRCCOPY);
-}
 }
 QRect virtualScreen() { return {GetSystemMetrics(SM_XVIRTUALSCREEN),GetSystemMetrics(SM_YVIRTUALSCREEN),GetSystemMetrics(SM_CXVIRTUALSCREEN),GetSystemMetrics(SM_CYVIRTUALSCREEN)}; }
 QRect monitorRect(POINT point,bool work)
@@ -215,6 +209,34 @@ QImage comparisonImage(const QImage& source,const QImage& translated,bool first,
 }
 Selector::Selector(Done done,std::function<QImage(const QRect&)> grab):m_done(std::move(done)),m_grab(std::move(grab)){}
 Selector::~Selector(){cancel();}
+Selector::Surface::~Surface()
+{
+    frame={};
+    if(dc&&previous)SelectObject(dc,previous);
+    if(bitmap)DeleteObject(bitmap);
+    if(dc)DeleteDC(dc);
+}
+void Selector::Surface::createFrame()
+{
+    dc=CreateCompatibleDC(nullptr);void* pixels=nullptr;
+    auto info=bitmapInfo(rect.width(),rect.height());
+    bitmap=CreateDIBSection(nullptr,&info,DIB_RGB_COLORS,&pixels,nullptr,0);
+    if(!dc||!bitmap)throw std::runtime_error("无法创建截图画面");
+    previous=SelectObject(dc,bitmap);
+    frame=QImage(static_cast<uchar*>(pixels),rect.width(),rect.height(),rect.width()*4,QImage::Format_RGB32);
+    compose({},frame.rect());
+}
+void Selector::Surface::compose(const QRect& selection,const QRect& dirty)
+{
+    QPainter painter(&frame);painter.setClipRect(dirty);
+    painter.drawImage(QPoint(),dim);
+    auto local=selection.intersected(rect).translated(-rect.topLeft());
+    if(!local.isEmpty()){
+        painter.drawImage(local.topLeft(),image,local);
+        QPen border(QColor(0,120,212));border.setWidth(2);painter.setPen(border);
+        painter.setBrush(Qt::NoBrush);painter.drawRect(local.adjusted(0,0,-1,-1));
+    }
+}
 bool Selector::show()
 {
     WNDCLASSW wc{};wc.lpfnWndProc=proc;wc.hInstance=GetModuleHandleW(nullptr);wc.lpszClassName=L"ScreenshotTranslate.Select";wc.hCursor=LoadCursorW(nullptr,IDC_CROSS);
@@ -226,7 +248,8 @@ bool Selector::show()
     try{
         for(auto rect:rects){
             auto s=std::make_unique<Surface>();s->rect=rect;s->owner=this;s->image=m_grab(rect);s->dim=s->image.copy();
-            QPainter p(&s->dim);p.fillRect(s->dim.rect(),QColor(0,0,0,88));p.end();m_surfaces.push_back(std::move(s));
+            QPainter p(&s->dim);p.fillRect(s->dim.rect(),QColor(0,0,0,88));p.end();
+            s->createFrame();m_surfaces.push_back(std::move(s));
         }
         for(auto& s:m_surfaces){
             s->hwnd=CreateWindowExW(WS_EX_TOOLWINDOW|WS_EX_TOPMOST,L"ScreenshotTranslate.Select",L"截图翻译 · 框选",WS_POPUP,
@@ -245,12 +268,13 @@ LRESULT CALLBACK Selector::proc(HWND hwnd,UINT msg,WPARAM w,LPARAM l)
     if(msg==WM_NCCREATE){s=static_cast<Surface*>(reinterpret_cast<CREATESTRUCTW*>(l)->lpCreateParams);SetWindowLongPtrW(hwnd,GWLP_USERDATA,reinterpret_cast<LONG_PTR>(s));}
     if(!s)return DefWindowProcW(hwnd,msg,w,l);
     if(msg==WM_PAINT){
-        PAINTSTRUCT ps;HDC dc=BeginPaint(hwnd,&ps);blit(dc,s->dim,s->dim.rect(),s->dim.rect());
-        auto local=s->owner->m_selection.intersected(s->rect).translated(-s->rect.topLeft());
-        if(!local.isEmpty()){
-            blit(dc,s->image,local,local);HPEN pen=CreatePen(PS_SOLID,2,RGB(0,120,212));auto oldPen=SelectObject(dc,pen),oldBrush=SelectObject(dc,GetStockObject(HOLLOW_BRUSH));
-            Rectangle(dc,local.x(),local.y(),local.x()+local.width(),local.y()+local.height());SelectObject(dc,oldBrush);SelectObject(dc,oldPen);DeleteObject(pen);
-        }EndPaint(hwnd,&ps);return 0;
+        PAINTSTRUCT ps;HDC dc=BeginPaint(hwnd,&ps);
+        auto r=ps.rcPaint;
+        BitBlt(dc,r.left,r.top,r.right-r.left,r.bottom-r.top,s->dc,r.left,r.top,SRCCOPY);
+        EndPaint(hwnd,&ps);return 0;
+    }
+    if(msg==WM_PRINTCLIENT){
+        BitBlt(reinterpret_cast<HDC>(w),0,0,s->rect.width(),s->rect.height(),s->dc,0,0,SRCCOPY);return 0;
     }
     if(msg==WM_ERASEBKGND)return 1;
     if(msg==WM_DPICHANGED)return 0; // physical monitor dimensions always remain exact
@@ -270,8 +294,11 @@ void Selector::input(UINT msg,POINT point)
     if(!m_drag)return;
     auto old=m_selection;
     m_selection=QRect(m_start,QPoint(point.x,point.y)).normalized().intersected(virtualScreen());
+    if(m_selection==old&&msg!=WM_LBUTTONUP)return;
     for(auto& s:m_surfaces){
         auto invalid=old.united(m_selection).adjusted(-3,-3,3,3).intersected(s->rect).translated(-s->rect.topLeft());
+        if(invalid.isEmpty())continue;
+        s->compose(m_selection,invalid);
         RECT r{invalid.x(),invalid.y(),invalid.x()+invalid.width(),invalid.y()+invalid.height()};InvalidateRect(s->hwnd,&r,FALSE);
     }
     if(msg==WM_LBUTTONUP)finish(m_selection.width()>=3&&m_selection.height()>=3?m_selection:QRect());

@@ -376,7 +376,8 @@ void App::place()
 {
     if(!m_pin||!m_bar.window)return;
     auto area=m_pin->pictureRect();auto s=screenAt(area.center());POINT c{area.center().x(),area.center().y()};auto work=monitorRect(c,true);
-    m_bar.window->setScreen(s);auto size=m_bar.window->size()*s->devicePixelRatio();
+    if(m_bar.window->screen()!=s)m_bar.window->setScreen(s);
+    auto size=m_bar.window->size()*s->devicePixelRatio();
     int x=std::clamp(area.center().x()-size.width()/2,work.left()+4,std::max(work.left()+4,work.x()+work.width()-size.width()-4));
     int y=area.y()+area.height()+8;
     if(y+size.height()>work.y()+work.height())y=std::max(work.top()+4,area.y()-size.height()-8);
@@ -384,8 +385,10 @@ void App::place()
     auto lw=logical(work.topLeft(),s);m_pinBackend.update({{"menuLeft",lw.x()},{"menuTop",lw.y()},
         {"menuRight",lw.x()+work.width()/s->devicePixelRatio()},{"menuBottom",lw.y()+work.height()/s->devicePixelRatio()}});
     if(m_status.window){
-        m_status.window->setScreen(s);auto point=area.center()-QPoint(m_status.window->width(),m_status.window->height())*s->devicePixelRatio()/2;
-        m_status.window->setPosition(logical(point,s));
+        if(m_status.window->screen()!=s)m_status.window->setScreen(s);
+        auto point=area.center()-QPoint(m_status.window->width(),m_status.window->height())*s->devicePixelRatio()/2;
+        auto desiredStatus=logical(point,s);
+        if(m_status.window->position()!=desiredStatus)m_status.window->setPosition(desiredStatus);
     }
 }
 void App::pinAction(const QString& name,const QVariant& value)

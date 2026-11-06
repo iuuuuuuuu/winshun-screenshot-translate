@@ -36,6 +36,18 @@ QJsonObject memory()
     DWORD handles=0;GetProcessHandleCount(GetCurrentProcess(),&handles);
     return {{"privateMB",double(info.PrivateUsage)/(1024*1024)},{"workingMB",double(info.WorkingSetSize)/(1024*1024)},{"handles",int(handles)}};
 }
+QImage printed(HWND window,QSize size)
+{
+    HDC dc=CreateCompatibleDC(nullptr);BITMAPINFO info{};void* pixels=nullptr;
+    info.bmiHeader.biSize=sizeof(BITMAPINFOHEADER);info.bmiHeader.biWidth=size.width();
+    info.bmiHeader.biHeight=-size.height();info.bmiHeader.biPlanes=1;
+    info.bmiHeader.biBitCount=32;info.bmiHeader.biCompression=BI_RGB;
+    HBITMAP bitmap=CreateDIBSection(nullptr,&info,DIB_RGB_COLORS,&pixels,nullptr,0);
+    check(dc&&bitmap,"print client bitmap");auto old=SelectObject(dc,bitmap);
+    SendMessageW(window,WM_PRINTCLIENT,reinterpret_cast<WPARAM>(dc),PRF_CLIENT);
+    auto image=QImage(static_cast<uchar*>(pixels),size.width(),size.height(),QImage::Format_RGB32).copy();
+    SelectObject(dc,old);DeleteObject(bitmap);DeleteDC(dc);return image;
+}
 void pump(int ms)
 {
     QEventLoop loop;QTimer::singleShot(ms,&loop,&QEventLoop::quit);loop.exec();
@@ -106,6 +118,29 @@ void Probe::run(App& app,const QJsonObject& params)
             monitors.append(QJsonArray{int(r.left),int(r.top),int(r.right-r.left),int(r.bottom-r.top)});
         }
         report["monitors"]=monitors;
+        // Nonuniform pixels expose scaling, vertical flips and source-coordinate
+        // errors that a white OCR fixture cannot detect.
+        Selector patterned([](QImage,QRect){},[](const QRect& area){
+            QImage image(area.size(),QImage::Format_RGB32);
+            for(int y=0;y<image.height();++y){
+                auto row=reinterpret_cast<QRgb*>(image.scanLine(y));
+                for(int x=0;x<image.width();++x)row[x]=qRgb((x+area.x())%251,(y+area.y())%241,(x/17+y/13)%239);
+            }return image;
+        });
+        check(patterned.show(),"patterned selector");
+        auto& surface=*patterned.m_surfaces[0];auto origin=surface.rect.topLeft();
+        for(int step=0;step<8;++step){
+            auto start=origin+QPoint(80,90),end=origin+QPoint(600-step*40,500-step*30);
+            patterned.input(WM_LBUTTONDOWN,{start.x(),start.y()});
+            patterned.input(WM_MOUSEMOVE,{end.x(),end.y()});
+            UpdateWindow(surface.hwnd);
+            auto frame=printed(surface.hwnd,surface.rect.size());
+            check(frame.pixel(130,140)==surface.image.pixel(130,140),"selector pixels stay aligned");
+            check(frame.pixel(30,40)==surface.dim.pixel(30,40),"outside selection stays dim");
+            if(step)check(frame.pixel(595,495)==surface.dim.pixel(595,495),"shrunk selection restored");
+            if(step==0)frame.copy(0,0,720,580).save(out+"/selector-drag.png");
+        }
+        patterned.cancel();report["selectorDragPixels"]=true;
         selector.input(WM_LBUTTONDOWN,{100,100});selector.input(WM_MOUSEMOVE,{919,479});selector.input(WM_LBUTTONUP,{919,479});
         check(until([&]{return !selected.isNull();}),"selector result");
         check(selected.size()==fixture.size(),"selected pixel size");

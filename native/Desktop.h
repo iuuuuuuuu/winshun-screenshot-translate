@@ -19,6 +19,7 @@ QImage translatedImage(const QImage& source, const QList<Block>& blocks, const Q
 QImage textImage(const QString& text, int width, bool dark);
 QImage comparisonImage(const QImage& source,const QImage& translated,bool translationFirst,bool dark,bool chinese=true);
 class Selector {
+    friend class Probe;
 public:
     using Done=std::function<void(QImage,QRect)>;
     explicit Selector(Done done,std::function<QImage(const QRect&)> grab=capture);
@@ -28,7 +29,13 @@ public:
     const std::vector<HWND>& windows() const { return m_windows; }
     void input(UINT message,POINT point); // same physical-coordinate path as native messages
 private:
-    struct Surface { HWND hwnd=nullptr; QRect rect; QImage image,dim; Selector* owner=nullptr; };
+    struct Surface {
+        HWND hwnd=nullptr; QRect rect; QImage image,dim,frame; Selector* owner=nullptr;
+        HDC dc=nullptr; HBITMAP bitmap=nullptr; HGDIOBJ previous=nullptr;
+        ~Surface();
+        void createFrame();
+        void compose(const QRect& selection,const QRect& dirty);
+    };
     static LRESULT CALLBACK proc(HWND,UINT,WPARAM,LPARAM);
     void finish(QRect rect);
     Done m_done;
