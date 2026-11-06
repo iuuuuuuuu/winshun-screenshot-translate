@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.1
+
+- Combine all ten translation services into the host's single provider setting.
+- Remove the separate model-service selector; keep independent service profiles.
+- Retain legacy `provider=ai` input compatibility when `aiProvider` is supplied.
+- Wrap configuration tabs to keep every service visible at smaller window widths.
+- Document the host's automatic menu fallback and how to identify the old runtime.
+
 ## 0.2.0
 
 - Convert to a community-eligible Python entry and text-only package.

@@ -10,12 +10,26 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from main import App, TriggerGate
-from services import ENDPOINTS, Http, Profiles, Translator, Usage, detect, selected, target_for, chunks_utf8
+from main import App, DEFAULTS, TriggerGate, VERSION
+from services import ENDPOINTS, PROVIDERS, Http, Profiles, Translator, Usage, detect, selected, target_for, chunks_utf8
 from spatial import group
 
 
 class CoreTests(unittest.TestCase):
+    def test_combined_provider_setting_and_legacy_input(self):
+        manifest = json.loads((Path(__file__).resolve().parents[1] / "plugin.json").read_text(encoding="utf-8"))
+        settings = {entry["key"]: entry for entry in manifest["settings"]}
+        self.assertEqual(manifest["version"], VERSION)
+        self.assertNotIn("aiProvider", settings)
+        self.assertNotIn("aiProvider", DEFAULTS)
+        self.assertEqual([option["value"] for option in settings["provider"]["options"]], list(PROVIDERS))
+        for provider in PROVIDERS:
+            self.assertEqual(selected({"provider": provider, "aiProvider": "hunyuan"}), provider)
+        for provider in PROVIDERS[6:]:
+            self.assertEqual(selected({"provider": "ai", "aiProvider": provider}), provider)
+        self.assertEqual(selected({"provider": "ai", "aiProvider": "invalid"}), "openai")
+        self.assertEqual(selected({"provider": "invalid"}), "mymemory")
+
     def test_dominant_language(self):
         self.assertEqual(detect("Pull requests Agents Security and quality \u4e2d"), "en")
         self.assertEqual(target_for("Pull requests \u4e2d"), "zh")

@@ -56,6 +56,17 @@ class WindowsTests(unittest.TestCase):
             self.assertEqual(set(app.root.tk.call("image", "names")), baseline)
             config = Settings(app)
             self.assertFalse(config.window.winfo_viewable())
+            config.arrange_tabs(740)
+            narrow_columns = config.tab_columns
+            self.assertEqual(len(config.tab_buttons), 10)
+            self.assertLess(narrow_columns, 10)
+            for index, button in enumerate(config.tab_buttons):
+                position = button.grid_info()
+                self.assertEqual(position["row"], index // narrow_columns)
+                self.assertEqual(position["column"], index % narrow_columns)
+                self.assertLessEqual(button.winfo_reqwidth() + 4, (740 - 48) / narrow_columns)
+            config.arrange_tabs(1500)
+            self.assertEqual(config.tab_columns, 10)
             config.channel.set("openai")
             config.select()
             config.entries["model"].set("cancelled-draft")

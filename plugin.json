@@ -5,7 +5,7 @@
     "zh": "截图翻译",
     "en": "Screenshot Translate"
   },
-  "version": "0.2.0",
+  "version": "0.2.1",
   "settingsWindow": true,
   "description": {
     "zh": "Windows OCR 截图翻译，译文按原位置显示，支持对照、剪贴板翻译及独立渠道配置。",
@@ -167,19 +167,6 @@
         { "value": "zvo", "title": { "zh": "Zvo", "en": "Zvo" } },
         { "value": "microsoft", "title": { "zh": "微软", "en": "Microsoft" } },
         { "value": "deepl", "title": { "zh": "DeepL", "en": "DeepL" } },
-        { "value": "ai", "title": { "zh": "模型服务", "en": "AI models" } }
-      ]
-    },
-    {
-      "key": "aiProvider",
-      "type": "choice",
-      "title": { "zh": "模型渠道", "en": "AI service" },
-      "hint": {
-        "zh": "上方选择「模型服务」时使用；Zvo 即 translate.js。密钥和模型在「设置」中分别配置",
-        "en": "Used when AI models is selected above. Zvo is translate.js. Configure each service's key and model in Settings"
-      },
-      "default": "openai",
-      "options": [
         { "value": "openai", "title": { "zh": "OpenAI", "en": "OpenAI" } },
         { "value": "deepseek", "title": { "zh": "DeepSeek", "en": "DeepSeek" } },
         { "value": "doubao", "title": { "zh": "豆包", "en": "Doubao" } },

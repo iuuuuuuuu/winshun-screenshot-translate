@@ -347,11 +347,16 @@ class Settings:
         ttk.Label(self.window, text=app.t("\u622a\u56fe\u7ffb\u8bd1", "Screenshot Translate"),
                   font=("Microsoft YaHei UI", 19), padding=(24, 20)).pack(anchor="w")
         self.channel = tk.StringVar(value=app.active_provider())
-        tabs = ttk.Frame(self.window, padding=(24, 0))
-        tabs.pack(fill="x")
+        self.tabs = ttk.Frame(self.window, padding=(24, 0))
+        self.tabs.pack(fill="x")
+        self.tab_buttons = []
         for provider, name in zip(PROVIDERS, NAMES):
-            ttk.Radiobutton(tabs, text=name, value=provider, variable=self.channel,
-                            style="Tab.TRadiobutton", command=self.select).pack(side="left", fill="x", expand=True)
+            self.tab_buttons.append(ttk.Radiobutton(
+                self.tabs, text=name, value=provider, variable=self.channel,
+                style="Tab.TRadiobutton", command=self.select))
+        self.tab_columns = 0
+        self.tabs.bind("<Configure>", lambda event: self.arrange_tabs(event.width))
+        self.arrange_tabs(920)
         self.content = ttk.Frame(self.window, padding=(24, 20))
         self.content.pack(fill="both", expand=True)
         self.content.columnconfigure(1, weight=1)
@@ -362,6 +367,18 @@ class Settings:
         ttk.Button(footer, text=app.t("\u4fdd\u5b58", "Save"), command=self.save).pack(side="right")
         ttk.Button(footer, text=app.t("\u53d6\u6d88", "Cancel"), command=self.close).pack(side="right", padx=8)
         self.select()
+
+    def arrange_tabs(self, width):
+        cell = max(button.winfo_reqwidth() for button in self.tab_buttons) + 4
+        columns = max(1, min(len(self.tab_buttons), int((width - 48) // cell)))
+        if columns == self.tab_columns:
+            return
+        self.tab_columns = columns
+        for column in range(len(self.tab_buttons)):
+            self.tabs.columnconfigure(column, weight=1 if column < columns else 0,
+                                      uniform="providers" if column < columns else "")
+        for index, button in enumerate(self.tab_buttons):
+            button.grid(row=index // columns, column=index % columns, sticky="ew", padx=2, pady=2)
 
     def show(self):
         self.window.deiconify()

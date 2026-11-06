@@ -12,11 +12,17 @@ WinShun 截图翻译插件，使用本机 Windows OCR 识别文字，再通过�
 
 需要 Windows 10 / 11、Python 3.10+（包含 tkinter）、Windows PowerShell 5.1、WinShun 0.19.0 或更新版本，以及至少一种已安装的 Windows OCR 语言包。标准 Windows Python 安装通常包含 tkinter；插件不自动安装依赖。英文 OCR 可选组件可改善英文识别；插件不会自动安装系统组件。
 
-**社区版 0.2.0：** 常驻入口为 `broker.py`，不加载 tkinter、OCR 或 .NET。用户发起操作后才启动本仓库的 Python 窗口脚本；Windows OCR 使用系统 PowerShell 执行随包的 `ocr.ps1`，识别结束就退出。译图和设置都关闭后，窗口进程也退出，整个界面运行时随进程释放。不会下载、编译或运行额外二进制；社区安装包仅包含可审阅脚本与文档，使用 [官方社区检查和打包工作流](https://github.com/LingCore/WinShun-plugins/blob/main/CONTRIBUTING.md)。收录需维护者审核，不等于已经收录。旧 `0.1.10` 原生 Release 保持不变。
+**社区版 0.2.1（低内存架构从 0.2.0 开始）：** 常驻入口为 `broker.py`，不加载 tkinter、OCR 或 .NET。用户发起操作后才启动本仓库的 Python 窗口脚本；Windows OCR 使用系统 PowerShell 执行随包的 `ocr.ps1`，识别结束就退出。译图和设置都关闭后，窗口进程也退出，整个界面运行时随进程释放。不会下载、编译或运行额外二进制；社区安装包仅包含可审阅脚本与文档，使用 [官方社区检查和打包工作流](https://github.com/LingCore/WinShun-plugins/blob/main/CONTRIBUTING.md)。收录需维护者审核，不等于已经收录。旧 `0.1.10` 原生 Release 保持不变。
 
 公开版 `0.1.10` 升级为 `0.2.0` 保留同一个数据目录、DPAPI 加密标识和独立渠道配置；不必重新填写公开版密钥。新增 `processes` 权限需要用户重新同意。旧原生源码保存在仓库 `.native/`，不进入新包，不参与运行。
 
 早期本地开发版使用过 `winshun.screenshot-translate`。公开版改用作者前缀，数据目录和密钥加密标识独立；不会自动读取或改写旧插件数据。安装公开版后请重新填写配置，并停用旧版以避免关键字和热键冲突。不要把旧版截图、配置或日志提交到本仓库。
+
+### 确认加载的版本
+
+安装包发布不等于本机已经更新。WinShun 已安装卡片应显示 `iuuuuuuuu.screenshot-translate`、版本 `0.2.1`。任务管理器若仍显示 `ScreenshotTranslate-0.1.10.exe`，运行的是旧原生版，不含新内存架构。
+
+新版常驻的是执行 `broker.py` 的 Python 进程。截图期间按需出现 `main.py --ui-worker` 和系统 PowerShell；识别结束后 OCR 进程退出，译图与设置都关闭后 GUI 进程退出。窗口还开着时，100 MB 以上的工作进程并不等于空闲常驻占用。检查进程完整命令行，避免把别的 Python 应用算成此插件。
 
 ## 使用
 
@@ -34,7 +40,11 @@ WinShun 截图翻译插件，使用本机 Windows OCR 识别文字，再通过�
 
 ## 翻译渠道
 
-第一行选择 MyMemory、Google、Edge、Zvo（translate.js）、微软、DeepL 或「模型服务」。选「模型服务」时，第二行选择 OpenAI、DeepSeek、豆包或混元。配置窗口的标签和保存不改变启用渠道。
+只有一项「翻译渠道」，直接选择 MyMemory、Google、Edge、Zvo（translate.js）、微软、DeepL、OpenAI、DeepSeek、豆包或混元，不再分出「模型渠道」。配置窗口的横向标签在窄窗口自动换行，浏览标签和保存配置不改变启用渠道。
+
+基础设置由 WinShun 绘制。当前宿主的 `choice` 控件仅在整组选项能放进标题旁边时平铺，放不下就自动变成菜单；插件清单没有强制平铺或换行的协议字段。合并渠道不代表宿主窄面板已支持十项平铺，这一部分需要 WinShun 的控件支持，不能通过配置窗口替代基础设置。
+
+从两级渠道的公开版升级后，若此前使用「模型服务」，请在基础设置重新选择一次具体服务。各家保存的密钥、地址和模型不变；协议仍兼容包含旧 `aiProvider` 的输入，但该项不再显示。
 
 - MyMemory 无需密钥。设置页显示本插件按本机日期统计的提交字符数，不是服务端余额，也不包含其他应用或共享 IP 的用量。匿名额度和服务限制以服务商为准。
 - Google、Edge、Zvo 提供免密钥通道，可能限流或变更。Google 在部分网络需要代理；Edge / Zvo 已实现接入，但不保证在每个网络环境可用。

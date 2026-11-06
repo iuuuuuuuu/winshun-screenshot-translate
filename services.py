@@ -207,7 +207,7 @@ class Http:
         remaining = self.deadline - time.monotonic()
         if remaining <= 0:
             raise TimeoutError("Translation timed out")
-        h = {"User-Agent": "WinShun-screenshot-translate/0.2.0", "Accept": "application/json,text/plain"}
+        h = {"User-Agent": "WinShun-screenshot-translate/0.2.1", "Accept": "application/json,text/plain"}
         h.update(headers or {})
         data = None
         if body is not None:

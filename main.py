@@ -1,4 +1,4 @@
-"""WinShun JSON-RPC resident. Only Python/Tk remains resident between captures."""
+"""WinShun protocol core and disposable GUI worker."""
 import gc
 import json
 import os
@@ -11,8 +11,8 @@ import time
 from services import LANGUAGES, Profiles, Translator, Usage, selected, target_for, detect
 
 PLUGIN_ID = "iuuuuuuuu.screenshot-translate"
-VERSION = "0.2.0"
-DEFAULTS = {"provider": "mymemory", "aiProvider": "openai", "proxy": "", "target": "auto",
+VERSION = "0.2.1"
+DEFAULTS = {"provider": "mymemory", "proxy": "", "target": "auto",
             "shotMode": "multi", "shotHotkey": "Alt+Shift+T", "clipHotkey": "Alt+Shift+C", "selectionHotkey": ""}
 TRIGGER_ACTIONS = {"start-region", "start-full", "start-window", "retry-shot", "retry-clip", "read-selection"}
 
