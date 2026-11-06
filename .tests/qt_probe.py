@@ -323,7 +323,9 @@ def run():
             region.action("motion")
             assert region.surfaces[-1].backend.values["selectionWidth"] > 0
             region.action("end")
-        pump(app)
+        deadline = time.monotonic() + 2
+        while not callback.called and time.monotonic() < deadline:
+            pump(app, .01)
         assert region.closed
         callback.assert_called_once_with(selection)
         # A secondary-screen pin must be correctly sized before first showing,
