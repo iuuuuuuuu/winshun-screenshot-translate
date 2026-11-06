@@ -30,6 +30,7 @@ with tempfile.TemporaryDirectory() as directory:
     def finish():
         assert app.config is not None
         output = Path(__file__).resolve().parents[1] / ".test-output/installed-settings.png"
+        output.parent.mkdir(parents=True, exist_ok=True)
         assert app.config.window.grabWindow().save(str(output))
         app.config.close()
     app.root.after(250, finish)

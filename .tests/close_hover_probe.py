@@ -26,7 +26,7 @@ qInstallMessageHandler(lambda kind, context, message: warnings.append(message))
 app = App()
 app.settings["closeOnOutsideClick"] = False
 output = repo / ".test-output" / ("close-hover-installed" if "--installed" in sys.argv else "close-hover-source")
-output.mkdir(exist_ok=True)
+output.mkdir(parents=True, exist_ok=True)
 results = []
 
 
