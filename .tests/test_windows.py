@@ -1,101 +1,88 @@
-import gc
+"""Run the actual Qt UI/OCR checks on a private desktop in a fresh process."""
 import os
 from pathlib import Path
+import subprocess
 import sys
-import tempfile
 import unittest
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from desktop import Worker
-from fixtures import image_fixture, memory_stats
-from main import App
-from main import UiWorkerApp
-from services import Profiles, Usage
-from ui import Pin, Settings
+import time
+import ctypes
+from ctypes import wintypes as w
 
 
-@unittest.skipUnless(os.name == "nt", "Windows UI and OCR")
+@unittest.skipUnless(os.name == "nt", "Windows Qt and OCR")
 class WindowsTests(unittest.TestCase):
-    def test_real_ocr_worker_exits_and_bounds(self):
-        image = image_fixture()
-        worker = Worker()
-        blocks = worker.recognize(image)
-        self.assertIsNone(worker.process)
-        text = "\n".join(b["text"] for b in blocks).lower()
-        self.assertIn("hello", text)
-        self.assertIn("translation", text)
-        for block in blocks:
-            x, y, width, height = block["box"]
-            self.assertGreaterEqual(x, 0)
-            self.assertGreaterEqual(y, 0)
-            self.assertLessEqual(x + width, image.width)
-            self.assertLessEqual(y + height, image.height)
+    def test_hovered_close_buttons_and_escape_still_dismiss_windows(self):
+        root = Path(__file__).resolve().parents[1]
+        result = subprocess.run([sys.executable, "-B", str(root / ".tests/close_hover_probe.py")],
+                                cwd=root, capture_output=True, text=True, encoding="utf-8",
+                                creationflags=subprocess.CREATE_NO_WINDOW, timeout=12)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('"escapeClosesPin": true', result.stdout)
 
-    def test_hidden_windows_release_images_and_settings_isolate(self):
-        app = App()
-        with tempfile.TemporaryDirectory() as directory:
-            app.profiles, app.usage = Profiles(directory), Usage(directory)
-            app.profiles.save({"openai": {"apiKey": "fake-test", "model": "model-a"}})
-            baseline = set(app.root.tk.call("image", "names"))
-            for i in range(10):
-                image = image_fixture(600 if i % 2 == 0 else 1920, 180 if i % 2 == 0 else 1080)
-                pin = Pin(app, image)
-                self.assertFalse(pin.window.winfo_viewable())
-                pin.set_result([{"text": "Hello", "box": [24, 20, 90, 28], "glyphHeight": 28}],
-                               {"source": "Hello", "translated": "\u4f60\u597d", "segments": ["\u4f60\u597d"],
-                                "sourceLanguage": "en", "targetLanguage": "zh"})
-                pin.compare.set(True)
-                pin.redraw()
-                self.assertGreater(float(pin.canvas.cget("scrollregion").split()[-1]), image.height)
-                pin.close()
-                self.assertIsNone(pin.image)
-                self.assertIsNone(pin.photo)
-                del pin, image
-                app.root.update()
-            gc.collect()
-            self.assertEqual(set(app.root.tk.call("image", "names")), baseline)
-            config = Settings(app)
-            self.assertFalse(config.window.winfo_viewable())
-            config.arrange_tabs(740)
-            narrow_columns = config.tab_columns
-            self.assertEqual(len(config.tab_buttons), 10)
-            self.assertLess(narrow_columns, 10)
-            for index, button in enumerate(config.tab_buttons):
-                position = button.grid_info()
-                self.assertEqual(position["row"], index // narrow_columns)
-                self.assertEqual(position["column"], index % narrow_columns)
-                self.assertLessEqual(button.winfo_reqwidth() + 4, (740 - 48) / narrow_columns)
-            config.arrange_tabs(1500)
-            self.assertEqual(config.tab_columns, 10)
-            config.channel.set("openai")
-            config.select()
-            config.entries["model"].set("cancelled-draft")
-            config.channel.set("deepseek")
-            config.select()
-            self.assertEqual(config.entries["apiKey"].get(), "")
-            config.channel.set("openai")
-            config.select()
-            self.assertEqual(config.entries["model"].get(), "cancelled-draft")
-            config.close()
-            self.assertEqual(app.profiles.get("openai")["model"], "model-a")
-            self.assertEqual(app.active_provider(), "mymemory")
-        app.root.destroy()
+    def test_native_selector_and_outside_clicks_run_without_blocking_qt(self):
+        root = Path(__file__).resolve().parents[1]
+        result = subprocess.run([sys.executable, "-B", str(root / ".tests/native_probe.py")],
+                                cwd=root, capture_output=True, text=True, encoding="utf-8",
+                                creationflags=subprocess.CREATE_NO_WINDOW, timeout=12)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("queued raw mouse clicks with blocked Qt", result.stdout)
 
-    def test_ui_worker_auto_exit_and_cache_before_launcher(self):
-        app = UiWorkerApp()
-        sent = []
-        app.send = sent.append
-        app.cache["clip"] = (0, [{"id": "translation", "title": "test-only"}])
-        app.tool("show_launcher", {"text": "jft just now"})
-        self.assertEqual(sent[0]["method"], "ui/cache")
-        self.assertEqual(sent[1]["method"], "winshun/tool")
-        self.assertEqual(app.cache, {})
-        app.started = True
-        app.tick()
-        self.assertFalse(app.running)
-        self.assertTrue(sent[-1]["params"]["closing"])
-        self.assertFalse(app.root.winfo_viewable())
-        app.root.destroy()
+    def test_closing_a_busy_pin_exits_immediately_and_reaps_child_processes(self):
+        from desktop import api
+        root = Path(__file__).resolve().parents[1]
+        process = subprocess.Popen([sys.executable, "-B", str(root / ".tests/fast_exit_probe.py")],
+                                   cwd=root, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                   stderr=subprocess.PIPE, text=True, encoding="utf-8",
+                                   creationflags=subprocess.CREATE_NO_WINDOW)
+        handle = None
+        lines = []
+        try:
+            for line in process.stdout:
+                lines.append(line)
+                if line.startswith("CHILD "):
+                    handle = api("kernel32", "OpenProcess", w.HANDLE, w.DWORD, w.BOOL, w.DWORD)(0x100000, False, int(line.split()[1]))
+                    self.assertTrue(handle)
+                if line.startswith("CLOSED "):
+                    self.assertLess(float(line.split()[1]), 100)
+                    closed_at = time.monotonic()
+                    process.wait(timeout=.75)
+                    self.assertLess(time.monotonic() - closed_at, .75)
+                    break
+            self.assertEqual(process.returncode, 0, "".join(lines) + process.stderr.read())
+            self.assertTrue(any(line.startswith("CLOSED ") for line in lines), "".join(lines))
+            self.assertEqual(api("kernel32", "WaitForSingleObject", w.DWORD, w.HANDLE, w.DWORD)(handle, 1000), 0)
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.wait()
+            if handle:
+                api("kernel32", "CloseHandle", w.BOOL, w.HANDLE)(handle)
+            for stream in (process.stdin, process.stdout, process.stderr):
+                stream.close()
+
+    def test_closing_settings_during_batch_does_not_keep_ui_process_alive(self):
+        root = Path(__file__).resolve().parents[1]
+        result = subprocess.run([sys.executable, "-B", str(root / ".tests/installed_ui_probe.py"), "--source", "--busy-tests"],
+                                cwd=root, capture_output=True, text=True, encoding="utf-8",
+                                creationflags=subprocess.CREATE_NO_WINDOW, timeout=12)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("closing state", result.stdout)
+
+    def test_gui_worker_exits_after_last_qml_window_closes(self):
+        root = Path(__file__).resolve().parents[1]
+        result = subprocess.run([sys.executable, "-B", str(root / ".tests/installed_ui_probe.py"), "--source"],
+                                cwd=root, capture_output=True, text=True, encoding="utf-8",
+                                creationflags=subprocess.CREATE_NO_WINDOW, timeout=12)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("closing state", result.stdout)
+
+    def test_private_desktop_ui_actions_layout_profiles_ocr_and_cleanup(self):
+        root = Path(__file__).resolve().parents[1]
+        result = subprocess.run([sys.executable, "-B", str(root / ".tests/qt_probe.py")],
+                                cwd=root, capture_output=True, text=True, encoding="utf-8",
+                                creationflags=subprocess.CREATE_NO_WINDOW, timeout=35)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("PASS: Qt", result.stdout)
 
 
 if __name__ == "__main__":

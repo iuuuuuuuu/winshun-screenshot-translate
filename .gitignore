@@ -11,3 +11,9 @@ mymemory-usage.json
 __pycache__/
 *.pyc
 .test-output/
+.host/WinShun/
+.host/qt/
+.host/tools/
+.host/build-repair/
+.host/downloads/
+*.7z

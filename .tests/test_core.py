@@ -6,16 +6,58 @@ from pathlib import Path
 import sys
 import tempfile
 import time
+import threading
 import unittest
-from unittest.mock import patch
+from unittest.mock import patch, Mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from main import App, DEFAULTS, TriggerGate, VERSION
 from services import ENDPOINTS, PROVIDERS, Http, Profiles, Translator, Usage, detect, selected, target_for, chunks_utf8
-from spatial import group
+from spatial import group, refine
 
 
 class CoreTests(unittest.TestCase):
+    def test_explicit_recapture_waits_for_cancelled_job_without_replay(self):
+        app = App(headless=True)
+        release = threading.Event()
+        done = Mock()
+        app.start_shot = Mock()
+        app.launch(lambda job: release.wait(2), done)
+        job = app.job
+        app.retry_shot()
+        self.assertTrue(job.cancelled.is_set())
+        app.start_shot.assert_not_called()
+        release.set()
+        job.thread.join(3)
+        self.assertFalse(job.thread.is_alive())
+        app.tick()
+        app.start_shot.assert_called_once_with("region")
+        done.assert_not_called()
+        self.assertFalse(app.pending_retry)
+
+    def test_google_rate_limit_retries_other_clients_like_original_script(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.object(Http, "request", side_effect=ValueError("HTTP 429")) as request:
+                with self.assertRaisesRegex(ValueError, "HTTP 429"):
+                    Translator(Usage(directory)).translate({"provider": "google"}, ["Hello"], "en", "zh")
+                self.assertEqual(request.call_count, 6)
+                self.assertTrue(all(call.kwargs["headers"]["User-Agent"].startswith("Mozilla/")
+                                    for call in request.call_args_list))
+
+    def test_ocr_refinement_preserves_real_prefixes_and_numeric_badges(self):
+        def block(text, box):
+            return {"text": text, "box": box, "glyphHeight": box[3]}
+        original = [block("B2 Agents", [10, 5, 110, 18]), block("499", [160, 5, 25, 11])]
+        enlarged = [block("Agents", [35, 5, 85, 18]), block("Pull requests 499", [35, 5, 150, 18])]
+        self.assertEqual(refine(original, enlarged), original)
+        icon = block("G2 Agents", [265, 69, 85, 20])
+        clean = block("Agents", [296.5, 71.5, 54, 18])
+        self.assertEqual(refine([icon], [clean]), [clean])
+        # An overlapping fragment must not win over the best matching full label.
+        typo = block("Screenshot translaton", [5, 5, 230, 20])
+        correct = block("Screenshot translation", [5, 5, 230, 20])
+        self.assertEqual(refine([typo], [block("transformation", [90, 5, 120, 20]), correct]), [correct])
+
     def test_combined_provider_setting_and_legacy_input(self):
         manifest = json.loads((Path(__file__).resolve().parents[1] / "plugin.json").read_text(encoding="utf-8"))
         settings = {entry["key"]: entry for entry in manifest["settings"]}
@@ -174,8 +216,12 @@ class CoreTests(unittest.TestCase):
         app.job.pin = object()
         app.cancel_pin(object())
         self.assertFalse(app.job.cancelled.is_set())
-        app.cancel_pin(app.job.pin)
-        self.assertTrue(app.job.cancelled.is_set())
+        job = app.job
+        app.gate.begin()
+        app.cancel_pin(job.pin)
+        self.assertTrue(job.cancelled.is_set())
+        self.assertIsNone(app.job)
+        self.assertFalse(app.gate.busy)
 
 
 if __name__ == "__main__":

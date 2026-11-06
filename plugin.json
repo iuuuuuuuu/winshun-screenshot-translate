@@ -5,7 +5,7 @@
     "zh": "截图翻译",
     "en": "Screenshot Translate"
   },
-  "version": "0.2.1",
+  "version": "0.3.3",
   "settingsWindow": true,
   "description": {
     "zh": "Windows OCR 截图翻译，译文按原位置显示，支持对照、剪贴板翻译及独立渠道配置。",
@@ -20,7 +20,7 @@
     "program": "python",
     "script": "broker.py",
     "env": {"PYTHONDONTWRITEBYTECODE": "1"},
-    "timeoutMs": 10000,
+    "timeoutMs": 25000,
     "debounceMs": 300,
     "start": "eager",
     "idleExitSec": 0,
@@ -164,7 +164,7 @@
         { "value": "mymemory", "title": { "zh": "MyMemory", "en": "MyMemory" } },
         { "value": "google", "title": { "zh": "Google", "en": "Google" } },
         { "value": "edge", "title": { "zh": "Edge", "en": "Edge" } },
-        { "value": "zvo", "title": { "zh": "Zvo", "en": "Zvo" } },
+        { "value": "zvo", "title": { "zh": "translate.js", "en": "translate.js" } },
         { "value": "microsoft", "title": { "zh": "微软", "en": "Microsoft" } },
         { "value": "deepl", "title": { "zh": "DeepL", "en": "DeepL" } },
         { "value": "openai", "title": { "zh": "OpenAI", "en": "OpenAI" } },
@@ -185,6 +185,47 @@
         "en": "Shared by all services; an HTTP/HTTPS URL without credentials. Empty uses environment or system proxy"
       },
       "default": ""
+    },
+    {
+      "key": "fallbackEnabled",
+      "type": "bool",
+      "title": { "zh": "自动降级", "en": "Automatic fallback" },
+      "hint": {
+        "zh": "记住暂时失败的渠道，使用其他免费渠道或已配置的服务；不会改变选定的主渠道",
+        "en": "Remember unavailable services and use another free or configured service without changing the preferred service"
+      },
+      "default": true
+    },
+    {
+      "key": "fallbackRecoveryMinutes",
+      "type": "number",
+      "title": { "zh": "自动恢复间隔（分钟）", "en": "Recovery interval (minutes)" },
+      "hint": {
+        "zh": "1–1440 分钟。间隔到后，在下一次翻译中优先重试主渠道；修改地址、密钥或代理会立即重试",
+        "en": "1–1440 minutes. Retry the preferred service on the next translation after this interval; changed configuration retries immediately"
+      },
+      "default": 10,
+      "min": 1,
+      "max": 1440
+    },
+    {
+      "key": "comparisonOrder",
+      "type": "choice",
+      "presentation": "exclusive",
+      "title": { "zh": "双语对照顺序", "en": "Comparison order" },
+      "hint": { "zh": "上下排列，保留原文与译文的图片布局", "en": "Stack the original and translated images vertically" },
+      "default": "translation-first",
+      "options": [
+        { "value": "translation-first", "title": { "zh": "译文在上", "en": "Translation first" } },
+        { "value": "source-first", "title": { "zh": "原文在上", "en": "Source first" } }
+      ]
+    },
+    {
+      "key": "closeOnOutsideClick",
+      "type": "bool",
+      "title": { "zh": "点击其他区域关闭贴图", "en": "Close the pin on outside click" },
+      "hint": { "zh": "贴图、工具条、语言菜单和渠道配置窗口内的点击会保留贴图", "en": "Clicks inside the pin, toolbar, language menus or service settings keep it open" },
+      "default": true
     },
     {
       "key": "target",

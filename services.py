@@ -3,6 +3,8 @@ import base64
 import ctypes
 import datetime
 import html
+import hashlib
+import http.cookiejar
 import json
 import os
 from pathlib import Path
@@ -16,7 +18,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 PROVIDERS = ("mymemory", "google", "edge", "zvo", "microsoft", "deepl",
              "openai", "deepseek", "doubao", "hunyuan")
-NAMES = ("MyMemory", "Google", "Edge", "Zvo", "Microsoft", "DeepL",
+NAMES = ("MyMemory", "Google", "Edge", "translate.js", "Microsoft", "DeepL",
          "OpenAI", "DeepSeek", "Doubao", "Hunyuan")
 ENDPOINTS = {
     "mymemory": "https://api.mymemory.translated.net/get",
@@ -129,7 +131,14 @@ class Profiles:
                     **{k: data.get(k, "") for k in ("endpoint", "model", "region")}}
 
     def current(self, settings):
-        return {**self.get(selected(settings)), "proxy": settings.get("proxy", "").strip()}
+        primary = selected(settings)
+        profile = {**self.get(primary), "proxy": settings.get("proxy", "").strip(),
+                   "fallbackEnabled": settings.get("fallbackEnabled", True),
+                   "fallbackRecoveryMinutes": settings.get("fallbackRecoveryMinutes", 10)}
+        profile["fallbackProfiles"] = [
+            self.get(provider) for provider in ("zvo", "mymemory", "google", "edge", *PROVIDERS[4:])
+            if provider != primary and (provider in PROVIDERS[:4] or self.stored.get(provider, {}).get("secret"))]
+        return profile
 
     def save(self, drafts):
         with self.lock:
@@ -186,6 +195,14 @@ class Usage:
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
+        destination = urllib.parse.urlsplit(newurl)
+        if destination.hostname in ("www.google.com", "translate.google.com") and destination.path.startswith("/sorry"):
+            raise ValueError("HTTP 429")
+        origin = urllib.parse.urlsplit(req.full_url)
+        if (origin.hostname in ("www.bing.com", "cn.bing.com") and
+                destination.hostname in ("www.bing.com", "cn.bing.com") and
+                destination.scheme == "https" and destination.path == "/translator" and not req.data):
+            return super().redirect_request(req, fp, code, msg, headers, newurl)
         # Never forward keys or selected text to an unconfigured redirect target.
         raise ValueError("The service redirected the request; configure its final endpoint")
 
@@ -199,7 +216,7 @@ class Http:
         if proxy:
             proxy = validate_url(proxy if "://" in proxy else "http://" + proxy, True)
         handler = urllib.request.ProxyHandler({"http": proxy, "https": proxy}) if proxy else urllib.request.ProxyHandler()
-        self.opener = urllib.request.build_opener(handler, NoRedirect())
+        self.opener = urllib.request.build_opener(handler, NoRedirect(), urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
         self.deadline = time.monotonic() + budget
 
     def request(self, url, body=None, headers=None, form=False, raw=False):
@@ -207,7 +224,7 @@ class Http:
         remaining = self.deadline - time.monotonic()
         if remaining <= 0:
             raise TimeoutError("Translation timed out")
-        h = {"User-Agent": "WinShun-screenshot-translate/0.2.1", "Accept": "application/json,text/plain"}
+        h = {"User-Agent": "WinShun-screenshot-translate/0.3.0", "Accept": "application/json,text/plain"}
         h.update(headers or {})
         data = None
         if body is not None:
@@ -250,8 +267,78 @@ class Translator:
     def __init__(self, usage):
         self.usage = usage
         self.edge_token, self.edge_expiry = "", 0
+        self.health_file = usage.file.parent / "service-health.json"
+        self.health_lock = threading.RLock()
+        self.health = {}
+        try:
+            value = json.loads(self.health_file.read_text(encoding="utf-8"))
+            self.health = value.get("services", {})
+            if not isinstance(self.health, dict):
+                self.health = {}
+        except (OSError, ValueError):
+            pass
 
     def translate(self, profile, parts, source="auto", target="zh"):
+        primary = profile["provider"]
+        enabled = bool(profile.get("fallbackEnabled", False))
+        candidates = [profile]
+        if enabled:
+            candidates += [{**p, "proxy": profile.get("proxy", "")} for p in profile.get("fallbackProfiles", [])]
+        try:
+            recovery = max(1, min(1440, float(profile.get("fallbackRecoveryMinutes", 10)))) * 60
+        except (ValueError, TypeError):
+            recovery = 600
+        deadline, failure = time.monotonic() + (20 if enabled or primary == "edge" else 8), None
+        attempted, seen = [], set()
+        for candidate in candidates:
+            provider = candidate["provider"]
+            if provider in seen:
+                continue
+            seen.add(provider)
+            # A changed endpoint, proxy or credential gets a fresh health record.
+            identity = hashlib.sha256(json.dumps([provider, candidate.get("endpoint", ""),
+                        candidate.get("proxy", ""), candidate.get("apiKey", "")]).encode()).hexdigest()
+            with self.health_lock:
+                entry = self.health.get(identity, {})
+                if enabled and float(entry.get("failedAt", 0)) + recovery > time.time():
+                    continue
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            attempted.append(provider)
+            try:
+                result = self._translate({**candidate, "_requestBudget": min(14 if provider == "edge" else 8, remaining)}, parts, source, target)
+            except (ValueError, TimeoutError, urllib.error.URLError) as ex:
+                failure = ex
+                if not enabled:
+                    raise
+                with self.health_lock:
+                    self.health[identity] = {"provider": provider, "failedAt": time.time(),
+                                             "retryAt": time.time() + recovery}
+                    self.save_health()
+                continue
+            with self.health_lock:
+                self.health.pop(identity, None)
+                self.save_health()
+            result.update(provider=provider, preferredProvider=primary, fallback=provider != primary)
+            return result
+        if failure is not None:
+            raise failure
+        if enabled and not attempted:
+            raise ValueError("所有可用渠道暂时失败，恢复时间到后会重试；修改渠道配置可立即重试")
+        raise TimeoutError("Translation timed out")
+
+    def save_health(self):
+        # Only service names and recovery timestamps, never text or credentials.
+        now = time.time()
+        self.health = {key: value for key, value in self.health.items()
+                       if isinstance(value, dict) and float(value.get("retryAt", 0)) > now - 86400}
+        try:
+            atomic_json(self.health_file, {"version": 1, "services": self.health})
+        except OSError:
+            pass
+
+    def _translate(self, profile, parts, source="auto", target="zh"):
         provider, key = profile["provider"], profile.get("apiKey", "")
         if provider not in PROVIDERS:
             raise ValueError("Unknown translation provider")
@@ -259,7 +346,8 @@ class Translator:
             raise ValueError("API key is empty. Configure this service in Settings.")
         if provider == "doubao" and not profile.get("model"):
             raise ValueError("Doubao needs a model or inference endpoint ID")
-        http = Http(profile.get("proxy", ""))
+        log_request(provider, len(parts))
+        http = Http(profile.get("proxy", ""), profile.get("_requestBudget", 8))
         url = profile.get("endpoint") or ENDPOINTS[provider]
         detected = detect("\n".join(parts)) if source == "auto" else source
         destination = "zh-CN" if target == "zh" else target
@@ -282,10 +370,13 @@ class Translator:
                     return "\n".join(translations)
                 urls = [url] if profile.get("endpoint") else [url, "https://translate.google.com/translate_a/single"]
                 failure = None
-                for client in ("dict-chrome-ex", "chrome-extension"):
+                for client in ("dict-chrome-ex", "chrome-extension", "gtx"):
                     for endpoint in urls:
                         try:
-                            data = http.request(query(endpoint, client=client, sl=origin, tl=destination, dt="t", q=text))
+                            data = http.request(query(endpoint, client=client, sl=origin, tl=destination, dt="t", q=text),
+                                                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                                                         "Accept": "application/json,text/plain,*/*",
+                                                         "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8"})
                             return "".join(row[0] or "" for row in data[0])
                         except (ValueError, urllib.error.URLError) as ex:
                             failure = ex
@@ -295,9 +386,17 @@ class Translator:
         elif provider in ("microsoft", "edge"):
             headers = {}
             if provider == "edge":
+                browser_headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
                 if time.monotonic() >= self.edge_expiry:
-                    self.edge_token = http.request("https://edge.microsoft.com/translate/auth", raw=True).strip()
+                    try:
+                        auth_http = Http(profile.get("proxy", ""), min(2.5, profile.get("_requestBudget", 8)))
+                        self.edge_token = auth_http.request("https://edge.microsoft.com/translate/auth", headers=browser_headers, raw=True).strip()
+                    except (ValueError, TimeoutError):
+                        return self.bing_translate(http, parts, source, target, browser_headers)
+                    if not self.edge_token:
+                        raise ValueError("Edge returned an empty token")
                     self.edge_expiry = time.monotonic() + 7 * 60
+                headers.update(browser_headers)
                 headers["Authorization"] = "Bearer " + self.edge_token
             else:
                 url = url.rstrip("/")
@@ -370,3 +469,36 @@ class Translator:
                       for original, value in zip(parts, translated)]
         return {"source": "\n".join(parts), "translated": "\n".join(translated),
                 "segments": translated, "sourceLanguage": detected, "targetLanguage": target}
+
+    def bing_translate(self, http, parts, source, target, headers):
+        page_url = query("https://www.bing.com/translator", timestamp=str(int(time.time() * 1000)))
+        headers = {**headers, "Cache-Control": "no-cache", "Referer": "https://www.bing.com/translator",
+                   "Origin": "https://www.bing.com"}
+        page = http.request(page_url, headers=headers, raw=True)
+        helper = re.search(r"params_AbusePreventionHelper\s*=\s*(\[[^\]]+\])", page)
+        ig = re.search(r'IG:"([^"]+)"', page)
+        if not helper or not ig:
+            raise ValueError("微软免费翻译入口暂不可用，请稍后重试")
+        key, token, *unused = json.loads(helper.group(1))
+        iid = re.search(r'id="tta_outGDCont"[^>]*data-iid="(translator[^"]+)"', page)
+        if not iid:
+            iid = re.search(r'data-iid="(translator[^"]+)"', page)
+        translated = []
+        for index, part in enumerate(parts):
+            body = {"fromLang": "auto-detect" if source == "auto" else "zh-Hans" if source == "zh" else source,
+                    "to": "zh-Hans" if target == "zh" else target, "text": part,
+                    "key": key, "token": token}
+            data = http.request(query("https://www.bing.com/ttranslatev3", isVertical="1",
+                                      IG=ig.group(1), IID=(iid.group(1) if iid else "translator.5028") + f".{index + 1}"),
+                                body, headers, form=True)
+            if not isinstance(data, list) or not data or not data[0].get("translations"):
+                raise ValueError("微软免费翻译返回不完整，请稍后重试")
+            translated.append(data[0]["translations"][0]["text"])
+        return {"source": "\n".join(parts), "translated": "\n".join(translated), "segments": translated,
+                "sourceLanguage": detect("\n".join(parts)) if source == "auto" else source, "targetLanguage": target}
+
+
+def log_request(provider, blocks):
+    # Counts and channel names only; no OCR text, keys, proxy or request body.
+    import sys
+    print(f"[screenshot-translate] translate: provider={provider} blocks={blocks}", file=sys.stderr, flush=True)

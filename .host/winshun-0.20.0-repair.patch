@@ -1,0 +1,368 @@
+diff --git a/src/app/CMakeLists.txt b/src/app/CMakeLists.txt
+index 6667a2c..cb734d6 100644
+--- a/src/app/CMakeLists.txt
++++ b/src/app/CMakeLists.txt
+@@ -129,6 +129,7 @@ set(qml_files
+     qml/WindowEdge.qml
+     qml/SearchBar.qml
+     qml/ScopeTabs.qml
++    qml/ChoiceTabs.qml
+     qml/TypeStrip.qml
+     qml/ResultRow.qml
+     qml/ElsewhereCaption.qml
+diff --git a/src/app/Preview.cpp b/src/app/Preview.cpp
+index 2122f10..c28ec67 100644
+--- a/src/app/Preview.cpp
++++ b/src/app/Preview.cpp
+@@ -7184,7 +7184,7 @@ int runRuntime(const QStringList& args)
+         QElapsedTimer since;
+         since.start();
+         if (!app.start({.background = true, .clipboardDisplayProbe = args.contains(u"--clipboard-display-probe"_s),
+-                .settingsProbe = args.contains(u"--settings-reopen-check"_s)}))
++                .settingsProbe = args.contains(u"--settings-reopen-check"_s) || args.contains(u"--runtime-ui"_s)}))
+             return 4;
+         if (args.contains(u"--capture-hotkey-probe"_s) && !probeCaptureHotkeys(app, args, out, report)) {
+             QFile failed(out.filePath(u"capture-hotkey-failed.json"_s));
+@@ -7324,6 +7324,19 @@ int runRuntime(const QStringList& args)
+             } else {
+             QMetaObject::invokeMethod(window, "showPage", Q_ARG(QVariant, window->property("pluginsPage")), Q_ARG(QVariant, QVariant(0)));
+             settle(window, 3);
++            if (const QString id = valueAfter(args, u"--expand-plugin"); !id.isEmpty()) {
++                if (!plugin::validPluginId(id))
++                    return 4;
++                QMetaObject::invokeMethod(window, "showPluginPage", Q_ARG(QVariant, QVariant(id)));
++                settle(window, 3);
++                QObject* choices = visualNamed(window->contentItem(), u"choiceTabs-provider"_s);
++                if (!choices)
++                    return 4;
++                report.insert(u"provider_choice_width"_s, choices->property("width").toDouble());
++                report.insert(u"provider_choice_height"_s, choices->property("implicitHeight").toDouble());
++                QMetaObject::invokeMethod(window, "scrollToRow", Q_ARG(QVariant, QVariant::fromValue(qobject_cast<QQuickItem*>(choices))));
++                settle(window, 3);
++            }
+             report.insert(u"recovery_before"_s, editor->plugins()->recoveryMessage());
+             if (args.contains(u"--install-gallery"_s)) {
+                 auto requests = std::make_shared<int>(0);
+@@ -7394,6 +7407,7 @@ int runRuntime(const QStringList& args)
+                 return 4;
+             }
+         }
++        pump(1000); // Finish asynchronous controls before the preview engine is destroyed.
+         report.insert(u"warnings"_s, g_warnings);
+     }
+     QFile json(out.filePath(u"runtime.json"_s));
+diff --git a/src/app/qml/ChoiceTabs.qml b/src/app/qml/ChoiceTabs.qml
+new file mode 100644
+index 0000000..5b569d5
+--- /dev/null
++++ b/src/app/qml/ChoiceTabs.qml
+@@ -0,0 +1,114 @@
++pragma ComponentBehavior: Bound
++import QtQuick
++import WinShun
++
++// Plugin choices remain one exclusive setting when they span multiple lines.
++Rectangle {
++    id: tabs
++    property var labels: []
++    property int current: 0
++    signal activated(int index)
++    readonly property real dpr: Screen.devicePixelRatio
++    implicitWidth: measure.implicitWidth + 6
++    implicitHeight: flow.implicitHeight + 6
++    radius: Theme.largeCardRadius
++    color: Theme.track
++
++    Row {
++        id: measure
++        visible: false
++        spacing: 2
++        Repeater {
++            model: tabs.labels
++            Text {
++                id: measuredLabel
++                required property string modelData
++                text: modelData
++                textFormat: Text.PlainText
++                font.pixelSize: Theme.fontBody
++                font.weight: Theme.fontStrong
++                width: Theme.snapUp(Math.max(implicitWidth, normalMeasure.advanceWidth) + 26, tabs.dpr)
++                TextMetrics {
++                    id: normalMeasure
++                    text: measuredLabel.modelData
++                    font.pixelSize: Theme.fontBody
++                    font.weight: Font.Normal
++                }
++            }
++        }
++    }
++
++    Flow {
++        id: flow
++        x: 3
++        y: 3
++        width: Math.max(1, tabs.width - 6)
++        spacing: 2
++        Repeater {
++            id: items
++            model: tabs.labels
++            delegate: Rectangle {
++                id: chip
++                required property int index
++                required property string modelData
++                objectName: "choice-" + index
++                readonly property bool active: tabs.current === index
++                width: Math.min(flow.width, Theme.snapUp(Math.max(metrics.advanceWidth, normalMetrics.advanceWidth) + 26, tabs.dpr))
++                height: Math.max(32, label.implicitHeight + 14)
++                radius: Theme.largeControlRadius
++                color: active ? Theme.chipActive : pointer.containsMouse ? Theme.chipHover : "transparent"
++                border.width: active || activeFocus ? 1 : 0
++                border.color: activeFocus ? Theme.accent : Theme.chipBorder
++                activeFocusOnTab: true
++                Accessible.role: Accessible.RadioButton
++                Accessible.name: modelData
++                Accessible.checked: active
++                Accessible.onPressAction: tabs.activated(index)
++                TextMetrics {
++                    id: metrics
++                    text: chip.modelData
++                    font.pixelSize: Theme.fontBody
++                    font.weight: Theme.fontStrong
++                }
++                TextMetrics {
++                    id: normalMetrics
++                    text: chip.modelData
++                    font.pixelSize: Theme.fontBody
++                    font.weight: Font.Normal
++                }
++                Text {
++                    id: label
++                    objectName: "label-" + chip.index
++                    x: 12
++                    y: Theme.snap((parent.height - height) / 2, tabs.dpr)
++                    width: Math.max(1, parent.width - 24)
++                    text: chip.modelData
++                    textFormat: Text.PlainText
++                    wrapMode: Text.Wrap
++                    color: chip.active ? Theme.text : Theme.subtext
++                    font.pixelSize: Theme.fontBody
++                    font.weight: chip.active ? Theme.fontStrong : Font.Normal
++                }
++                MouseArea {
++                    id: pointer
++                    anchors.fill: parent
++                    hoverEnabled: true
++                    cursorShape: Qt.PointingHandCursor
++                    onClicked: { chip.forceActiveFocus(); tabs.activated(chip.index) }
++                }
++                Keys.onPressed: event => {
++                    let next = index
++                    if (event.key === Qt.Key_Right || event.key === Qt.Key_Down)
++                        next = (index + 1) % items.count
++                    else if (event.key === Qt.Key_Left || event.key === Qt.Key_Up)
++                        next = (index + items.count - 1) % items.count
++                    else if (event.key !== Qt.Key_Space && event.key !== Qt.Key_Return)
++                        return
++                    items.itemAt(next).forceActiveFocus()
++                    tabs.activated(next)
++                    event.accepted = true
++                }
++            }
++        }
++    }
++}
+diff --git a/src/app/qml/PluginCard.qml b/src/app/qml/PluginCard.qml
+index e1c6f5d..ae25535 100644
+--- a/src/app/qml/PluginCard.qml
++++ b/src/app/qml/PluginCard.qml
+@@ -643,16 +643,17 @@ Rectangle {
+ 
+                         required property var modelData
+                         readonly property string kind: modelData.type
++                        readonly property bool stacked: kind === "choice" && (settingControl.control?.stacked ?? false)
+ 
+                         width: parent.width
+-                        height: Math.max(36, settingControl.implicitHeight) + (settingHint.visible ? settingHint.implicitHeight + 4 : 0)
++                        height: settingControl.y + Math.max(36, settingControl.implicitHeight) + (settingHint.visible ? settingHint.implicitHeight + 4 : 0)
+ 
+                         Text {
+                             id: settingTitle
+                             anchors.left: parent.left
+-                            anchors.right: settingControl.left
++                            anchors.right: settingRow.stacked ? parent.right : settingControl.left
+                             anchors.rightMargin: 12
+-                            y: Math.round((Math.max(36, settingControl.implicitHeight) - height) / 2)
++                            y: settingRow.stacked ? 0 : Math.round((Math.max(36, settingControl.implicitHeight) - height) / 2)
+                             text: settingRow.modelData.title
+                             textFormat: Text.PlainText
+                             color: Theme.text
+@@ -679,6 +680,7 @@ Rectangle {
+                             readonly property Item control: controlLoader.item as Item
+ 
+                             anchors.right: parent.right
++                            y: settingRow.stacked ? settingTitle.implicitHeight + 8 : 0
+                             implicitWidth: control ? control.implicitWidth : 0
+                             implicitHeight: control ? control.implicitHeight : 0
+                             width: implicitWidth
+@@ -725,52 +727,28 @@ Rectangle {
+                             }
+                             Component {
+                                 id: choiceControl
+-                                // Side by side while they fit beside the title; else
+-                                // one button with the chosen one's short name (what
+-                                // comes before its "（…）") and a menu of them all.
+                                 Item {
+                                     id: choice
+ 
+                                     readonly property var labels: settingRow.modelData.options ?? []
+                                     readonly property int index: settingRow.modelData.optionIndex ?? 0
+-                                    readonly property bool fits: tabs.implicitWidth <= settingRow.width - settingTitle.implicitWidth - 24
++                                    readonly property bool stacked: tabs.implicitWidth > settingRow.width - settingTitle.implicitWidth - 24
+ 
+                                     function choose(index) {
+                                         card.plugins.setSettingValue(card.pluginId, settingRow.modelData.key,
+                                                                      settingRow.modelData.optionValues[index])
+                                     }
+-                                    function shortName(label) {
+-                                        return String(label ?? "").split("（")[0].split(" (")[0].trim()
+-                                    }
+-
+-                                    implicitWidth: fits ? tabs.implicitWidth : menuButton.implicitWidth
+-                                    implicitHeight: fits ? tabs.implicitHeight : menuButton.implicitHeight
++                                    implicitWidth: Math.min(tabs.implicitWidth, settingRow.width)
++                                    implicitHeight: tabs.implicitHeight
+ 
+-                                    ScopeTabs {
++                                    ChoiceTabs {
+                                         id: tabs
+-                                        visible: choice.fits
++                                        objectName: "choiceTabs-" + settingRow.modelData.key
++                                        width: choice.implicitWidth
+                                         labels: choice.labels
+                                         current: choice.index
+                                         onActivated: (index) => choice.choose(index)
+                                     }
+-                                    FlatButton {
+-                                        id: menuButton
+-                                        visible: !choice.fits
+-                                        implicitHeight: 32
+-                                        text: choice.shortName(choice.labels[choice.index])
+-                                        trailingGlyph: String.fromCharCode(0xE70D) // ChevronDown
+-                                        onClicked: choiceMenu.open = !choiceMenu.open
+-
+-                                        DropMenu {
+-                                            id: choiceMenu
+-                                            anchor: menuButton
+-                                            entries: choice.labels.map((label, i) => ({
+-                                                text: label,
+-                                                glyph: i === choice.index ? String.fromCharCode(0xE73E) : "" // CheckMark
+-                                            }))
+-                                            onActivated: (index) => choice.choose(index)
+-                                        }
+-                                    }
+                                 }
+                             }
+                             Component {
+diff --git a/src/plugin/Host.cpp b/src/plugin/Host.cpp
+index ecfe10e..8715b7f 100644
+--- a/src/plugin/Host.cpp
++++ b/src/plugin/Host.cpp
+@@ -424,16 +424,23 @@ void Host::reload(const QString& id)
+ {
+     if (const auto it = m_plugins.find(id); it != m_plugins.end()) {
+         Plugin& p = *it->second;
+-        const bool running = p.phase == Plugin::Phase::Starting || p.phase == Plugin::Phase::Ready;
++        const Entry* e = entry(id);
++        const bool eager = e && e->manifest->resident() && e->manifest->runtime->start == StartWhen::Eager;
++        const bool running = p.phase == Plugin::Phase::Starting || p.phase == Plugin::Phase::Ready
++            || p.phase == Plugin::Phase::ShuttingDown;
+         p.disabledByCrashes = false;
+         p.crashTimes.clear();
+         p.backoffStep = 0;
+         p.error.clear();
+         stop(id);
+-        p.restartWhenGone = running;
++        p.restartWhenGone = running || eager;
+     }
+     log(u"%1: 重新加载"_s.arg(id));
+     m_catalog.scan();
++    // An unchanged manifest does not emit Catalog::changed. Reloading a
++    // stopped eager listener must still bring back its process and hotkeys.
++    if (!m_shuttingDown)
++        m_preload.start(0);
+     emit stateChanged(id);
+ }
+ 
+diff --git a/tests/tst_plugin.cpp b/tests/tst_plugin.cpp
+index d01c8a3..c54bcc7 100644
+--- a/tests/tst_plugin.cpp
++++ b/tests/tst_plugin.cpp
+@@ -4871,6 +4871,68 @@ private slots:
+             && f.host->state(spec.id).status == Host::State::Status::Running; }, 5000), qPrintable(f.logs.join(u'\n')));
+     }
+ 
++    void eagerReloadStartsStoppedProcessAndRestoresListener()
++    {
++        Fixture f;
++        Spec spec;
++        spec.args = {u"--hotkeys"_s};
++        spec.runtimeExtra = {{u"start"_s, u"eager"_s}, {u"idleExitSec"_s, 0}};
++        QStringList hotkeys;
++        QObject::connect(f.host.get(), &Host::hotkeysChanged, f.host.get(),
++            [&](const QString&, const QStringList& keys) { hotkeys = keys; });
++        QVERIFY(!f.install(spec).isEmpty());
++        QVERIFY(QTest::qWaitFor([&] { return !hotkeys.isEmpty(); }, 5000));
++        f.host->stop(spec.id);
++        QVERIFY(QTest::qWaitFor([&] { return f.exitCodes.size() == 1; }, 5000));
++        QVERIFY(hotkeys.isEmpty());
++        // Same manifest, still enabled: scan() does not emit changed().
++        f.host->reload(spec.id);
++        QVERIFY2(QTest::qWaitFor([&] { return f.startedPids.size() == 2 && !hotkeys.isEmpty(); }, 5000),
++            qPrintable(f.logs.join(u'\n')));
++        f.host->setEnabled(spec.id, false);
++        QVERIFY(QTest::qWaitFor([&] { return f.exitCodes.size() == 2; }, 5000));
++        f.host->reload(spec.id);
++        QTest::qWait(100);
++        QCOMPARE(f.startedPids.size(), 2u); // Reload must respect disabled state.
++    }
++
++    void publicPythonResidentRegistersCustomHotkeysThroughRunner()
++    {
++        const QString source = qEnvironmentVariable("WINSHUN_TRANSLATE_TEST_SOURCE");
++        if (source.isEmpty())
++            QSKIP("Set WINSHUN_TRANSLATE_TEST_SOURCE to test the community plugin");
++        Fixture f;
++        Spec spec;
++        spec.id = u"test.screenshot-translate"_s;
++        spec.permissions = {u"ui"_s, u"processes"_s, u"files:write"_s};
++        spec.runtimeExtra = {{u"program"_s, u"python"_s}, {u"script"_s, u"broker.py"_s},
++            {u"args"_s, QJsonArray()}, {u"start"_s, u"eager"_s}, {u"idleExitSec"_s, 0},
++            {u"env"_s, QJsonObject {{u"PYTHONDONTWRITEBYTECODE"_s, u"1"_s}}}};
++        int calls = 0;
++        QStringList registered;
++        f.host->setAppTools({{u"register_hotkeys"_s, Permission::Ui,
++            [&](const QString&, const QString&, const QJsonObject& args, std::function<void(mcp::ToolResult)> done) {
++                ++calls;
++                registered.clear();
++                for (const QJsonValue& key : args.value(u"keys"_s).toArray())
++                    registered.append(key.toString());
++                done({{{u"errors"_s, QJsonObject()}}});
++            }}});
++        f.host->setPluginSettings(spec.id, {{u"shotHotkey"_s, u"Ctrl+Alt+D"_s}, {u"clipHotkey"_s, QString()}});
++        const QString folder = f.install(spec);
++        QVERIFY(!folder.isEmpty());
++        for (const QString& name : QDir(source).entryList({u"*.py"_s}, QDir::Files))
++            QVERIFY(QFile::copy(QDir(source).filePath(name), QDir(folder).filePath(name)));
++        QVERIFY2(QTest::qWaitFor([&] { return calls == 1; }, 10000), qPrintable(f.logs.join(u'\n')));
++        QCOMPARE(registered, QStringList {u"Ctrl+Alt+D"_s});
++        QVERIFY(f.host->state(spec.id).status == Host::State::Status::Running);
++        f.host->stop(spec.id);
++        QVERIFY(QTest::qWaitFor([&] { return f.exitCodes.size() == 1; }, 5000));
++        f.host->reload(spec.id);
++        QVERIFY2(QTest::qWaitFor([&] { return calls == 2; }, 10000), qPrintable(f.logs.join(u'\n')));
++        QCOMPARE(registered, QStringList {u"Ctrl+Alt+D"_s});
++    }
++
+     void eagerWaitsForConsentAndShutdownCancelsQueuedStart()
+     {
+         Fixture f;

@@ -1,0 +1,9 @@
+module WinShun
+singleton Theme 1.0 Theme.qml
+FlatButton 1.0 FlatButton.qml
+InputBox 1.0 InputBox.qml
+ChoiceTabs 1.0 ChoiceTabs.qml
+Glyph 1.0 Glyph.qml
+ToolButton 1.0 ToolButton.qml
+ServiceRow 1.0 ServiceRow.qml
+LanguageMenu 1.0 LanguageMenu.qml

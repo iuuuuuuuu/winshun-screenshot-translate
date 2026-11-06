@@ -20,6 +20,10 @@ class Broker(App):
         self.child_sequence = 0
         self.child_busy = False
         self.child_closing = False
+        self.active_query = None
+        self.waiting_query = None
+        self.query_flow = False
+        self.native_region = None
 
     def initialize(self, identifier, params):
         self.initial = dict(params)
@@ -43,13 +47,23 @@ class Broker(App):
             return
         self.child_sequence += 1
         startup = subprocess.STARTUPINFO()
-        startup.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        startup.dwFlags |= subprocess.STARTF_USESHOWWINDOW | 0x80  # STARTF_FORCEOFFFEEDBACK
         startup.wShowWindow = 0
         env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
-        child = subprocess.Popen([sys.executable, "-B", str(Path(__file__).with_name("main.py")), "--ui-worker"],
-                                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                 text=True, encoding="utf-8", env=env, startupinfo=startup,
-                                 creationflags=subprocess.CREATE_NO_WINDOW)
+        try:
+            child = subprocess.Popen([sys.executable, "-B", str(Path(__file__).with_name("main.py")), "--ui-worker"],
+                                     stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                     text=True, encoding="utf-8", env=env, startupinfo=startup,
+                                     creationflags=subprocess.CREATE_NO_WINDOW)
+        except OSError:
+            self.child_busy = False
+            self.active_query = None
+            self.query_flow = False
+            self.gate.end()
+            self.reply(message.get("id"), {"items": [{"id": "error", "title": self.t(
+                "无法启动翻译窗口，请检查 Python 安装", "Could not start the translation window; check Python")}], "cache": 0})
+            log("ui: start failed; trigger released")
+            return
         self.child = child
         self.child_closing = False
         from desktop import api
@@ -85,14 +99,20 @@ class Broker(App):
         if child is not self.child:
             return
         if message.get("method") == "ui/state":
+            if not message.get("params", {}).get("started"):
+                return
             busy = bool(message.get("params", {}).get("busy"))
             self.child_closing = bool(message.get("params", {}).get("closing"))
             if busy:
                 with self.gate.lock:
                     self.gate.busy = True
-            elif self.child_busy or self.gate.busy:
+            elif not self.native_region and (self.child_busy or self.gate.busy):
                 self.gate.end()
-            self.child_busy = busy
+            if not self.native_region:
+                self.child_busy = busy
+            if not busy:
+                self.query_flow = False
+                self.drain_query()
             return
         if message.get("method") == "ui/cache":
             params = message["params"]
@@ -100,6 +120,8 @@ class Broker(App):
             return
         if message.get("id") in ("_ui_init", "_ui_action"):
             return
+        if not message.get("method") and message.get("id") == self.active_query:
+            self.active_query = None
         if message.get("method") == "winshun/tool":
             identifier = f"ui{self.child_sequence}:{message['id']}"
             self.child_tools[identifier] = message["id"]
@@ -110,16 +132,28 @@ class Broker(App):
         if child is self.child:
             self.child = None
             self.child_tools.clear()
-            self.child_busy = False
+            self.child_busy = bool(self.native_region)
             self.child_closing = False
-            self.gate.end()
+            self.query_flow = False
+            if not self.native_region:
+                self.gate.end()
+            if self.active_query is not None:
+                self.reply(self.active_query, {"items": [{"id": "error", "title": self.t(
+                    "翻译窗口意外退出，请重试", "Translation window exited unexpectedly; retry")}], "cache": 0})
+                self.active_query = None
             self.release_idle()
-            log("memory: UI worker exited; screenshot and OCR runtimes released")
+            log(f"memory: UI worker exited code={child.returncode}; screenshot and OCR runtimes released")
+            self.drain_query()
         for stream in (child.stdin, child.stdout, child.stderr):
             try:
                 stream.close()
             except OSError:
                 pass
+
+    def drain_query(self):
+        if self.running and self.waiting_query and not self.gate.busy:
+            message, self.waiting_query = self.waiting_query, None
+            self.dispatch(message)
 
     def start_shot(self, kind, delay=0):
         if self.input_test:
@@ -127,6 +161,33 @@ class Broker(App):
         if not self.gate.begin():
             return
         self.child_busy = True
+        if kind == "region":
+            from native_ui import Region
+            def finished(rect):
+                def selected():
+                    region, self.native_region = self.native_region, None
+                    if not self.running:
+                        return
+                    if not rect:
+                        self.child_busy = False
+                        self.gate.end()
+                        self.release_idle()
+                        if region and region.error:
+                            log("selector: failed; trigger released")
+                        self.drain_query()
+                        return
+                    log(f"selector: shownMs={region.show_ms:.0f}" if region and region.show_ms is not None else "selector: closed")
+                    self.open_child({"method": "ui/capture", "params": {"rect": rect}})
+                self.events.put(selected)
+            self.native_region = Region(finished)
+            self.write_child({"method": "ui/prepare-capture"})
+            if delay:
+                timer = threading.Timer(delay / 1000, self.native_region.show)
+                timer.daemon = True
+                timer.start()
+            else:
+                self.native_region.show()
+            return
         self.open_child({"method": "ui/start", "params": {"kind": kind, "delay": delay}})
 
     def text_flow(self, command):
@@ -154,12 +215,24 @@ class Broker(App):
                 self.query(identifier, message["params"])
                 return
             if not self.gate.begin():
-                self.reply(identifier, {"items": [], "cache": 0})
+                if self.query_flow or self.waiting_query:
+                    if self.waiting_query:
+                        self.reply(self.waiting_query.get("id"), {"items": [], "cache": 0})
+                    self.waiting_query = message
+                else:
+                    self.reply(identifier, {"items": [{"id": "busy", "title": self.t(
+                        "正在处理截图，请稍后重试", "A screenshot is being processed; retry shortly")}], "cache": 0})
                 return
             self.child_busy = True
+            self.active_query = identifier
+            self.query_flow = True
             self.open_child(message)
             return
         if method == "cancel":
+            query_id = message.get("params", {}).get("queryId")
+            if self.waiting_query and query_id == self.waiting_query.get("params", {}).get("queryId", self.waiting_query.get("id")):
+                self.reply(self.waiting_query.get("id"), {"items": [], "cache": 0})
+                self.waiting_query = None
             self.write_child(message)
             return
         super().dispatch(message)
@@ -170,6 +243,10 @@ class Broker(App):
 
     def shutdown(self):
         self.running = False
+        if self.native_region:
+            self.native_region.close()
+            self.native_region = None
+        self.waiting_query = None
         if self.child and self.child.poll() is None:
             self.write_child({"method": "shutdown"})
             try:

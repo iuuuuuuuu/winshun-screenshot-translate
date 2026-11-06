@@ -15,6 +15,35 @@ def cjk(char):
     return "\u2e80" <= char <= "\u9fff" or "\uf900" <= char <= "\ufaff"
 
 
+def refine(blocks, candidates):
+    """Use the best overlapping second pass; preserve badges and genuine short prefixes."""
+    output = []
+    for block in blocks:
+        if re.fullmatch(r"\d+(?:[.,]\d+)*(?:[%+])?", block["text"].strip()):
+            output.append(block)
+            continue
+        x, y, width, height = block["box"]
+        def overlap(other):
+            a, b, c, d = other["box"]
+            return max(0, min(x + width, a + c) - max(x, a)) * max(0, min(y + height, b + d) - max(y, b))
+        candidate = max(candidates, key=overlap, default=None)
+        replacement = block
+        if candidate:
+            a, b, c, d = candidate["box"]
+            area = overlap(candidate)
+            prefix = block["text"][:-len(candidate["text"])].strip() if candidate["text"] else ""
+            symbol = prefix and all(not ch.isalpha() or ch in "\u4e3f\u4e28" for ch in prefix)
+            mixed = bool(re.fullmatch("[A-Z][0-9]", prefix)) and height >= d * 1.1
+            cleaner = (bool(re.match("^[A-Za-z]", candidate["text"])) and
+                       block["text"].lower().endswith(candidate["text"].lower()) and
+                       len(prefix) <= 3 and (symbol or mixed) and d * .4 <= a - x <= height * 2.5)
+            more_letters = sum(ch.isalpha() for ch in candidate["text"]) > sum(ch.isalpha() for ch in block["text"])
+            if area > width * height * .5 and area > c * d * .5 and (cleaner or more_letters):
+                replacement = candidate
+        output.append(replacement)
+    return output or candidates
+
+
 def group(words):
     rows = []
     for word in sorted(words, key=lambda w: (w["box"][1], w["box"][0])):

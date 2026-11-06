@@ -11,8 +11,10 @@ import time
 from services import LANGUAGES, Profiles, Translator, Usage, selected, target_for, detect
 
 PLUGIN_ID = "iuuuuuuuu.screenshot-translate"
-VERSION = "0.2.1"
+VERSION = "0.3.3"
 DEFAULTS = {"provider": "mymemory", "proxy": "", "target": "auto",
+            "fallbackEnabled": True, "fallbackRecoveryMinutes": 10,
+            "comparisonOrder": "translation-first", "closeOnOutsideClick": True,
             "shotMode": "multi", "shotHotkey": "Alt+Shift+T", "clipHotkey": "Alt+Shift+C", "selectionHotkey": ""}
 TRIGGER_ACTIONS = {"start-region", "start-full", "start-window", "retry-shot", "retry-clip", "read-selection"}
 
@@ -85,17 +87,16 @@ class App:
         self.settings, self.chinese, self.running = dict(DEFAULTS), True, True
         self.profiles = self.usage = self.translator = None
         self.send_lock, self.job = threading.Lock(), None
+        self.pending_retry = False
         self.tools, self.sequence, self.hotkeys = {}, 0, None
         self.cache, self.query_cancel, self.jobs = {}, {}, set()
         self.keywords = {"shot": "jst", "clip": "jft", "jsel": "jsel"}
         self.dirty, self.activity = False, time.monotonic()
         if not headless:
             import desktop
-            import tkinter as tk
-            from ui import Theme, style
+            from ui import Theme, style, create_root
             desktop.dpi_awareness()
-            self.root = tk.Tk()
-            self.root.withdraw()
+            self.root = create_root()
             self.theme = Theme()
             style(self.root, self.theme)
 
@@ -152,9 +153,11 @@ class App:
             return
         self.send({"jsonrpc": "2.0", "method": "winshun/hotkeys", "params": {"keys": keys}})
         def done(answer):
-            self.hotkeys = keys
-            if answer.get("errors"):
-                log("some host hotkeys could not be registered")
+            errors = answer.get("errors", {})
+            for key, code in errors.items():
+                log(f"hotkey: rejected key={key} code={code}")
+            self.hotkeys = keys if not errors else None
+            log(f"hotkeys: registered={len(keys) - len(errors)} requested={len(keys)}")
         self.tool("register_hotkeys", {"keys": keys}, done)
 
     def initialize(self, identifier, params):
@@ -170,7 +173,7 @@ class App:
             self.appearance(params.get("appearance", params))
         if self.host_hotkeys:
             self.register()
-        log(f"startup: version={VERSION} runtime=python ocr=short-lived-worker")
+        log(f"startup: version={VERSION} runtime=python ocr=short-lived-worker hostHotkeys={self.host_hotkeys}")
 
     def appearance(self, params):
         if "locale" in params:
@@ -181,6 +184,8 @@ class App:
             style(self.root, self.theme)
             if self.pin:
                 self.pin.redraw()
+            if self.config:
+                self.config.apply_theme()
 
     def dispatch(self, message):
         method, identifier, params = message.get("method", ""), message.get("id"), message.get("params") or {}
@@ -199,6 +204,9 @@ class App:
             self.initialize(identifier, params)
         elif method == "settingsChanged":
             self.settings = {**DEFAULTS, **params.get("settings", self.settings)}
+            if self.pin and not self.pin.closed:
+                self.pin.apply_preferences()
+                self.pin.redraw()
             if self.host_hotkeys:
                 self.register()
         elif method == "appearance":
@@ -214,24 +222,29 @@ class App:
         elif method == "hotkey":
             key = params.get("key", "").lower()
             if key and key == self.settings.get("shotHotkey", "").lower():
+                log("input: accepted route=shot")
                 self.start_shot("region")
             elif key:
                 for setting, command in (("clipHotkey", "clip"), ("selectionHotkey", "jsel")):
                     if key == self.settings.get(setting, "").lower():
+                        log("input: accepted route=" + command)
                         self.text_flow(command)
                         break
         elif method == "showSettings":
             self.reply(identifier, {})
-            if not self.headless:
-                from ui import Settings
-                if not self.config:
-                    self.config = Settings(self)
-                self.config.show()
+            self.show_settings()
         elif method in ("shutdown", "_eof"):
             self.shutdown()
             self.reply(identifier, {})
         else:
             self.reply(identifier, {})
+
+    def show_settings(self):
+        if not self.headless:
+            from ui import Settings
+            if not self.config:
+                self.config = Settings(self)
+            self.config.show()
 
     def query(self, identifier, params):
         command, text = params.get("command", ""), params.get("text", "").strip()
@@ -306,6 +319,10 @@ class App:
             except Exception as ex:
                 # Only controlled error messages reach UI; never raw request payloads.
                 failure = str(ex) if isinstance(ex, (ValueError, TimeoutError)) else "Operation failed. Check network or installed OCR languages."
+                log(f"operation: failed provider={self.active_provider()} type={type(ex).__name__}" +
+                    (f" http={failure[5:]}" if failure.startswith("HTTP ") and failure[5:].isdigit() else ""))
+                if failure == "HTTP 429":
+                    failure = self.t("\u670d\u52a1\u6682\u65f6\u9650\u6d41\uff0c\u8bf7\u7a0d\u540e\u91cd\u8bd5\u6216\u5207\u6362\u7ffb\u8bd1\u6e20\u9053\uff08HTTP 429\uff09", "Service rate limit reached. Retry later or choose another service (HTTP 429).")
             self.events.put(lambda: finish(result, failure))
         def finish(value, failure):
             self.jobs.discard(job)
@@ -315,6 +332,9 @@ class App:
             if not job.cancelled.is_set() and self.running:
                 done(value, failure)
             self.release_idle()
+            if self.pending_retry and self.running and self.job is None:
+                self.pending_retry = False
+                self.start_shot("region")
         job.thread = threading.Thread(target=run, daemon=True, name="translation")
         job.thread.start()
         return True
@@ -363,6 +383,13 @@ class App:
                     self.gate.end()
         self.root.after(delay, start)
 
+    def retry_shot(self):
+        if self.job:
+            self.pending_retry = True
+            self.job.cancel()
+        else:
+            self.start_shot("region")
+
     def capture_flow(self, rect):
         import desktop
         from ui import Pin
@@ -388,7 +415,9 @@ class App:
             self.ui_call(lambda: pin.update_status(self.t("\u6b63\u5728\u7ffb\u8bd1\u2026", "Translating\u2026")), job)
             parts = [block["text"] for block in blocks]
             source = detect("\n".join(parts))
-            data = self.translator.translate(self.profiles.current(snapshot), parts, source, target_for("\n".join(parts), snapshot["target"]))
+            target = target_for("\n".join(parts), snapshot["target"])
+            self.ui_call(lambda: pin.set_source(blocks, source, target), job)
+            data = self.translator.translate(self.profiles.current(snapshot), parts, source, target)
             return blocks, data
         def done(value, failure):
             if holder and not holder[0].closed:
@@ -456,7 +485,9 @@ class App:
 
     def cancel_pin(self, pin):
         if self.job and self.job.pin is pin:
-            self.job.cancel()
+            job, self.job = self.job, None
+            job.cancel()
+            self.gate.end()
 
     def release_idle(self):
         self.dirty, self.activity = True, time.monotonic()
@@ -495,6 +526,7 @@ class App:
 
     def shutdown(self):
         self.running = False
+        self.pending_retry = False
         for job in list(self.jobs):
             job.cancel()
         if self.pin:
@@ -524,11 +556,22 @@ class App:
 
 class UiWorkerApp(App):
     def __init__(self):
+        import desktop
+        self.process_job = desktop.disposable_process_job()
         super().__init__()
         self.started = False
         self.last_state = None
 
     def dispatch(self, message):
+        if message.get("method") == "ui/prepare-capture":
+            if self.pin:
+                self.pin.close()
+            return
+        if message.get("method") == "ui/capture":
+            self.started = True
+            if self.gate.begin():
+                self.capture_flow(tuple(message["params"]["rect"]))
+            return
         if message.get("method") == "ui/start":
             self.started = True
             params = message.get("params", {})
@@ -551,9 +594,21 @@ class UiWorkerApp(App):
         state = (self.gate.busy, closing)
         if self.last_state != state:
             self.last_state = state
-            self.send({"jsonrpc": "2.0", "method": "ui/state", "params": {"busy": self.gate.busy, "closing": closing}})
+            self.send({"jsonrpc": "2.0", "method": "ui/state", "params": {
+                "busy": self.gate.busy, "closing": closing, "started": self.started}})
         if closing and self.running:
             self.shutdown()
+
+    def run(self):
+        # This process owns only disposable windows, OCR children and requests.
+        # Cancellation must not wait for remote HTTP or interpreter finalizers.
+        threading.Thread(target=self.read, daemon=True, name="plugin-protocol").start()
+        self.root.after(0, self.tick)
+        self.root.mainloop()
+        self.shutdown()
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(0)
 
 
 if __name__ == "__main__":

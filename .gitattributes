@@ -4,4 +4,9 @@
 *.json text eol=lf
 *.md text eol=lf
 *.yml text eol=lf
+*.py text eol=lf
+*.qml text eol=lf
 *.wsplugin binary
+*.ttf binary
+*.png binary
+*.jpg binary
