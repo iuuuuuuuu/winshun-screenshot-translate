@@ -4,6 +4,9 @@ WinShun 截图翻译插件，使用 Windows OCR 识别文字，译文按文字�
 
 插件 ID：`iuuuuuuuu.screenshot-translate`。这是已收录到 WinShun 插件库的独立社区项目，当前版本 **0.3.3**。
 
+无需 Python 的 C++ / Qt Quick 原生候选版 **0.4.0** 见 [原生版说明](native/README.md)。
+原生版使用 WinShun 自带 Qt、原生贴图和系统 OCR；公开 Release 和官方索引暂仍为 0.3.3。
+
 ## 界面与安装
 
 使用 Qt/QML，复用 WinShun 的 FlatButton、InputBox、换行选择控件、主题颜色与 Phosphor 图标。设置窗口只编辑各渠道配置；启用渠道、共用代理、自动恢复间隔、对照顺序和点击外部关闭行为由 WinShun 基础插件面板管理。

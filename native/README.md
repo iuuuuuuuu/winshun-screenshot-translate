@@ -1,0 +1,77 @@
+# Screenshot Translate 0.4.0 — native Windows candidate
+
+原生 C++ / Qt Quick 版本，运行时不需要 Python、PySide6、PowerShell OCR 脚本或另装 Qt。
+小型启动器从 WinShun 提供的 `WS_APP_DIR` 加载宿主 Qt，系统 Windows OCR 在后台线程识别图片。
+支持 Windows 10/11 x64、WinShun 0.20.0+ 和至少一种 Windows OCR 语言包。
+本地构建使用 Qt 6.10 公共 API，验证运行库为已安装的 Qt 6.12。
+
+这是本地原生候选包。公开 v0.3.3 和官方插件库仍为 Python 版本；原生 EXE / DLL
+进入官方索引需要维护者接受新的二进制分发方式，原 PR 的脚本版本合并不等于原生许可。
+本包沿用社区 ID `iuuuuuuuu.screenshot-translate`。
+
+## 安装和回退
+
+在 WinShun 设置 → 插件 → 从压缩包安装，选择
+`iuuuuuuuu.screenshot-translate-0.4.0-native.wsplugin`。运行时不检查或启动 Python。
+WinShun 提供 Qt DLL，包内仅有启动器、应用 DLL 和文档；DLL 内包含 QML 控件与授权图标字体。
+现有渠道、热键、代理、偏好和 DPAPI 密钥格式保持兼容，不迁移或删除用户的数据目录。
+
+开发机安装脚本在 `dist/before-native-日期时间/` 完整备份旧入口，将清单最后写入，
+并逐文件校验。回退时可安装原 v0.3.3 包，或恢复备份中的 `plugin.json` 和旧文件。
+不要同时启用历史 `winshun.screenshot-translate` 和当前社区 ID。
+
+## 界面与操作
+
+- `Alt+Shift+T` / `jst` 框选；`Ctrl+Enter` 全屏；`Shift+Enter` 当前窗口。
+- `Alt+Shift+C` / `jft` 剪贴板或直接输入文字翻译；`jsel` 热键读取 UI Automation 选中文字。
+- 多屏分别创建完整原生蒙版，采用物理坐标；选区图像一直保持原像素尺寸。
+- 识别和翻译期间显示动画；工具条、设置、提示和语言菜单复用 WinShun 控件和 Phosphor 图标。
+- 贴图为 WinShun 的 Win32 分层窗口，拖动同步工具条，滚轮缩放，Ctrl+滚轮调透明度。
+  Esc、双击或关闭按钮立即关闭；点击外部关闭可配置，内部菜单和设置不触发关闭。
+- 对照上下排列，默认译文在上，顺序可在基础插件设置中修改。右键可复制、对照、保存或重新截图。
+  大图可通过滚轮缩小；长译文可在“完整译文”窗口查看、选中并复制。
+- 小型 QML 控件采用软件绘制，不建立每个窗口的 D3D 堆；宿主选择 GPU 渲染不影响这些控件。
+
+主渠道、共用代理、热键和偏好仍由 WinShun 基础插件面板管理。渠道配置页为平铺换行标签，
+浏览和保存配置不会切换主渠道。宿主基础卡片的长渠道组是否平铺仍由宿主版本决定；
+现有本地宿主修复见 `.host/`，原生包不修改 WinShun.exe。
+
+## 服务和数据
+
+保留 MyMemory、Google、Edge/Bing、translate.js、Microsoft、DeepL、OpenAI、DeepSeek、
+Doubao、Hunyuan。Google 保留浏览器请求头及多客户端重试；Edge 缓存七分钟凭据，取票
+失败后尝试 Bing。MyMemory 和 Google 的文字块最多并行四个；全部渠道测试最多并行三个，
+未配置密钥的付费渠道跳过，测试不自动降级或改变主渠道。
+
+自动降级默认开启。失败时间和配置指纹沿用 `service-health.json`，默认十分钟、
+可配置 1–1440 分钟；恢复间隔到后在下一次翻译重试，修改地址、代理或密钥立即重试。
+网络请求有总时限并每 25ms 检查取消；关闭窗口立即取消任务，不等待 HTTP 超时。
+使用官方翻译插件同类的 Windows WinHTTP 异步请求和系统 HTTPS，宿主不需要 Qt TLS 插件。
+划词读取异常也有超时，同一时间至多一次 UI Automation 读取，不会永久占用截图入口。
+
+截图留在本机内存；仅 OCR 文字发送到选择或降级的服务。密钥继续由当前用户的 Windows
+DPAPI 加密。日志不记录截图、OCR 文字、凭据或服务响应正文。免费入口仍可能限流或失效。
+长译文在原区域可能放不下；完整译文窗保留全部文字。复杂背景和不完整的 OCR 框可能留有残影。
+
+## 构建和验证
+
+```powershell
+.\native\build.ps1 -QtRoot <Qt6-msvc2022_64> -VsRoot <VisualStudio>
+python -B native/test_native.py --core
+python -B native/test_native.py
+python -B native/test_native.py --gpu
+python -B native/test_native.py --live
+python -B native/package.py
+```
+
+Python 仅用于开发时打包、测试和本机安装。测试子进程的 PATH 不含 Python，使用
+已安装 WinShun 的 Qt。UI 测试在从不切换到前台的独立桌面运行，使用合成截图、
+本地模拟服务和真实 Windows OCR；真实 Win32 窗口检查双屏蒙版、贴图像素、对照、
+菜单、关闭按钮、原始输入线程和热键协议。独立桌面不提供桌面 BitBlt，截图像素注入
+仅存在于受独立桌面约束的预览入口；正常入口始终使用 Win32 BitBlt 抓屏。
+`--gpu` 验证宿主 GPU 设置下的小控件软件渲染兼容性。
+
+核心验证覆盖九个服务请求格式、UTF-8 分块、加号和百分号、DPAPI 双向兼容、
+失败记忆、恢复、配置变化和取消。Edge 的在线认证和 Bing 入口另用合成文字验证。
+付费渠道仅测试本地协议模拟，不使用真实用户密钥计费。
+Qt/WinShun 和 Phosphor 的许可见 THIRD_PARTY_NOTICES.md 和 native/vendor/LICENSE。
