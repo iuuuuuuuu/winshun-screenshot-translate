@@ -130,7 +130,16 @@ void App::registerKeys(bool retry)
     // Like the official capture plugin, support both the host's registration
     // service and standalone plugin hosts which do not advertise that service.
     m_protocol.notify("winshun/hotkeys",args);
-    if(m_hostHotkeys){m_protocol.tool("register_hotkeys",args);return;}
+    if(m_hostHotkeys){
+        m_protocol.tool("register_hotkeys",args,[this,revision,count=keys.size()](QJsonValue result,QString error){
+            if(revision!=m_keyRevision)return;
+            if(!error.isEmpty()){m_hostHotkeys=false;registerKeys();return;}
+            auto failures=result.toObject().value("errors").toObject();
+            std::fprintf(stderr,"[screenshot-translate] hotkeys=host registered=%lld failed=%lld\n",
+                static_cast<long long>(count-failures.size()),static_cast<long long>(failures.size()));
+            if(!failures.isEmpty())m_protocol.notify("winshun/notify",{{"message","部分截图翻译热键注册失败；请检查快捷键冲突"}});
+        });return;
+    }
     if(!m_keyWindow){
         WNDCLASSW type{};type.lpfnWndProc=hotkeyProc;type.hInstance=GetModuleHandleW(nullptr);
         type.lpszClassName=L"ScreenshotTranslate.Hotkeys";RegisterClassW(&type);
