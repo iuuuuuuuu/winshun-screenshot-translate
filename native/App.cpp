@@ -78,7 +78,7 @@ App::App(ws::captureplugin::Protocol& protocol,QString appDir,QJsonObject initia
 void App::defaults(const QJsonObject& settings)
 {
     m_settings={{"provider","mymemory"},{"proxy",""},{"target","auto"},{"fallbackEnabled",true},{"fallbackRecoveryMinutes",10},
-        {"comparisonOrder","translation-first"},{"closeOnOutsideClick",true},{"shotMode","multi"},{"shotHotkey","Alt+Shift+T"},{"clipHotkey","Alt+Shift+C"},{"selectionHotkey","Alt+Shift+S"},
+        {"comparisonOrder","translation-first"},{"closeOnOutsideClick",true},{"shotMode","multi"},{"shotHotkey","Alt+Shift+T"},{"clipHotkey","Alt+Shift+C"},{"selectionHotkey","Alt+Shift+W"},
         {"wordOcrHotkey","Alt+Shift+O"}};
     for(auto it=settings.begin();it!=settings.end();++it)m_settings[it.key()]=it.value();
 }
@@ -140,13 +140,17 @@ void App::registerKeys(bool retry)
     // service and standalone plugin hosts which do not advertise that service.
     m_protocol.notify("winshun/hotkeys",args);
     if(m_hostHotkeys){
-        m_protocol.tool("register_hotkeys",args,[this,revision,count=keys.size()](QJsonValue result,QString error){
+        m_protocol.tool("register_hotkeys",args,[this,revision,retry,count=keys.size()](QJsonValue result,QString error){
             if(revision!=m_keyRevision)return;
             if(!error.isEmpty()){m_hostHotkeys=false;registerKeys();return;}
             auto failures=result.toObject().value("errors").toObject();
             std::fprintf(stderr,"[screenshot-translate] hotkeys=host registered=%lld failed=%lld\n",
                 static_cast<long long>(count-failures.size()),static_cast<long long>(failures.size()));
-            if(!failures.isEmpty())m_protocol.notify("winshun/notify",{{"message","部分截图翻译热键注册失败；请检查快捷键冲突"}});
+            for(auto it=failures.begin();it!=failures.end();++it)
+                std::fprintf(stderr,"[screenshot-translate] hotkey=%s registration_error=%d\n",qPrintable(it.key()),it.value().toInt());
+            if(!failures.isEmpty()&&!retry)QTimer::singleShot(300,this,[this,revision]{if(revision==m_keyRevision)registerKeys(true);});
+            else if(!failures.isEmpty())m_protocol.notify("winshun/notify",{{"message",
+                "翻译快捷键 "+failures.keys().join("、")+" 注册失败，请在插件设置中更换"}});
         });return;
     }
     if(!m_keyWindow){

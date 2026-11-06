@@ -180,7 +180,7 @@ def main():
             responses={row["id"]:row["result"] for row in messages if "id" in row and "result" in row}
             keys=[row["params"]["arguments"]["keys"] for row in messages if row.get("method")=="winshun/tool"
                   and row["params"]["name"]=="register_hotkeys"]
-            assert keys==[["Alt+Shift+T","Alt+Shift+C","Alt+Shift+S","Alt+Shift+O"]],keys
+            assert keys==[["Alt+Shift+T","Alt+Shift+C","Alt+Shift+W","Alt+Shift+O"]],keys
             for flag in ("wordRealEditSelection","wordClipboard","wordPinnedSelection","wordCancellation","wordMouseOcr","wordOutsideDismiss"):
                 assert report[flag], report
             for request in (200,201,202):assert responses[request]["items"]==[],responses

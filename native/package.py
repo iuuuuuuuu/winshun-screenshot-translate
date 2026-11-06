@@ -20,7 +20,7 @@ for setting in manifest["settings"]:
     if setting["key"]=="clipHotkey":
         setting["hint"]={"zh":"在鼠标附近打开词义窗口；清空关闭","en":"Open a word popup near the pointer; clear to disable"}
     if setting["key"]=="selectionHotkey":
-        setting["default"]="Alt+Shift+S"
+        setting["default"]="Alt+Shift+W"
         setting["hint"]={"zh":"在选区旁显示词义；固定后跟随新选区。不支持划词的应用可用鼠标 OCR",
             "en":"Show a popup by the selection; pin to follow new selections. Use pointer OCR in unsupported apps"}
 manifest["settings"].append({"key":"wordOcrHotkey","type":"hotkey",
