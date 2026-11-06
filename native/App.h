@@ -36,7 +36,8 @@ private:
     View view(const QString& file,Backend* backend);
     void defaults(const QJsonObject& settings);
     void appearance(const QJsonObject& params);
-    void registerKeys();
+    void registerKeys(bool retry=false);
+    static LRESULT CALLBACK hotkeyProc(HWND,UINT,WPARAM,LPARAM);
     void query(const QJsonValue& id,const QJsonObject& params);
     QJsonArray results(const QJsonObject& data,const QString& command);
     void shot(const QString& kind,int delay=0);
@@ -80,5 +81,8 @@ private:
     std::vector<Cancel> m_testCancels;
     int m_testRunning=0;
     bool m_batch=false;
+    HWND m_keyWindow=nullptr;
+    std::map<int,QString> m_nativeKeys;
+    quint64 m_keyRevision=0;
 };
 }

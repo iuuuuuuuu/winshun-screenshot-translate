@@ -23,6 +23,8 @@ WinShun 提供 Qt DLL，包内仅有启动器、应用 DLL 和文档；DLL 内�
 ## 界面与操作
 
 - `Alt+Shift+T` / `jst` 框选；`Ctrl+Enter` 全屏；`Shift+Enter` 当前窗口。
+- 宿主支持时使用热键托管；独立插件宿主不提供此能力时，沿用官方截图插件的
+  Windows RegisterHotKey 兼容方式。修改设置会释放旧热键并重新注册。
 - `Alt+Shift+C` / `jft` 剪贴板或直接输入文字翻译；`jsel` 热键读取 UI Automation 选中文字。
 - 多屏分别创建完整原生蒙版，采用物理坐标；选区图像一直保持原像素尺寸。
 - 识别和翻译期间显示动画；工具条、设置、提示和语言菜单复用 WinShun 控件和 Phosphor 图标。

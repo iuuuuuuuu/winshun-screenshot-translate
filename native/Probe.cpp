@@ -213,6 +213,19 @@ void Probe::run(App& app,const QJsonObject& params)
         for(int i=0;i<5;++i)app.dispatch({},"hotkey",QJsonObject{{"key","Alt+Shift+T"}});
         pump(20);check(app.m_selector.get()==first,"busy repeated hotkeys ignored");
         report["hotkeyProtocol"]=true;app.closePin();
+        // Hotkey uniqueness can span desktops in the window station. Use
+        // probe-only chords rather than competing with the user's real keys.
+        app.m_settings["shotHotkey"]="Ctrl+Alt+Shift+F23";
+        app.m_settings["clipHotkey"]="Ctrl+Alt+Shift+F24";
+        app.m_hostHotkeys=false;app.registerKeys();
+        check(app.m_nativeKeys.size()==2,"native fallback registers both Windows hotkeys");
+        PostMessageW(app.m_keyWindow,WM_HOTKEY,1,0);
+        check(until([&]{return bool(app.m_selector);}),"WM_HOTKEY opens selector");app.closePin();
+        app.m_settings["shotHotkey"]="Alt+Shift+F8";app.m_settings["clipHotkey"]="";app.registerKeys();
+        check(app.m_nativeKeys.size()==1,"native hotkey configuration refresh");
+        check(RegisterHotKey(app.m_keyWindow,20,MOD_CONTROL|MOD_ALT|MOD_SHIFT|MOD_NOREPEAT,VK_F23),"old hotkey released");
+        UnregisterHotKey(app.m_keyWindow,20);
+        report["nativeHotkeyFallback"]=true;
         pump(200);report["closedMemory"]=memory();
         report["passed"]=true;code=0;
     }catch(const std::exception& e){report["passed"]=false;report["error"]=QString::fromUtf8(e.what());}

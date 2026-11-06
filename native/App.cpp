@@ -1,4 +1,5 @@
 #include "App.h"
+#include "CaptureKeys.h"
 #include <QClipboard>
 #include <QDateTime>
 #include <QGuiApplication>
@@ -65,7 +66,7 @@ App::App(ws::captureplugin::Protocol& protocol,QString appDir,QJsonObject initia
     QObject::connect(&m_pinBackend,&Backend::invoked,this,&App::pinAction);
     QObject::connect(&m_configBackend,&Backend::invoked,this,&App::configAction);
     QObject::connect(&m_position,&QTimer::timeout,this,&App::place);m_position.setInterval(50);
-    if(m_hostHotkeys)registerKeys();
+    registerKeys();
 }
 void App::defaults(const QJsonObject& settings)
 {
@@ -102,14 +103,54 @@ void App::dispose(View& v)
     if(v.window)v.window->hide();
     if(v.engine){auto engine=v.engine.release();engine->deleteLater();}v.window=nullptr;
 }
-void App::registerKeys()
+LRESULT CALLBACK App::hotkeyProc(HWND window,UINT message,WPARAM key,LPARAM data)
 {
+    auto self=reinterpret_cast<App*>(GetWindowLongPtrW(window,GWLP_USERDATA));
+    if(message==WM_NCCREATE){
+        self=static_cast<App*>(reinterpret_cast<CREATESTRUCTW*>(data)->lpCreateParams);
+        SetWindowLongPtrW(window,GWLP_USERDATA,reinterpret_cast<LONG_PTR>(self));
+    }
+    if(self&&message==WM_HOTKEY){
+        if(auto found=self->m_nativeKeys.find(int(key));found!=self->m_nativeKeys.end())
+            self->dispatch({},"hotkey",{{"key",found->second}});
+        return 0;
+    }
+    return DefWindowProcW(window,message,key,data);
+}
+void App::registerKeys(bool retry)
+{
+    auto revision=++m_keyRevision;
+    for(auto [id,key]:m_nativeKeys)UnregisterHotKey(m_keyWindow,id);
+    m_nativeKeys.clear();
     QStringList keys;
     for(auto setting:{"shotHotkey","clipHotkey","selectionHotkey"}){
         auto key=m_settings.value(setting).toString().trimmed();if(!key.isEmpty()&&!keys.contains(key))keys<<key;
     }
     auto args=QJsonObject{{"keys",QJsonArray::fromStringList(keys)}};
-    m_protocol.notify("winshun/hotkeys",args);m_protocol.tool("register_hotkeys",args);
+    // Like the official capture plugin, support both the host's registration
+    // service and standalone plugin hosts which do not advertise that service.
+    m_protocol.notify("winshun/hotkeys",args);
+    if(m_hostHotkeys){m_protocol.tool("register_hotkeys",args);return;}
+    if(!m_keyWindow){
+        WNDCLASSW type{};type.lpfnWndProc=hotkeyProc;type.hInstance=GetModuleHandleW(nullptr);
+        type.lpszClassName=L"ScreenshotTranslate.Hotkeys";RegisterClassW(&type);
+        m_keyWindow=CreateWindowExW(0,type.lpszClassName,L"",0,0,0,0,0,HWND_MESSAGE,nullptr,type.hInstance,this);
+    }
+    int id=1;bool failed=false;
+    for(auto key:keys){
+        auto parsed=ws::capture::CaptureKeys::parse(key);
+        auto native=parsed?ws::capture::CaptureKeys::toVirtualKey(*parsed):std::nullopt;
+        if(m_keyWindow&&native&&RegisterHotKey(m_keyWindow,id,native->modifiers|MOD_NOREPEAT,native->vk))
+            m_nativeKeys[id]=key;
+        else{
+            failed=true;
+            std::fprintf(stderr,"[screenshot-translate] hotkey registration failed id=%d error=%lu\n",id,GetLastError());
+        }
+        ++id;
+    }
+    std::fprintf(stderr,"[screenshot-translate] hotkeys=windows registered=%zu\n",m_nativeKeys.size());
+    if(failed&&!retry)QTimer::singleShot(300,this,[this,revision]{if(revision==m_keyRevision)registerKeys(true);});
+    else if(failed)m_protocol.notify("winshun/notify",{{"message","部分截图翻译热键注册失败；请检查快捷键冲突"}});
 }
 QJsonArray App::results(const QJsonObject& data,const QString& command)
 {
@@ -187,7 +228,7 @@ void App::dispatch(const QJsonValue& id,const QString& method,const QJsonObject&
             }m_protocol.respond(id,QJsonObject{{"effects",effects}});
         }else if(method=="showSettings"){showSettings();if(hasId(id))m_protocol.respond(id,QJsonObject());}
         else if(method=="settingsChanged"){
-            defaults(params.value("settings").toObject());if(m_hostHotkeys)registerKeys();
+            defaults(params.value("settings").toObject());registerKeys();
             if(m_pin){render();m_pinOpened=GetTickCount();}
         }else if(method=="appearance")appearance(params);
         else if(method=="shutdown"){
