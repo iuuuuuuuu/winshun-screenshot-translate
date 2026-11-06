@@ -45,7 +45,7 @@ set_source_files_properties("${CMAKE_CURRENT_BINARY_DIR}/nativeui/Settings.qml" 
 set_source_files_properties("${CMAKE_CURRENT_BINARY_DIR}/nativeui/Toolbar.qml" PROPERTIES QT_RESOURCE_ALIAS Toolbar.qml)
 qt_add_resources(ScreenshotTranslateApp "screens" PREFIX "/ui" BASE "${CMAKE_CURRENT_SOURCE_DIR}"
     FILES "${CMAKE_CURRENT_BINARY_DIR}/nativeui/Settings.qml" "${CMAKE_CURRENT_BINARY_DIR}/nativeui/Toolbar.qml"
-        qml/Status.qml qml/Text.qml qml/PinMenu.qml)
+        qml/Status.qml qml/Text.qml qml/PinMenu.qml qml/Word.qml)
 qt_add_resources(ScreenshotTranslateApp "fonts" PREFIX "/fonts" BASE "${CMAKE_CURRENT_SOURCE_DIR}/../assets"
     FILES ../assets/Phosphor.ttf)
 option(BUILD_NATIVE_TESTS "Build native integration test driver" ON)

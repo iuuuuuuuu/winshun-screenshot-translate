@@ -289,10 +289,115 @@ void Probe::run(App& app,const QJsonObject& params)
         for(int i=0;i<5;++i)app.dispatch({},"hotkey",QJsonObject{{"key","Alt+Shift+T"}});
         pump(20);check(app.m_selector.get()==first,"busy repeated hotkeys ignored");
         report["hotkeyProtocol"]=true;app.closePin();
+        // Read a real Windows EDIT selection through an explicit HWND on the
+        // private desktop, never through the Owner's focused element.
+        auto parent=CreateWindowExW(0,L"STATIC",L"Selection fixture",WS_OVERLAPPEDWINDOW|WS_VISIBLE,
+            500,300,400,160,nullptr,nullptr,GetModuleHandleW(nullptr),nullptr);
+        auto edit=CreateWindowExW(0,L"EDIT",L"Hello world",WS_CHILD|WS_VISIBLE|ES_MULTILINE,
+            20,20,340,70,parent,nullptr,GetModuleHandleW(nullptr),nullptr);
+        check(parent&&edit,"native selection fixture");
+        SendMessageW(edit,EM_SETSEL,0,5);
+        struct ReadResult {Selection selection;QString error;std::atomic_bool ready=false;};
+        auto read=std::make_shared<ReadResult>();
+        std::thread([read,edit]{
+            try{read->selection=selectionAt(POINT{},edit);}catch(const std::exception& e){read->error=e.what();}
+            read->ready=true;
+        }).detach();
+        check(until([&]{return read->ready.load();},6000),"real Windows selection read completes");
+        check(read->error.isEmpty()&&read->selection.text=="Hello"&&!read->selection.area.isEmpty(),"real Windows selection text and bounds");
+        DestroyWindow(parent);report["wordRealEditSelection"]=true;
+        // Production hotkey routes, actual QML windows and Windows OCR. Only
+        // input text/cursor/pixels are injected; never alter the Owner clipboard.
+        app.m_settings["provider"]="google";
+        app.m_mouse=[] {return QPoint(400,180);};
+        app.m_readClipboard=[] {return QString("Hello + 100%");};
+        app.dispatch({},"hotkey",{{"key","Alt+Shift+C"}});
+        check(app.m_word.window&&app.m_word.window->isVisible(),"clipboard hotkey opens popup immediately");
+        check(app.m_word.window->flags().testFlag(Qt::WindowDoesNotAcceptFocus),"word popup preserves selection focus");
+        check(until([&]{return !app.m_wordBackend.values["loading"].toBool();}),"clipboard popup translation");
+        check(app.m_wordBackend.values["translatedText"].toString()=="你好 + 100%","clipboard popup meaning");
+        auto sourceFont=app.m_word.window->findChild<QQuickItem*>("word-source")->property("font").value<QFont>().family();
+        check(sourceFont=="Segoe UI","word popup uses Windows body font");
+        report["wordFontFamily"]=sourceFont;
+        check(app.m_word.window->width()<=340&&app.m_word.window->height()<220,"word popup is compact");
+        app.m_word.window->grabWindow().save(out+"/word-clipboard.png");
+        report["wordClipboard"]=true;
+        check(until([&]{return app.m_raw&&app.m_raw->m_hwnd.load();}),"word raw input");
+        app.m_raw->m_read=&readRaw;app.m_raw->m_cursor=&cursor;app.m_wordOpened=GetTickCount()-500;
+        rawPoint={-30000,-30000};rawFlags=RI_MOUSE_LEFT_BUTTON_DOWN;
+        app.m_settings["closeOnOutsideClick"]=false;
+        PostMessageW(app.m_raw->m_hwnd,WM_INPUT,0,1);pump(30);
+        check(app.m_word.window->isVisible(),"word outside close configurable");
+        app.m_settings["closeOnOutsideClick"]=true;
+        PostMessageW(app.m_raw->m_hwnd,WM_INPUT,0,1);
+        check(until([&]{return !app.m_word.window->isVisible();},300),"unpinned word outside close");
+        report["wordOutsideDismiss"]=true;
+        auto selectedIndex=std::make_shared<std::atomic_int>(0);
+        app.m_readSelection=[selectedIndex](POINT){
+            return Selection{selectedIndex->load()==0?"Hello + 100%":"Settings",QRect(540,220,100,30)};
+        };
+        app.m_settings["selectionHotkey"]="Alt+Shift+S";
+        app.dispatch({},"hotkey",{{"key","Alt+Shift+S"}});
+        check(until([&]{return !app.m_wordBackend.values["loading"].toBool();}),"selection popup translation");
+        check(app.m_wordBackend.values["translatedText"].toString()=="你好 + 100%","selection source translated");
+        check(app.m_wordSelection==QRect(540,220,100,30),"selection bounds position popup");
+        app.m_word.window->grabWindow().save(out+"/word-selection.png");
+        click(app.m_word.window,app.m_word.window->findChild<QQuickItem*>("word-pin"));
+        check(app.m_wordPinned&&app.m_followSelection.isActive(),"pin enables selection following");
+        auto fixedPosition=app.m_word.window->position();
+        check(until([&]{return app.m_raw&&app.m_raw->m_hwnd.load();}),"pinned raw input");
+        app.m_raw->m_read=&readRaw;app.m_raw->m_cursor=&cursor;app.m_wordOpened=GetTickCount()-500;
+        PostMessageW(app.m_raw->m_hwnd,WM_INPUT,0,1);pump(30);
+        check(app.m_word.window->isVisible(),"pinned popup survives external click");
+        app.m_wordCancel->store(true); // a timed-out translation must not stop following
+        selectedIndex->store(1);
+        check(until([&]{return app.m_wordBackend.values["translatedText"].toString()=="设置";},4000),"pinned new selection auto replaces meaning");
+        check(app.m_word.window->position()==fixedPosition,"pinned popup stays in position");
+        app.m_word.window->grabWindow().save(out+"/word-pinned.png");
+        report["wordPinnedSelection"]=true;
+        app.closeWord();check(!app.m_followSelection.isActive(),"closing stops follow polling");
+        app.m_settings["selectionHotkey"]="";
+        app.m_settings["provider"]="mymemory";app.textFlow("clip");pump(70);
+        check(app.m_wordBackend.values["loading"].toBool(),"blocked word request loading");
+        app.m_word.window->grabWindow().save(out+"/word-loading.png");
+        auto oldWordCancel=app.m_wordCancel;
+        app.m_settings["provider"]="google";app.translateWord("Settings");
+        check(oldWordCancel->load(),"new word cancels old request");
+        check(until([&]{return app.m_wordBackend.values["translatedText"].toString()=="设置";}),"latest word result wins");
+        pump(100);check(app.m_wordSource=="Settings","stale result cannot overwrite current word");
+        app.closeWord();
+        app.m_settings["provider"]="mymemory";app.textFlow("clip");pump(70);auto closeCancel=app.m_wordCancel;timer.restart();
+        click(app.m_word.window,app.m_word.window->findChild<QQuickItem*>("word-close"));
+        check(!app.m_word.window->isVisible()&&closeCancel->load()&&!app.m_busy,"word close cancels without blocking screenshot");
+        report["wordCloseWhileBlockedMs"]=double(timer.elapsed());report["wordCancellation"]=true;
+        app.m_settings["provider"]="google";
+        struct WordResult {QList<Block> words;QString error;std::atomic_bool ready=false;};
+        auto recognized=std::make_shared<WordResult>();
+        std::thread([recognized,fixture]{
+            try{recognized->words=recognize(fixture,std::make_shared<std::atomic_bool>(false),false);}
+            catch(const std::exception& e){recognized->error=e.what();}
+            recognized->ready=true;
+        }).detach();
+        check(until([&]{return recognized->ready.load();},6000)&&recognized->error.isEmpty(),"background Windows word OCR");
+        auto words=recognized->words;
+        Block settingsWord;for(auto w:words)if(w.text=="Settings")settingsWord=w;
+        check(!settingsWord.text.isEmpty(),"real OCR retains individual words");
+        check(wordAt(words,settingsWord.box.center()).text=="Settings","word target by rectangle");
+        check(wordAt(words,QPointF(800,350)).text.isEmpty(),"OCR blank area never picks remote word");
+        auto wordPoint=settingsWord.box.center().toPoint()+QPoint(100,100);
+        app.m_mouse=[wordPoint]{return wordPoint;};
+        app.dispatch({},"hotkey",{{"key","Alt+Shift+O"}});
+        check(until([&]{return app.m_word.window->isVisible()&&!app.m_wordBackend.values["loading"].toBool();},10000),"mouse OCR popup complete");
+        check(app.m_wordSource=="Settings"&&app.m_wordBackend.values["translatedText"].toString()=="设置","mouse OCR translates just pointed word");
+        app.m_word.window->grabWindow().save(out+"/word-ocr.png");
+        report["wordMouseOcr"]=true;app.closeWord();
+        app.m_readClipboard=[] {return QString();};app.textFlow("clip");
+        check(!app.m_wordBackend.values["loading"].toBool()&&!app.m_wordBackend.values["status"].toString().isEmpty(),"empty clipboard has visible error");app.closeWord();
         // Hotkey uniqueness can span desktops in the window station. Use
         // probe-only chords rather than competing with the user's real keys.
         app.m_settings["shotHotkey"]="Ctrl+Alt+Shift+F23";
         app.m_settings["clipHotkey"]="Ctrl+Alt+Shift+F24";
+        app.m_settings["wordOcrHotkey"]="";
         app.m_hostHotkeys=false;app.registerKeys();
         check(app.m_nativeKeys.size()==2,"native fallback registers both Windows hotkeys");
         PostMessageW(app.m_keyWindow,WM_HOTKEY,1,0);
@@ -306,7 +411,7 @@ void Probe::run(App& app,const QJsonObject& params)
         report["passed"]=true;code=0;
     }catch(const std::exception& e){report["passed"]=false;report["error"]=QString::fromUtf8(e.what());}
     try{atomicJson(out+"/report.json",report);}catch(...){}
-    app.closePin();app.configAction("close",{});
+    app.closeWord();app.closePin();app.configAction("close",{});
     ExitProcess(code);
 }
 }

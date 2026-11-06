@@ -10,11 +10,14 @@
 namespace st {
 struct Block { QString text; QRectF box; double glyphHeight=16; };
 QList<Block> groupWords(QList<Block> words);
-QList<Block> recognize(const QImage& image, Cancel cancel);
+QList<Block> recognize(const QImage& image, Cancel cancel, bool grouped=true);
+Block wordAt(const QList<Block>& words,QPointF point);
 QImage capture(const QRect& area);
 QRect virtualScreen();
 QRect monitorRect(POINT point, bool work = false);
 QString selectedText();
+struct Selection { QString text; QRect area; };
+Selection selectionAt(POINT point,HWND target=nullptr);
 QImage translatedImage(const QImage& source, const QList<Block>& blocks, const QStringList& segments, bool dark);
 QImage textImage(const QString& text, int width, bool dark);
 QImage comparisonImage(const QImage& source,const QImage& translated,bool translationFirst,bool dark,bool chinese=true);

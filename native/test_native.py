@@ -180,11 +180,14 @@ def main():
             responses={row["id"]:row["result"] for row in messages if "id" in row and "result" in row}
             keys=[row["params"]["arguments"]["keys"] for row in messages if row.get("method")=="winshun/tool"
                   and row["params"]["name"]=="register_hotkeys"]
-            assert keys==[["Alt+Shift+T","Alt+Shift+C"]],keys
+            assert keys==[["Alt+Shift+T","Alt+Shift+C","Alt+Shift+S","Alt+Shift+O"]],keys
+            for flag in ("wordRealEditSelection","wordClipboard","wordPinnedSelection","wordCancellation","wordMouseOcr","wordOutsideDismiss"):
+                assert report[flag], report
             for request in (200,201,202):assert responses[request]["items"]==[],responses
             assert responses[203]["items"][0]["title"]=="你好 + 100%",responses[203]
             print(json.dumps({k:report[k] for k in ("passed","qtVersion","pythonLoaded","uiRenderer","hostRenderer",
-                "selectorShowMs","outsideDismissMs","closeWhileBlockedMs","hotkeyProtocol","nativeHotkeyFallback","queryProtocol","closedMemory")},ensure_ascii=True))
+                "selectorShowMs","outsideDismissMs","closeWhileBlockedMs","hotkeyProtocol","nativeHotkeyFallback","queryProtocol",
+                "wordClipboard","wordPinnedSelection","wordMouseOcr","wordCloseWhileBlockedMs","closedMemory")},ensure_ascii=True))
     server.shutdown()
 if __name__ == "__main__":
     main()

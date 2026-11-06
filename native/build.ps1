@@ -1,7 +1,8 @@
 param(
     [string]$QtRoot = '',
     [string]$VsRoot = 'D:\VisualStudio\Product',
-    [string]$Output = ''
+    [string]$Output = '',
+    [switch]$Clean
 )
 $ErrorActionPreference = 'Stop'
 if (-not $QtRoot) { $QtRoot = Join-Path $PSScriptRoot '..\.host\qt\6.10.0\msvc2022_64' }
@@ -13,5 +14,7 @@ $cmake = Join-Path $VsRoot 'Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\b
 $ninja = Join-Path $VsRoot 'Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja\ninja.exe'
 & $cmake -S $PSScriptRoot -B $Output -G Ninja "-DCMAKE_MAKE_PROGRAM=$ninja" "-DCMAKE_PREFIX_PATH=$QtRoot" -DCMAKE_BUILD_TYPE=Release
 if ($LASTEXITCODE) { throw 'Native CMake configuration failed' }
-& $cmake --build $Output --parallel 4
+$nativeBuildArgs = @('--build', $Output, '--parallel', '4')
+if ($Clean) { $nativeBuildArgs += '--clean-first' }
+& $cmake @nativeBuildArgs
 if ($LASTEXITCODE) { throw 'Native build failed' }

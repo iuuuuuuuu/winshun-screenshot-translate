@@ -66,12 +66,20 @@ App::App(ws::captureplugin::Protocol& protocol,QString appDir,QJsonObject initia
     QObject::connect(&m_pinBackend,&Backend::invoked,this,&App::pinAction);
     QObject::connect(&m_configBackend,&Backend::invoked,this,&App::configAction);
     QObject::connect(&m_position,&QTimer::timeout,this,&App::place);m_position.setInterval(50);
+    m_readClipboard=[] {return QGuiApplication::clipboard()->text().trimmed();};
+    m_mouse=[] {POINT p{};GetPhysicalCursorPos(&p);return QPoint(p.x,p.y);};
+    m_wordBackend.update({{"chinese",m_chinese},{"dark",m_dark},{"pinned",false},{"loading",false},
+        {"sourceText",""},{"translatedText",""},{"status",""},{"provider",""},{"mode","clip"}});
+    QObject::connect(&m_wordBackend,&Backend::invoked,this,&App::wordAction);
+    m_followSelection.setInterval(450);
+    QObject::connect(&m_followSelection,&QTimer::timeout,this,[this]{readSelection(true);});
     registerKeys();
 }
 void App::defaults(const QJsonObject& settings)
 {
     m_settings={{"provider","mymemory"},{"proxy",""},{"target","auto"},{"fallbackEnabled",true},{"fallbackRecoveryMinutes",10},
-        {"comparisonOrder","translation-first"},{"closeOnOutsideClick",true},{"shotMode","multi"},{"shotHotkey","Alt+Shift+T"},{"clipHotkey","Alt+Shift+C"},{"selectionHotkey",""}};
+        {"comparisonOrder","translation-first"},{"closeOnOutsideClick",true},{"shotMode","multi"},{"shotHotkey","Alt+Shift+T"},{"clipHotkey","Alt+Shift+C"},{"selectionHotkey","Alt+Shift+S"},
+        {"wordOcrHotkey","Alt+Shift+O"}};
     for(auto it=settings.begin();it!=settings.end();++it)m_settings[it.key()]=it.value();
 }
 void App::appearance(const QJsonObject& params)
@@ -83,6 +91,7 @@ void App::appearance(const QJsonObject& params)
     m_pinBackend.update({{"chinese",m_chinese},{"dark",m_dark},{"sourceLabels",labels}});
     auto serviceNames=names;if(m_chinese){serviceNames[4]="微软";serviceNames[8]="豆包";serviceNames[9]="混元";}
     m_configBackend.update({{"chinese",m_chinese},{"dark",m_dark},{"names",serviceNames}});
+    m_wordBackend.update({{"chinese",m_chinese},{"dark",m_dark}});
     if(m_pin)render();
 }
 View App::view(const QString& file,Backend* backend)
@@ -123,7 +132,7 @@ void App::registerKeys(bool retry)
     for(auto [id,key]:m_nativeKeys)UnregisterHotKey(m_keyWindow,id);
     m_nativeKeys.clear();
     QStringList keys;
-    for(auto setting:{"shotHotkey","clipHotkey","selectionHotkey"}){
+    for(auto setting:{"shotHotkey","clipHotkey","selectionHotkey","wordOcrHotkey"}){
         auto key=m_settings.value(setting).toString().trimmed();if(!key.isEmpty()&&!keys.contains(key))keys<<key;
     }
     auto args=QJsonObject{{"keys",QJsonArray::fromStringList(keys)}};
@@ -213,12 +222,12 @@ void App::dispatch(const QJsonValue& id,const QString& method,const QJsonObject&
             auto it=m_queries.find(params.value("queryId").toInt());
             if(it!=m_queries.end()){it->second.second->store(true);m_protocol.respond(it->second.first,QJsonObject{{"items",QJsonArray()}});m_queries.erase(it);}
         }else if(method=="hotkey"){
-            if(m_busy)return;
             auto key=params.value("key").toString();
             if(key.trimmed().isEmpty())return;
             if(key.compare(m_settings.value("shotHotkey").toString(),Qt::CaseInsensitive)==0)shot("region");
             else if(key.compare(m_settings.value("clipHotkey").toString(),Qt::CaseInsensitive)==0)textFlow("clip");
             else if(!key.isEmpty()&&key.compare(m_settings.value("selectionHotkey").toString(),Qt::CaseInsensitive)==0)textFlow("jsel");
+            else if(key.compare(m_settings.value("wordOcrHotkey").toString(),Qt::CaseInsensitive)==0)textFlow("ocr");
         }else if(method=="action"){
             QString action=params.value("action").toString();QJsonArray effects;
             if(action.startsWith("copy-")){
@@ -241,7 +250,7 @@ void App::dispatch(const QJsonValue& id,const QString& method,const QJsonObject&
             if(m_pin){render();m_pinOpened=GetTickCount();}
         }else if(method=="appearance")appearance(params);
         else if(method=="shutdown"){
-            if(hasId(id))m_protocol.respond(id,QJsonObject());closePin();dispose(m_config);ExitProcess(0);
+            if(hasId(id))m_protocol.respond(id,QJsonObject());closeWord();closePin();dispose(m_config);ExitProcess(0);
         }else if(hasId(id))m_protocol.respond(id,QJsonObject());
     }catch(const std::exception& e){
         m_busy=false;
@@ -305,21 +314,26 @@ void App::openPin(QImage image,QRect area)
     m_pin->setDoubleClick(ws::capture::PinDoubleClick::Close);
     m_bar=view("qrc:/ui/Toolbar.qml",&m_pinBackend);m_status=view("qrc:/ui/qml/Status.qml",&m_pinBackend);
     place();m_bar.window->show();m_position.start();
+    ensureRaw();
+}
+void App::ensureRaw()
+{
+    if(m_raw)return;
     m_raw=std::make_unique<RawClicks>([this](POINT point,DWORD timestamp){
         QMetaObject::invokeMethod(qApp,[this,point,timestamp]{
-            if(!m_pin||!m_settings.value("closeOnOutsideClick").toBool(true)||LONG(timestamp-m_pinOpened)<150)return;
             auto contains=[&](HWND hwnd){
                 RECT r{};return hwnd&&IsWindowVisible(hwnd)&&GetWindowRect(hwnd,&r)&&PtInRect(&r,point);
             };
-            if(contains(m_pin->hwnd()))return;
-            for(auto v:{&m_bar,&m_status,&m_config,&m_text,&m_menu}){
+            if(m_pin&&contains(m_pin->hwnd()))return;
+            for(auto v:{&m_bar,&m_status,&m_config,&m_text,&m_menu,&m_word}){
                 if(!v->engine)continue;
                 for(auto window:v->engine->findChildren<QQuickWindow*>())
                     if(window->isVisible()&&contains(HWND(window->winId())))return;
             }
             DWORD pid=0;auto clicked=WindowFromPoint(point);GetWindowThreadProcessId(clicked,&pid);
             if(pid==GetCurrentProcessId())return;
-            closePin();
+            if(m_word.window&&m_word.window->isVisible()&&!m_wordPinned&&m_settings.value("closeOnOutsideClick").toBool(true)&&LONG(timestamp-m_wordOpened)>=150)closeWord();
+            if(m_pin&&m_settings.value("closeOnOutsideClick").toBool(true)&&LONG(timestamp-m_pinOpened)>=150)closePin();
         },Qt::QueuedConnection);
     });
 }
@@ -328,7 +342,8 @@ void App::closePin()
     if(m_bar.window)m_bar.window->hide();if(m_status.window)m_status.window->hide();if(m_text.window)m_text.window->hide();if(m_menu.window)m_menu.window->hide();
     if(m_pin)m_pin->setShown(false);
     if(m_cancel)m_cancel->store(true);++m_epoch;m_busy=false;m_position.stop();
-    m_raw.reset();m_pin.reset();m_selector.reset();dispose(m_bar);dispose(m_status);dispose(m_text);dispose(m_menu);
+    if(!m_word.window||!m_word.window->isVisible())m_raw.reset();
+    m_pin.reset();m_selector.reset();dispose(m_bar);dispose(m_status);dispose(m_text);dispose(m_menu);
     m_original={};m_translated={};m_blocks.clear();m_data={};
 }
 void App::status(QString text,bool loading)
@@ -437,23 +452,147 @@ void App::pinAction(const QString& name,const QVariant& value)
 }
 void App::textFlow(const QString& command)
 {
-    if(m_busy)return;closePin();m_busy=true;auto settings=m_settings;auto services=m_services;auto cancel=token();m_cancel=cancel;
-    QString text=command=="clip"?QGuiApplication::clipboard()->text().trimmed():QString();
-    auto epoch=++m_epoch;
-    QTimer::singleShot(command=="jsel"?6000:25000,this,[this,epoch,cancel]{
-        if(epoch!=m_epoch||!m_busy)return;
-        cancel->store(true);m_busy=false;++m_epoch;
-        m_protocol.notify("winshun/notify",{{"message","读取或翻译超时，请重试"}});
+    // A selector must keep a clean frozen desktop. Ordinary word requests and
+    // screenshot translation otherwise have independent cancellation/state.
+    if(m_selector)return;
+    auto point=m_mouse();
+    if(command=="ocr"&&m_word.window)m_word.window->hide();
+    if(command!="ocr")openWord(command,point);
+    if(command=="clip"){translateWord(m_readClipboard());return;}
+    if(command=="jsel"){readSelection();return;}
+    auto cancel=token();if(m_wordCancel)m_wordCancel->store(true);m_wordCancel=cancel;auto epoch=++m_wordEpoch;
+    // Let the old popup disappear before BitBlt, then capture before showing
+    // the new one. The user's pointer and clipboard are never modified.
+    QTimer::singleShot(35,this,[this,point,cancel,epoch]() mutable {
+        if(epoch!=m_wordEpoch||cancel->load())return;
+        POINT p{point.x(),point.y()};auto screen=screenAt(point);
+        int width=qRound(560*screen->devicePixelRatio()),height=qRound(180*screen->devicePixelRatio());
+        QRect crop(point-QPoint(width/2,height/2),QSize(width,height));crop=crop.intersected(monitorRect(p));
+        QImage image;
+        try{image=m_capture(crop);}catch(const std::exception& e){
+            openWord("ocr",point);m_wordBackend.update({{"loading",false},{"status",failure(e)}});return;
+        }
+        openWord("ocr",point);cancel=m_wordCancel;auto activeEpoch=m_wordEpoch;
+        background([image,cancel,at=point-crop.topLeft()]{return wordAt(recognize(image,cancel,false),at);},
+            [this,cancel,activeEpoch,crop](Block word,QString error){
+                if(activeEpoch!=m_wordEpoch||cancel->load())return;
+                if(!error.isEmpty()||word.text.isEmpty()){
+                    m_wordBackend.update({{"loading",false},{"status",error.isEmpty()?
+                        QString("鼠标处没有识别到单词，请把鼠标停在文字上再试"):error}});return;
+                }
+                if(!m_wordPinned){m_wordSelection=word.box.toAlignedRect().translated(crop.topLeft());placeWord();}
+                translateWord(word.text);
+            });
+        QTimer::singleShot(8000,this,[this,cancel,activeEpoch]{
+            if(activeEpoch!=m_wordEpoch||cancel->load())return;cancel->store(true);
+            m_wordBackend.update({{"loading",false},{"status","识别超时，请重试"}});
+        });
     });
-    background([command,text,services,settings,cancel]()mutable{
-        if(command=="jsel")text=selectedText();
-        if(text.isEmpty())throw std::runtime_error("没有读取到剪贴板或选中文字");
+}
+void App::openWord(QString mode,QPoint anchor,QRect selection)
+{
+    if(m_wordCancel)m_wordCancel->store(true);m_wordCancel=token();++m_wordEpoch;
+    m_wordMode=mode;
+    if(!m_wordPinned){m_wordAnchor=anchor;m_wordSelection=selection;}
+    m_wordSource.clear();m_lastSelection.clear();m_wordOpened=GetTickCount();
+    m_followBaseline=m_wordPinned&&mode!="jsel";
+    m_wordBackend.update({{"mode",mode},{"sourceText",""},{"translatedText",""},{"provider",""},{"loading",true},
+        {"status",mode=="jsel"?"正在读取选中文字…":mode=="ocr"?"正在识别鼠标处的单词…":"正在翻译…"}});
+    if(!m_word.window){
+        m_word=view("qrc:/ui/qml/Word.qml",&m_wordBackend);
+        QObject::connect(m_word.window,&QWindow::heightChanged,this,[this]{placeWord();});
+    }
+    placeWord();m_word.window->show();ensureRaw();
+}
+void App::placeWord()
+{
+    if(!m_word.window||m_wordPinned)return;
+    auto point=m_wordSelection.isEmpty()?m_wordAnchor:m_wordSelection.bottomLeft();
+    auto s=screenAt(point);m_word.window->setScreen(s);auto work=s->availableGeometry();
+    auto at=logical(point,s)+QPoint(10,10);
+    if(at.y()+m_word.window->height()>work.bottom()-4){
+        auto top=m_wordSelection.isEmpty()?m_wordAnchor:m_wordSelection.topLeft();
+        at.setY(logical(top,s).y()-m_word.window->height()-10);
+    }
+    at.setX(std::clamp(at.x(),work.left()+4,std::max(work.left()+4,work.right()-m_word.window->width()-4)));
+    at.setY(std::clamp(at.y(),work.top()+4,std::max(work.top()+4,work.bottom()-m_word.window->height()-4)));
+    m_word.window->setPosition(at);
+}
+void App::closeWord()
+{
+    if(m_word.window)m_word.window->hide();
+    if(m_wordCancel)m_wordCancel->store(true);++m_wordEpoch;
+    m_wordPinned=false;m_followSelection.stop();m_wordSource.clear();m_lastSelection.clear();
+    m_wordBackend.update({{"pinned",false},{"loading",false}});
+    if(!m_pin)m_raw.reset();
+}
+void App::wordAction(const QString& name,const QVariant&)
+{
+    if(name=="close")closeWord();
+    else if(name=="pin"){
+        m_wordPinned=!m_wordPinned;m_wordBackend.update({{"pinned",m_wordPinned}});
+        if(m_wordPinned){
+            m_followBaseline=m_lastSelection.isEmpty();
+            m_followSelection.start();readSelection(true);
+        }else m_followSelection.stop();
+        m_wordOpened=GetTickCount();
+    }else if(name=="retry"){
+        if(m_wordSource.isEmpty())textFlow(m_wordMode);else translateWord(m_wordSource);
+    }else if(name=="copy"){
+        auto text=m_wordBackend.values.value("translatedText").toString();
+        if(!text.isEmpty())m_protocol.tool("clipboard_copy",{{"text",text}});
+    }
+}
+void App::readSelection(bool follow)
+{
+    if(!m_word.window||!m_word.window->isVisible()||(follow&&!m_wordPinned))return;
+    if(m_selectionReading){
+        if(!follow)m_wordBackend.update({{"loading",false},{"status","上一次选区读取尚未结束，请稍后重试；也可用鼠标 OCR"}});
+        return;
+    }
+    m_selectionReading=true;auto epoch=m_wordEpoch;auto reader=m_readSelection;auto point=m_mouse();auto cancel=m_wordCancel;
+    background([reader,point]{return reader(POINT{point.x(),point.y()});},
+        [this,follow,epoch,cancel](Selection selection,QString error){
+            m_selectionReading=false;
+            if(epoch!=m_wordEpoch||(!follow&&cancel->load())||!m_word.window->isVisible())return;
+            auto text=selection.text.trimmed();
+            if(follow){
+                if(m_followBaseline){m_followBaseline=false;m_lastSelection=text;return;}
+                if(!error.isEmpty()||text.isEmpty())return;
+                if(text==m_lastSelection||text==m_wordSource)return;
+            }else if(!error.isEmpty()||text.isEmpty()){
+                m_wordBackend.update({{"loading",false},{"status",error.isEmpty()?
+                    QString("没有读到选区。此应用可能不支持划词，请用鼠标 OCR 热键 %1").arg(m_settings.value("wordOcrHotkey").toString()):error}});
+                return;
+            }
+            m_lastSelection=text;
+            if(!m_wordPinned){m_wordSelection=selection.area;placeWord();}
+            translateWord(text);
+        });
+    if(!follow)QTimer::singleShot(6000,this,[this,epoch,cancel]{
+        if(epoch!=m_wordEpoch||cancel->load())return;cancel->store(true);
+        m_wordBackend.update({{"loading",false},{"status","选区读取超时，请尝试鼠标 OCR"}});
+    });
+}
+void App::translateWord(QString text)
+{
+    text=text.trimmed();if(m_wordCancel)m_wordCancel->store(true);m_wordCancel=token();auto cancel=m_wordCancel;auto epoch=++m_wordEpoch;
+    m_wordSource=text;m_wordBackend.update({{"sourceText",text},{"translatedText",""},{"provider",""},
+        {"loading",!text.isEmpty()},{"status",text.isEmpty()?"没有读取到剪贴板文字":"正在翻译…"}});
+    if(text.isEmpty())return;
+    auto services=m_services;auto settings=m_settings;auto command=m_wordMode;
+    background([services,settings,text,cancel]{
         return services->translate(settings,{text},"auto",targetFor(text,settings.value("target").toString()),cancel).json({text});
-    },[this,command,epoch,cancel](QJsonObject data,QString error){
-        if(epoch!=m_epoch||cancel->load())return;m_busy=false;
-        auto items=error.isEmpty()?results(data,command):QJsonArray{row("error","翻译失败",error,false)};
-        m_cache[command]={QDateTime::currentSecsSinceEpoch(),items};
-        m_protocol.tool("show_launcher",{{"text",(command=="clip"?"jft ":"jsel ")+(m_chinese?QString("刚刚"):QString("just now"))}});
+    },[this,epoch,cancel,command](QJsonObject data,QString error){
+        if(epoch!=m_wordEpoch||cancel->load())return;
+        auto p=data.value("provider").toString(),label=names.value(providers.indexOf(p),p);
+        m_wordBackend.update({{"translatedText",data.value("translated").toString()},{"loading",false},{"status",error},
+            {"provider",data.value("fallback").toBool()?"临时使用 "+label:label}});
+        if(error.isEmpty())m_cache[command]={QDateTime::currentSecsSinceEpoch(),results(data,command)};
+    });
+    QTimer::singleShot(25000,this,[this,epoch,cancel]{
+        if(epoch!=m_wordEpoch||cancel->load()||!m_wordBackend.values.value("loading").toBool())return;
+        cancel->store(true);m_wordBackend.update({{"loading",false},{"status","翻译超时，请重试或更换渠道"}});
     });
 }
 void App::showSettings()

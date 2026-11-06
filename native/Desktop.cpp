@@ -20,6 +20,7 @@
 #include <QTimer>
 #include <windowsx.h>
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <stdexcept>
 
@@ -103,13 +104,27 @@ QList<Block> groupWords(QList<Block> words)
         out.append(blocks);
     }return out;
 }
-QList<Block> recognize(const QImage& source,Cancel cancel)
+Block wordAt(const QList<Block>& words,QPointF point)
+{
+    Block result;double nearest=1e9;
+    for(auto word:words){
+        // Permit only tiny gaps between letters. Do not translate an unrelated
+        // word elsewhere in the crop when the pointer rests on blank space.
+        auto b=word.box;double dx=std::max({b.left()-point.x(),0.,point.x()-b.right()});
+        double dy=std::max({b.top()-point.y(),0.,point.y()-b.bottom()});
+        double distance=std::hypot(dx,dy);
+        if(distance<=std::clamp(b.height()*.3,3.,10.)&&distance<nearest){
+            result=word;nearest=distance;
+        }
+    }return result;
+}
+QList<Block> recognize(const QImage& source,Cancel cancel,bool grouped)
 {
     using namespace winrt::Windows::Media::Ocr;
     using namespace winrt::Windows::Graphics::Imaging;
-    winrt::init_apartment(winrt::apartment_type::multi_threaded);
-    struct Cleanup { ~Cleanup(){winrt::uninit_apartment();} } cleanup;
     try{
+        winrt::init_apartment(winrt::apartment_type::multi_threaded);
+        struct Cleanup { ~Cleanup(){winrt::uninit_apartment();} } cleanup;
         OcrEngine engine{nullptr};auto available=OcrEngine::AvailableRecognizerLanguages();
         for(auto tag:winrt::Windows::System::UserProfile::GlobalizationPreferences::Languages()){
             auto s=from(tag);if(!s.startsWith("zh")&&!s.startsWith("ja")&&!s.startsWith("ko"))continue;
@@ -131,10 +146,10 @@ QList<Block> recognize(const QImage& source,Cancel cancel)
         QList<Block> words;
         for(auto line:result.Lines())for(auto word:line.Words()){
             auto r=word.BoundingRect();words.append({from(word.Text()),QRectF(r.X/scale,r.Y/scale,r.Width/scale,r.Height/scale),r.Height/scale});
-        }return cancel->load()?QList<Block>():groupWords(words);
+        }return cancel->load()?QList<Block>():grouped?groupWords(words):words;
     }catch(const winrt::hresult_error&){throw std::runtime_error("Windows OCR 识别失败；请检查语言包");}
 }
-QString selectedText()
+Selection selectionAt(POINT point,HWND target)
 {
     // UI Automation providers can block inside another application's COM
     // server. A UI timeout releases the busy state, but never piles up reads.
@@ -142,21 +157,95 @@ QString selectedText()
     bool idle=false;
     if(!reading.compare_exchange_strong(idle,true))throw std::runtime_error("上一次划词读取尚未结束，请稍后重试");
     struct ReadGuard{std::atomic_bool& flag;~ReadGuard(){flag=false;}} guard{reading};
+    HWND focus=target;
+    if(!focus){
+        GUITHREADINFO info{sizeof info};auto foreground=GetForegroundWindow();
+        if(foreground&&GetGUIThreadInfo(GetWindowThreadProcessId(foreground,nullptr),&info))focus=info.hwndFocus;
+    }
+    if(focus){
+        DWORD pid=0;GetWindowThreadProcessId(focus,&pid);
+        wchar_t name[128]{};GetClassNameW(focus,name,128);auto className=QString::fromWCharArray(name);
+        bool edit=className.compare("Edit",Qt::CaseInsensitive)==0;
+        bool rich=className.startsWith("RichEdit",Qt::CaseInsensitive);
+        // Standard EDIT controls can lack TextPattern. Read their public
+        // selection messages without copying, changing focus or sending keys.
+        if((target||pid!=GetCurrentProcessId())&&(edit||rich)&&!(GetWindowLongPtrW(focus,GWL_STYLE)&ES_PASSWORD)){
+            DWORD start=0,end=0;DWORD_PTR result=0;
+            auto send=[&](UINT msg,WPARAM w,LPARAM l){
+                return SendMessageTimeoutW(focus,msg,w,l,SMTO_ABORTIFHUNG|SMTO_BLOCK,250,&result)!=0;
+            };
+            if(send(EM_GETSEL,reinterpret_cast<WPARAM>(&start),reinterpret_cast<LPARAM>(&end))&&end>start&&
+                send(WM_GETTEXTLENGTH,0,0)&&result>0&&result<=100000){
+                std::vector<wchar_t> text(size_t(result)+1);
+                if(send(WM_GETTEXT,text.size(),reinterpret_cast<LPARAM>(text.data()))){
+                    auto selected=QString::fromWCharArray(text.data(),int(result)).mid(start,end-start).trimmed();
+                    if(!selected.isEmpty()){
+                        RECT client{};GetClientRect(focus,&client);POINT origin{};ClientToScreen(focus,&origin);
+                        QRect area(origin.x,origin.y,client.right,client.bottom);
+                        if(edit&&send(EM_POSFROMCHAR,start,0)){
+                            POINT first{GET_X_LPARAM(result),GET_Y_LPARAM(result)};
+                            if(send(EM_POSFROMCHAR,end-1,0)){
+                                POINT last{GET_X_LPARAM(result),GET_Y_LPARAM(result)};
+                                int h=std::max(16,int(GetDpiForWindow(focus)*20/96));
+                                if(first.x>=0&&first.y>=0&&last.x>=0&&last.y>=0){
+                                    area=first.y==last.y?QRect(origin.x+first.x,origin.y+first.y,std::max(h,int(last.x-first.x)+h),h):
+                                        QRect(origin.x,origin.y+first.y,client.right,last.y-first.y+h);
+                                }
+                            }
+                        }
+                        return {selected,area};
+                    }
+                }
+            }
+        }
+    }
     HRESULT hr=CoInitializeEx(nullptr,COINIT_MULTITHREADED);bool initialized=SUCCEEDED(hr);
     struct Cleanup{bool initialized;~Cleanup(){if(initialized)CoUninitialize();}} cleanup{initialized};
     using Microsoft::WRL::ComPtr;
-    ComPtr<IUIAutomation> automation;ComPtr<IUIAutomationElement> element;ComPtr<IUIAutomationTextPattern> pattern;ComPtr<IUIAutomationTextRangeArray> ranges;
-    if(FAILED(CoCreateInstance(CLSID_CUIAutomation,nullptr,CLSCTX_INPROC_SERVER,IID_PPV_ARGS(&automation)))||
-        FAILED(automation->GetFocusedElement(&element))||!element||
-        FAILED(element->GetCurrentPatternAs(UIA_TextPatternId,IID_PPV_ARGS(&pattern)))||!pattern||
-        FAILED(pattern->GetSelection(&ranges))||!ranges)return {};
-    int length=0;ranges->get_Length(&length);QStringList pieces;
-    for(int i=0;i<std::min(length,32);++i){
-        ComPtr<IUIAutomationTextRange> range;BSTR text=nullptr;
-        if(SUCCEEDED(ranges->GetElement(i,&range))&&range&&SUCCEEDED(range->GetText(100000,&text))&&text){
-            pieces<<QString::fromWCharArray(text,SysStringLen(text));SysFreeString(text);
+    ComPtr<IUIAutomation> automation;ComPtr<IUIAutomationTreeWalker> walker;
+    if(FAILED(CoCreateInstance(CLSID_CUIAutomation,nullptr,CLSCTX_INPROC_SERVER,IID_PPV_ARGS(&automation))))return {};
+    automation->get_ControlViewWalker(&walker);
+    for(int route=0;route<(target?1:2);++route){
+        ComPtr<IUIAutomationElement> element;
+        if(target)automation->ElementFromHandle(target,&element);
+        else if(route==0)automation->GetFocusedElement(&element);else automation->ElementFromPoint(point,&element);
+        for(int depth=0;element&&depth<6;++depth){
+            int pid=0;element->get_CurrentProcessId(&pid);
+            if(!target&&pid==int(GetCurrentProcessId()))break;
+            ComPtr<IUIAutomationTextPattern> pattern;ComPtr<IUIAutomationTextRangeArray> ranges;
+            if(SUCCEEDED(element->GetCurrentPatternAs(UIA_TextPatternId,IID_PPV_ARGS(&pattern)))&&pattern&&
+                SUCCEEDED(pattern->GetSelection(&ranges))&&ranges){
+                int length=0;ranges->get_Length(&length);QStringList pieces;QRectF bounds;
+                for(int i=0;i<std::min(length,32);++i){
+                    ComPtr<IUIAutomationTextRange> range;BSTR text=nullptr;
+                    if(FAILED(ranges->GetElement(i,&range))||!range)continue;
+                    if(SUCCEEDED(range->GetText(100000,&text))&&text){
+                        auto value=QString::fromWCharArray(text,SysStringLen(text));SysFreeString(text);
+                        if(value.trimmed().isEmpty())continue;pieces<<value;
+                        SAFEARRAY* rectangles=nullptr;
+                        if(SUCCEEDED(range->GetBoundingRectangles(&rectangles))&&rectangles){
+                            LONG lower=0,upper=-1;double* data=nullptr;
+                            SafeArrayGetLBound(rectangles,1,&lower);SafeArrayGetUBound(rectangles,1,&upper);
+                            if(SUCCEEDED(SafeArrayAccessData(rectangles,reinterpret_cast<void**>(&data)))){
+                                for(LONG j=0;j+3<=upper-lower;j+=4){
+                                    QRectF b(data[j],data[j+1],data[j+2],data[j+3]);
+                                    if(!b.isEmpty())bounds=bounds.isEmpty()?b:bounds.united(b);
+                                }SafeArrayUnaccessData(rectangles);
+                            }SafeArrayDestroy(rectangles);
+                        }
+                    }
+                }
+                if(!pieces.isEmpty())return {pieces.join('\n').trimmed(),bounds.toAlignedRect()};
+            }
+            ComPtr<IUIAutomationElement> parent;
+            if(!walker||FAILED(walker->GetParentElement(element.Get(),&parent)))break;
+            element=parent;
         }
-    }return pieces.join('\n').trimmed();
+    }return {};
+}
+QString selectedText()
+{
+    POINT point{};GetPhysicalCursorPos(&point);return selectionAt(point).text;
 }
 QImage textImage(const QString& text,int width,bool dark)
 {
