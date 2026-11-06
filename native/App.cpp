@@ -280,8 +280,11 @@ void App::openPin(QImage image,QRect area)
 {
     m_original=image;m_translated=image;m_blocks.clear();m_data={};m_compare=false;m_fullText=false;m_cancel=token();m_pinOpened=GetTickCount();
     auto provider=m_settings.value("provider").toString("mymemory");
+    auto captureScreen=screenAt(area.center());
     m_pinBackend.update({{"translatedText",""},{"sourceText",""},{"ready",false},{"loading",true},{"comparison",false},{"fullText",false},
-        {"provider",names.value(providers.indexOf(provider),provider)},{"providerNote",""},{"source","auto"},{"target","zh"}});
+        {"provider",names.value(providers.indexOf(provider),provider)},{"providerNote",""},{"source","auto"},{"target","zh"},
+        {"captureWidth",area.width()/captureScreen->devicePixelRatio()},{"captureHeight",area.height()/captureScreen->devicePixelRatio()},
+        {"loadingStage","recognize"},{"status",""}});
     ws::capture::PinWindow::Host host;
     host.closed=[this](auto*){QTimer::singleShot(0,this,[this]{closePin();});};
     host.copy=[this](auto*){pinAction("copy",false);};
@@ -301,7 +304,7 @@ void App::openPin(QImage image,QRect area)
     m_pin=std::make_unique<ws::capture::PinWindow>(image,area.topLeft(),std::move(host));
     m_pin->setDoubleClick(ws::capture::PinDoubleClick::Close);
     m_bar=view("qrc:/ui/Toolbar.qml",&m_pinBackend);m_status=view("qrc:/ui/qml/Status.qml",&m_pinBackend);
-    m_bar.window->show();m_status.window->show();m_position.start();place();
+    place();m_bar.window->show();m_position.start();
     m_raw=std::make_unique<RawClicks>([this](POINT point,DWORD timestamp){
         QMetaObject::invokeMethod(qApp,[this,point,timestamp]{
             if(!m_pin||!m_settings.value("closeOnOutsideClick").toBool(true)||LONG(timestamp-m_pinOpened)<150)return;
@@ -331,10 +334,11 @@ void App::closePin()
 void App::status(QString text,bool loading)
 {
     m_pinBackend.update({{"status",text},{"loading",loading},{"ready",!m_blocks.isEmpty()}});
-    if(m_status.window){if(text.isEmpty())m_status.window->hide();else m_status.window->show();}
+    if(m_status.window){if(text.isEmpty())m_status.window->hide();else{place();m_status.window->show();}}
 }
 void App::recognizePin()
 {
+    m_pinBackend.update({{"loadingStage","recognize"}});
     status(m_chinese?"正在识别文字…":"Recognizing text…");auto image=m_original;auto cancel=m_cancel;auto epoch=m_epoch;
     background([image,cancel]{return recognize(image,cancel);},[this,cancel,epoch](QList<Block> blocks,QString error){
         if(!m_pin||cancel->load()||epoch!=m_epoch)return;
@@ -349,7 +353,8 @@ void App::translatePin(QString source,QString target,QStringList parts)
     if(!m_pin||m_busy)return;
     if(source.isEmpty())source=m_source;if(target.isEmpty())target=m_target;
     if(parts.isEmpty())for(auto b:m_blocks)parts<<b.text;
-    m_busy=true;status(m_chinese?"正在翻译…":"Translating…");m_source=source;m_target=target;
+    m_busy=true;m_pinBackend.update({{"loadingStage","translate"}});
+    status(m_chinese?"正在翻译…":"Translating…");m_source=source;m_target=target;
     m_pinBackend.update({{"source",source},{"target",target},{"ready",true}});
     auto services=m_services;auto settings=m_settings;auto cancel=m_cancel;auto epoch=m_epoch;
     background([services,settings,parts,source,target,cancel]{return services->translate(settings,parts,source,target,cancel).json(parts);},
@@ -376,6 +381,7 @@ void App::place()
 {
     if(!m_pin||!m_bar.window)return;
     auto area=m_pin->pictureRect();auto s=screenAt(area.center());POINT c{area.center().x(),area.center().y()};auto work=monitorRect(c,true);
+    m_pinBackend.update({{"captureWidth",area.width()/s->devicePixelRatio()},{"captureHeight",area.height()/s->devicePixelRatio()}});
     if(m_bar.window->screen()!=s)m_bar.window->setScreen(s);
     auto size=m_bar.window->size()*s->devicePixelRatio();
     int x=std::clamp(area.center().x()-size.width()/2,work.left()+4,std::max(work.left()+4,work.x()+work.width()-size.width()-4));
@@ -386,7 +392,16 @@ void App::place()
         {"menuRight",lw.x()+work.width()/s->devicePixelRatio()},{"menuBottom",lw.y()+work.height()/s->devicePixelRatio()}});
     if(m_status.window){
         if(m_status.window->screen()!=s)m_status.window->setScreen(s);
-        auto point=area.center()-QPoint(m_status.window->width(),m_status.window->height())*s->devicePixelRatio()/2;
+        auto statusSize=m_status.window->size()*s->devicePixelRatio();
+        auto point=area.center()-QPoint(statusSize.width(),statusSize.height())/2;
+        if(m_status.window->property("compact").toBool()||statusSize.width()+16>area.width()||statusSize.height()+16>area.height()){
+            // A word-sized capture remains unobscured: put its small indicator
+            // just above it, or below when the upper screen edge has no room.
+            point={area.left(),area.top()-statusSize.height()-6};
+            if(point.y()<work.top()+4)point.setY(area.bottom()+7);
+        }
+        point.setX(std::clamp(point.x(),work.left()+4,std::max(work.left()+4,work.x()+work.width()-statusSize.width()-4)));
+        point.setY(std::clamp(point.y(),work.top()+4,std::max(work.top()+4,work.y()+work.height()-statusSize.height()-4)));
         auto desiredStatus=logical(point,s);
         if(m_status.window->position()!=desiredStatus)m_status.window->setPosition(desiredStatus);
     }

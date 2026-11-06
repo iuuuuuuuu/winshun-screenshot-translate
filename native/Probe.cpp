@@ -156,6 +156,47 @@ void Probe::run(App& app,const QJsonObject& params)
             report["crossScreenSelection"]=true;
         }
         background.close();
+        QImage word(40,20,QImage::Format_RGB32);word.fill(Qt::white);
+        QPainter wordPaint(&word);QFont wordFont("Segoe UI");wordFont.setPixelSize(12);
+        wordPaint.setFont(wordFont);wordPaint.drawText(2,15,"word");wordPaint.end();
+        app.openPin(word,{400,300,40,20});
+        app.m_pinBackend.update({{"loadingStage","translate"}});
+        app.status("正在翻译…");pump(40);
+        check(app.m_status.window->size()==QSize(24,24),"tiny capture has 24px loading indicator");
+        auto unobscured=[&]{
+            RECT r{};GetWindowRect(HWND(app.m_status.window->winId()),&r);
+            return !QRect(r.left,r.top,r.right-r.left,r.bottom-r.top).intersects(app.m_pin->pictureRect());
+        };
+        check(unobscured(),"loading indicator leaves word unobscured");
+        app.m_status.window->grabWindow().save(out+"/loading-word.png");
+        auto beforeMove=app.m_status.window->position();
+        SendMessageW(app.m_pin->hwnd(),WM_KEYDOWN,VK_RIGHT,0);app.place();pump(20);
+        check(app.m_status.window->position()!=beforeMove&&unobscured(),"indicator follows word movement");
+        auto zoomWord=[&](double target){
+            for(int i=0;i<80&&std::abs(app.m_pin->zoom()-target)>.001;++i){
+                auto at=app.m_pin->pictureRect().topLeft();
+                int delta=app.m_pin->zoom()<target?WHEEL_DELTA:-WHEEL_DELTA;
+                SendMessageW(app.m_pin->hwnd(),WM_MOUSEWHEEL,MAKEWPARAM(0,SHORT(delta)),MAKELPARAM(at.x(),at.y()));
+            }
+            check(std::abs(app.m_pin->zoom()-target)<.001,"word wheel zoom");
+            app.place();pump(25);app.place();
+        };
+        zoomWord(3);
+        check(!app.m_status.window->property("iconOnly").toBool(),"expanded word shows short loading text");
+        auto label=app.m_status.window->findChild<QQuickItem*>("status-label");
+        check(label&&label->isVisible()&&label->property("text").toString()=="翻译中","compact translation label");
+        report["compactLoadingSize"]=QJsonArray{app.m_status.window->width(),app.m_status.window->height()};
+        report["compactLoadingUnobscured"]=unobscured();
+        app.m_status.window->grabWindow().save(out+"/loading-compact.png");
+        check(app.m_status.window->height()<=28&&app.m_status.window->width()<=120&&unobscured(),"compact loading size");
+        zoomWord(8);
+        check(!app.m_status.window->property("compact").toBool()&&app.m_status.window->height()<=36,"larger capture loading size");
+        zoomWord(.5);
+        check(app.m_status.window->size()==QSize(24,24)&&unobscured(),"loading shrinks with capture");
+        app.status("无法连接服务；请检查网络或共用代理",false);pump(25);app.place();
+        check(label->isVisible()&&app.m_status.window->width()<=240,"small capture retains readable error");
+        app.m_status.window->grabWindow().save(out+"/loading-word-error.png");
+        report["adaptiveLoading"]=true;app.closePin();pump(25);
         std::fputs("[probe] opening pin\n",stderr);std::fflush(stderr);
         app.openPin(selected,selectedRect);
         std::fputs("[probe] starting OCR\n",stderr);std::fflush(stderr);app.recognizePin();
