@@ -74,6 +74,12 @@ void click(QQuickWindow* w,QQuickItem* item)
     PostMessageW(hwnd,WM_LBUTTONDOWN,MK_LBUTTON,position);pump(10);
     PostMessageW(hwnd,WM_LBUTTONUP,0,position);pump(20);
 }
+QQuickItem* visualItem(QQuickItem* root,const QString& name)
+{
+    if(root->objectName()==name)return root;
+    for(auto child:root->childItems())if(auto found=visualItem(child,name))return found;
+    return nullptr;
+}
 void typeDraft(QQuickWindow* window,const QString& text)
 {
     auto editor=window->findChild<QQuickItem*>("word-editor");check(editor,"source editor exists");
@@ -90,6 +96,16 @@ void typeDraft(QQuickWindow* window,const QString& text)
         QInputMethodEvent input;input.setCommitString(text);QCoreApplication::sendEvent(window,&input);
     }pump(10);
     check(editor->property("text").toString()==text,"IME commit changes source draft");
+}
+void dragQueue(QQuickWindow* window,QQuickItem* item,int distance)
+{
+    check(Probe::privateDesktop()&&window&&item&&item->isVisible(),"queue drag requires private visible test item");
+    auto start=item->mapToScene(QPointF(item->width()/2,item->height()/2));auto hwnd=HWND(window->winId());
+    auto point=[&](int dy){auto p=(start+QPointF(0,dy))*window->devicePixelRatio();return MAKELPARAM(qRound(p.x()),qRound(p.y()));};
+    PostMessageW(hwnd,WM_MOUSEMOVE,0,point(0));pump(10);
+    PostMessageW(hwnd,WM_LBUTTONDOWN,MK_LBUTTON,point(0));pump(10);
+    for(int i=1;i<=8;++i){PostMessageW(hwnd,WM_MOUSEMOVE,MK_LBUTTON,point(distance*i/8));pump(10);}
+    PostMessageW(hwnd,WM_LBUTTONUP,0,point(distance));pump(30);
 }
 void editableSource(QQuickWindow* window,const QString& source)
 {
@@ -301,8 +317,25 @@ void Probe::run(App& app,const QJsonObject& params)
         click(app.m_bar.window,app.m_bar.window->findChild<QQuickItem*>("toolbar-settings"));
         pump(250);check(app.m_config.window&&app.m_config.window->isVisible(),"settings reachable directly from toolbar");
         report["toolbarAllControlsVisible"]=true;
+        check(app.m_configBackend.values.value("home").toBool(),"settings opens on home");
+        check(app.m_config.window->findChild<QQuickItem*>("test-all")->isVisible(),"test all is visible on home");
+        auto queueIds=[&]{QStringList ids;for(auto v:app.m_configBackend.values.value("queue").toList())ids<<v.toMap().value("provider").toString();return ids;};
+        auto originalQueue=queueIds();check(originalQueue.size()==providers.size()&&originalQueue.first()=="zvo","home shows every service with preferred first");
+        app.m_config.window->grabWindow().save(out+"/settings-home-initial.png");
+        auto moved=originalQueue[2];
+        click(app.m_config.window,visualItem(app.m_config.window->contentItem(),"queue-up-"+moved));
+        check(queueIds()[1]==moved,"move up changes backup order");
+        dragQueue(app.m_config.window,visualItem(app.m_config.window->contentItem(),"queue-drag-"+moved),80);
+        check(queueIds()==originalQueue,"drag restores actual backup order");
+        report["manualQueueControls"]=true;
+        auto modes=app.m_config.window->findChild<QQuickItem*>("routing-modes");
+        click(app.m_config.window,visualItem(modes,"choice-1"));
+        check(app.m_routingDraft.value("mode")=="auto","automatic mode is selectable");
+        check(!visualItem(app.m_config.window->contentItem(),"queue-up-"+moved)->isVisible(),"auto order cannot be manually changed");
+        app.configAction("routingMode","manual");pump(30);
         app.m_config.window->grabWindow().save(out+"/settings.png");
         app.configSelect("ai");pump(30);
+        check(!app.m_config.window->findChild<QQuickItem*>("test-all")->isVisible(),"test all moved out of provider footer");
         for(auto id:{"apiKey","endpoint","model"}){
             auto item=app.m_config.window->findChild<QQuickItem*>(QString::fromLatin1(id));
             check(item&&item->isVisible(),"unified AI fields are visible");
@@ -315,7 +348,7 @@ void Probe::run(App& app,const QJsonObject& params)
         app.configSelect("ecdict");pump(30);
         check(!app.m_config.window->findChild<QQuickItem*>("apiKey")->isVisible()&&!app.m_config.window->findChild<QQuickItem*>("endpoint")->isVisible(),"offline dictionary needs no network configuration");
         app.m_config.window->grabWindow().save(out+"/settings-ecdict.png");
-        report["newProviderSettings"]=true;app.configSelect("zvo");pump(30);
+        report["newProviderSettings"]=true;app.configSelect("zvo");app.configAction("home",{});pump(30);
         auto testAll=app.m_config.window->findChild<QQuickItem*>("test-all");click(app.m_config.window,testAll);
         report["batchAfterClick"]=QJsonObject{{"count",int(app.m_tests.size())},{"running",app.m_testRunning},{"queued",int(app.m_testQueue.size())},
             {"message",app.m_configBackend.values.value("message").toString()}};
@@ -324,9 +357,28 @@ void Probe::run(App& app,const QJsonObject& params)
         check(app.m_tests.size()==providers.size(),"batch covers every provider");
         report["batchResults"]=QJsonValue::fromVariant(app.m_configBackend.values.value("testResults"));
         app.m_config.window->grabWindow().save(out+"/settings-tested.png");
+        app.configAction("routingMode","auto");pump(40);
+        app.m_config.window->grabWindow().save(out+"/settings-auto.png");
+        app.appearance({{"theme","dark"}});pump(40);
+        app.m_config.window->grabWindow().save(out+"/settings-dark.png");
+        app.m_config.window->resize(720,520);pump(40);
+        app.m_config.window->grabWindow().save(out+"/settings-small.png");
+        check(app.m_config.window->findChild<QQuickItem*>("test-all")->isVisible(),"small settings retains test all");
+        app.appearance({{"theme","light"}});
+        report["settingsHome"]=true;report["automaticQueueControls"]=true;
+        app.configSelect("zvo");auto existingEndpoint=app.m_drafts.value("zvo").toObject().value("endpoint").toString();
+        app.configAction("endpoint",existingEndpoint);
+        check(app.m_tests["zvo"].value("status")=="success","unchanged fields preserve test results");
+        app.configAction("endpoint",existingEndpoint+"?edited");
+        check(!app.m_tests.contains("zvo"),"edited configuration invalidates old test result");
+        app.configAction("endpoint",existingEndpoint);
         report["activeMemory"]=memory();
         auto preferred=app.m_settings.value("provider");app.configSelect("deepl");app.configAction("save",{});
         check(app.m_settings.value("provider")==preferred,"save doesn't switch preferred provider");
+        check(app.m_services->routing().value("mode")=="auto","saved mode drives translation services");
+        app.showSettings();pump(30);check(app.m_configBackend.values.value("home").toBool()&&app.m_routingDraft.value("mode")=="auto","reopening keeps saved mode and starts on home");
+        app.configAction("routingMode","manual");app.configAction("close",{});
+        check(app.m_services->routing().value("mode")=="auto","cancel does not save routing edits");
         pump(40);
         check(until([&]{return app.m_raw&&app.m_raw->m_hwnd.load();}),"independent raw thread");
         app.m_raw->m_read=&readRaw;app.m_raw->m_cursor=&cursor;

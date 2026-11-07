@@ -61,13 +61,13 @@ private:
     void showSettings();
     void configSelect(const QString& provider);
     void configAction(const QString& name,const QVariant& value);
-    void testServices(bool all);
+    void testServices(bool all, const QString& provider = {});
     void pumpTests();
     void publishTests();
     void dispose(View& view);
     bool m_busy=false,m_chinese=true,m_dark=false,m_hostHotkeys=false,m_compare=false,m_fullText=false;
     QString m_appDir,m_source="auto",m_target="zh",m_configProvider;
-    QJsonObject m_settings,m_data,m_drafts;
+    QJsonObject m_settings,m_data,m_drafts,m_routingDraft;
     std::shared_ptr<Services> m_services;
     ws::captureplugin::Protocol& m_protocol;
     Backend m_pinBackend,m_configBackend,m_wordBackend;

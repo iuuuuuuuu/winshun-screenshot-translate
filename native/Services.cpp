@@ -22,6 +22,7 @@
 #include <QUuid>
 #include <QStringDecoder>
 #include <algorithm>
+#include <cmath>
 #include <stdexcept>
 #include <thread>
 #include <mutex>
@@ -42,6 +43,16 @@ QJsonObject readJson(const QString& file, bool strict = false)
 }
 QString field(const QJsonObject& p, const char* k) { return p.value(k).toString().trimmed(); }
 QJsonArray array(const QStringList& values) { return QJsonArray::fromStringList(values); }
+QJsonObject normalizedRouting(const QJsonObject& value)
+{
+    const QStringList defaults{"ecdict","zvo","sogou","youdao","mymemory","google","edge","microsoft","deepl","ai"};
+    QStringList order;
+    for(auto v:value.value("order").toArray()){
+        const auto p=v.toString();if(providers.contains(p)&&!order.contains(p))order<<p;
+    }
+    for(auto p:defaults)if(!order.contains(p))order<<p;
+    return {{"mode",value.value("mode").toString()=="auto"?"auto":"manual"},{"order",array(order)}};
+}
 QString endpoint(const QJsonObject& p)
 {
     auto custom = field(p,"endpoint");
@@ -234,6 +245,7 @@ Services::Services(QString directory):m_directory(std::move(directory))
     auto doc=readJson(m_directory+"/services.json",true);
     if(!doc.isEmpty()&&!doc.value("profiles").isObject())fail("已有配置格式不正确；未覆盖原文件");
     m_stored=doc.value("profiles").toObject();
+    m_routing=normalizedRouting(doc.value("routing").toObject());
     m_health=readJson(m_directory+"/service-health.json").value("services").toObject();
     auto u=readJson(m_directory+"/mymemory-usage.json");
     m_day=u.value("day").toString();m_submitted=std::max(0,u.value("submitted").toInt());
@@ -260,10 +272,10 @@ void Services::migrateAi(const QJsonObject& settings)
         if(p.value("endpoint").toString().isEmpty())p["endpoint"]=urls[legacyAi.indexOf(old)];
         if(p.value("model").toString().isEmpty())p["model"]=models[legacyAi.indexOf(old)];
         p["migratedFrom"]=old;auto next=m_stored;next["ai"]=p;
-        atomicJson(m_directory+"/services.json",{{"version",3},{"profiles",next}});m_stored=next;return;
+        atomicJson(m_directory+"/services.json",{{"version",3},{"profiles",next},{"routing",m_routing}});m_stored=next;return;
     }
 }
-void Services::save(const QJsonObject& drafts)
+void Services::save(const QJsonObject& drafts,const QJsonObject& routing)
 {
     QMutexLocker lock(&m_lock);auto values=m_stored;
     for(auto it=drafts.begin();it!=drafts.end();++it){
@@ -273,7 +285,56 @@ void Services::save(const QJsonObject& drafts)
         values[it.key()]=QJsonObject{{"endpoint",ep},{"model",field(p,"model")},{"region",field(p,"region")},{"appId",field(p,"appId")},
             {"secret",key.isEmpty()?QString():QString::fromLatin1(crypt(key.toUtf8()).toBase64())}};
     }
-    atomicJson(m_directory+"/services.json",{{"version",3},{"profiles",values}});m_stored=values;
+    auto policy=routing.isEmpty()?m_routing:normalizedRouting(routing);
+    atomicJson(m_directory+"/services.json",{{"version",3},{"profiles",values},{"routing",policy}});m_stored=values;m_routing=policy;
+}
+QJsonObject Services::routing()
+{
+    QMutexLocker lock(&m_lock);return m_routing;
+}
+QJsonArray Services::queue(const QJsonObject& settings,const QJsonObject& drafts,const QJsonObject& routing)
+{
+    QJsonObject policy,health;
+    {QMutexLocker lock(&m_lock);policy=routing.isEmpty()?m_routing:normalizedRouting(routing);health=m_health;}
+    const auto preferred=canonicalProvider(settings.value("provider").toString("mymemory"));
+    const double recovery=std::clamp(settings.value("fallbackRecoveryMinutes").toDouble(10),1.0,1440.0)*60;
+    const double now=QDateTime::currentSecsSinceEpoch();
+    QList<QJsonObject> rows;
+    for(auto v:policy.value("order").toArray()){
+        const auto p=v.toString();auto config=drafts.contains(p)?drafts.value(p).toObject():profile(p);config["provider"]=p;
+        config["proxy"]=settings.value("proxy").toString().trimmed();
+        const auto h=health.value(fingerprint(config)).toObject();
+        const auto problem=configurationError(config);const int samples=h.value("samples").toInt();
+        const double latency=h.value("latencyMs").toDouble(-1);
+        const double rate=std::clamp(h.value("successRate").toDouble(.75),0.0,1.0);
+        const int weight=samples?int(std::round(80*rate+20*(latency<0?.5:1000/(1000+latency)))):50;
+        const double retryAt=h.value("failedAt").toDouble()>0?h.value("failedAt").toDouble()+recovery:0;
+        const bool cooling=retryAt>now;
+        rows<<QJsonObject{{"provider",p},{"name",names.value(providers.indexOf(p))},{"preferred",p==preferred},
+            {"configured",problem.isEmpty()},{"problem",problem},{"cooling",cooling},{"retrySeconds",std::max(0,int(retryAt-now))},
+            {"weight",weight},{"latencyMs",int(latency)},{"samples",samples},{"successRate",int(std::round(rate*100))},{"checkedAt",h.value("checkedAt")},
+            {"status",!problem.isEmpty()?"skipped":cooling?"cooling":samples?(h.value("lastSuccess").toBool()?"success":"failed"):"idle"}};
+    }
+    if(policy.value("mode")=="auto")std::stable_sort(rows.begin(),rows.end(),[](const auto& a,const auto& b){
+        if(a.value("configured")!=b.value("configured"))return a.value("configured").toBool();
+        if(a.value("cooling")!=b.value("cooling"))return !a.value("cooling").toBool();
+        return a.value("weight").toInt()>b.value("weight").toInt();
+    });
+    for(int i=0;i<rows.size();++i)if(rows[i].value("preferred").toBool()){rows.move(i,0);break;}
+    QJsonArray result;for(auto row:rows)result.append(row);return result;
+}
+void Services::recordOutcome(const QJsonObject& p,bool success,qint64 elapsed,double recovery)
+{
+    QMutexLocker lock(&m_lock);const auto id=fingerprint(p);auto h=m_health.value(id).toObject();
+    h["provider"]=field(p,"provider");h["samples"]=std::min(1000000,h.value("samples").toInt()+1);
+    h["successRate"]=.7*std::clamp(h.value("successRate").toDouble(.75),0.0,1.0)+.3*(success?1:0);
+    h["lastSuccess"]=success;h["checkedAt"]=double(QDateTime::currentMSecsSinceEpoch());
+    if(success){
+        h["latencyMs"]=h.contains("latencyMs")?.7*h.value("latencyMs").toDouble()+.3*elapsed:double(elapsed);
+        h.remove("failedAt");h.remove("retryAt");
+    }else{const auto now=double(QDateTime::currentSecsSinceEpoch());h["failedAt"]=now;h["retryAt"]=now+recovery;}
+    m_health[id]=h;
+    try{atomicJson(m_directory+"/service-health.json",{{"version",2},{"services",m_health}});}catch(...){}
 }
 int Services::today()
 {
@@ -302,7 +363,8 @@ Translation Services::translate(const QJsonObject& settings,const QStringList& p
     auto first=draft.isEmpty()?profile(preferred):draft;
     if(!draft.isEmpty())preferred=field(draft,"provider");
     candidates<<first;
-    if(fallback)for(const auto& p:QStringList{"ecdict","zvo","sogou","youdao","mymemory","google","edge","microsoft","deepl","ai"}){
+    if(fallback)for(auto row:queue(settings)){
+        auto p=row.toObject().value("provider").toString();
         if(p==preferred)continue;auto config=profile(p);
         if(configurationError(config).isEmpty())candidates<<config;
     }
@@ -311,6 +373,8 @@ Translation Services::translate(const QJsonObject& settings,const QStringList& p
     for(auto p:candidates){
         if(cancel->load())fail("cancelled");
         p["proxy"]=settings.value("proxy").toString().trimmed();
+        auto problem=configurationError(p);
+        if(!problem.isEmpty()){last=problem;if(!fallback)fail(problem);continue;}
         auto id=fingerprint(p);
         {
             QMutexLocker lock(&m_lock);
@@ -318,12 +382,12 @@ Translation Services::translate(const QJsonObject& settings,const QStringList& p
         }
         int budget=std::min(field(p,"provider")=="edge"?14000:8000,int((fallback||preferred=="edge"?20000:8000)-total.elapsed()));
         if(budget<=0)break;
-        ++attempted;
+        ++attempted;QElapsedTimer attempt;attempt.start();
         try{
             auto result=route(p,parts,source,target,cancel,budget);
             result.provider=field(p,"provider");result.preferred=preferred;result.fallback=result.provider!=preferred;
-            QMutexLocker lock(&m_lock);m_health.remove(id);
-            try{atomicJson(m_directory+"/service-health.json",{{"version",1},{"services",m_health}});}catch(...){}
+            if(cancel->load())fail("cancelled");
+            recordOutcome(p,true,attempt.elapsed(),recovery);
             return result;
         }catch(const Unsupported& e){
             // A missing dictionary entry is not an outage. Never quarantine the
@@ -331,11 +395,7 @@ Translation Services::translate(const QJsonObject& settings,const QStringList& p
             if(cancel->load())fail("cancelled");last=QString::fromUtf8(e.what());if(!fallback)throw;
         }catch(const std::exception& e){
             if(cancel->load())fail("cancelled");
-            last=QString::fromUtf8(e.what());if(!fallback)throw;
-            QMutexLocker lock(&m_lock);
-            auto now=double(QDateTime::currentSecsSinceEpoch());
-            m_health[id]=QJsonObject{{"provider",field(p,"provider")},{"failedAt",now},{"retryAt",now+recovery}};
-            try{atomicJson(m_directory+"/service-health.json",{{"version",1},{"services",m_health}});}catch(...){}
+            last=QString::fromUtf8(e.what());recordOutcome(p,false,attempt.elapsed(),recovery);if(!fallback)throw;
         }
     }
     fail(!last.isEmpty()?last:attempted?"翻译超时":"所有可用渠道暂时失败，恢复间隔后会重试；修改渠道配置可立即重试");

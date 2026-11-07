@@ -1,5 +1,6 @@
 #pragma once
 #include <QJsonObject>
+#include <QJsonArray>
 #include <QStringList>
 #include <QMutex>
 #include <atomic>
@@ -33,7 +34,9 @@ public:
     explicit Services(QString directory);
     QJsonObject profile(const QString& provider);
     void migrateAi(const QJsonObject& settings);
-    void save(const QJsonObject& drafts);
+    void save(const QJsonObject& drafts, const QJsonObject& routing = {});
+    QJsonObject routing();
+    QJsonArray queue(const QJsonObject& settings, const QJsonObject& drafts = {}, const QJsonObject& routing = {});
     int today();
     Translation translate(const QJsonObject& settings, const QStringList& parts,
         const QString& source, const QString& target, Cancel cancel, QJsonObject draft = {});
@@ -41,9 +44,10 @@ private:
     Translation route(const QJsonObject& profile, const QStringList& parts,
         const QString& source, const QString& target, Cancel cancel, int budget);
     void usage(const QString& text);
+    void recordOutcome(const QJsonObject& profile, bool success, qint64 elapsed, double recovery);
     QString m_directory;
     QMutex m_lock;
-    QJsonObject m_stored, m_health;
+    QJsonObject m_stored, m_health, m_routing;
     QString m_day;
     int m_submitted = 0;
     bool m_usageValid = true;

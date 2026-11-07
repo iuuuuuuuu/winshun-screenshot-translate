@@ -77,8 +77,10 @@ class Server(http.server.BaseHTTPRequestHandler):
         if path == "/blocked":
             threading.Event().wait(30)
             return
-        if path == "/fail":
+        if path in ("/fail", "/queue-fail") or (path == "/zvo-recover" and counts[path] == 1):
             self.send_response(503); self.end_headers(); return
+        if path == "/google-slow":
+            time.sleep(.35)
         def translate(text):
             examples={"Screenshot translation":"截图翻译","Settings":"设置","History":"历史","Downloads":"下载"}
             if text.strip() in examples:return examples[text.strip()]

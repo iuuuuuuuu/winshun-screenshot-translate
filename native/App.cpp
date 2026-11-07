@@ -2,6 +2,7 @@
 #include "CaptureKeys.h"
 #include <QClipboard>
 #include <QDateTime>
+#include <QElapsedTimer>
 #include <QGuiApplication>
 #include <QQmlComponent>
 #include <QQmlContext>
@@ -648,8 +649,11 @@ void App::showSettings()
 {
     if(m_config.window){m_config.window->show();m_config.window->requestActivate();return;}
     ++m_configEpoch;m_drafts={};m_tests.clear();m_batch=false;
+    m_routingDraft=m_services->routing();
+    for(auto p:providers)m_drafts[p]=m_services->profile(p);
     m_configBackend.update({{"testResults",QVariantList()},{"showTestResults",false},{"testing",false},{"batch",false},{"message",""}});
     configSelect(m_settings.value("provider").toString("mymemory"));
+    m_configBackend.update({{"home",true}});publishTests();
     m_config=view("qrc:/ui/Settings.qml",&m_configBackend);m_config.window->show();m_config.window->requestActivate();
 }
 void App::configSelect(const QString& p)
@@ -657,7 +661,7 @@ void App::configSelect(const QString& p)
     if(!providers.contains(p))return;m_configProvider=p;
     if(!m_drafts.contains(p))m_drafts[p]=m_services->profile(p);
     auto draft=m_drafts.value(p).toObject();QVariantMap state=draft.toVariantMap();
-    state["current"]=providers.indexOf(p);state["endpointHint"]=endpoints[providers.indexOf(p)];
+    state["current"]=providers.indexOf(p);state["home"]=false;state["endpointHint"]=endpoints[providers.indexOf(p)];
     state["modelHint"]="填写服务商提供的模型名 / 接入点 ID";
     if(p=="youdao"&&!draft.value("appId").toString().isEmpty())state["endpointHint"]="https://openapi.youdao.com/api";
     state["today"]=QString("%1 / 5,000").arg(m_services->today());state["showTestResults"]=false;state["message"]=m_tests[p].value("detail","");
@@ -667,12 +671,30 @@ void App::configAction(const QString& name,const QVariant& value)
 {
     try{
         if(name=="select")configSelect(providers.value(value.toInt()));
+        else if(name=="selectProvider")configSelect(value.toString());
+        else if(name=="home"){m_configBackend.update({{"home",true}});publishTests();}
+        else if(name=="refreshQueue")publishTests();
+        else if(name=="routingMode"){
+            if(value.toString()!="manual"&&value.toString()!="auto")return;
+            m_routingDraft["mode"]=value.toString();publishTests();
+        }else if(name=="moveProvider"){
+            if(m_routingDraft.value("mode")!="manual")return;
+            auto move=value.toMap();auto from=move.value("provider").toString(),before=move.value("before").toString();
+            if(!providers.contains(from)||from==m_settings.value("provider").toString()||before==m_settings.value("provider").toString())return;
+            if(!before.isEmpty()&&!providers.contains(before))return;
+            QStringList order;for(auto p:m_routingDraft.value("order").toArray())order<<p.toString();
+            if(from==before)return;order.removeAll(from);int index=order.indexOf(before);order.insert(index<0?order.size():index,from);
+            m_routingDraft["order"]=QJsonArray::fromStringList(order);publishTests();
+        }
         else if(QStringList{"apiKey","endpoint","model","region","appId"}.contains(name)){
-            auto draft=m_drafts.value(m_configProvider).toObject();draft[name]=QJsonValue::fromVariant(value);m_drafts[m_configProvider]=draft;
+            auto draft=m_drafts.value(m_configProvider).toObject();auto next=QJsonValue::fromVariant(value);
+            if(draft.value(name)!=next)m_tests.erase(m_configProvider);
+            draft[name]=next;m_drafts[m_configProvider]=draft;
             if(name=="appId")m_configBackend.update({{"endpointHint",value.toString().trimmed().isEmpty()?"https://dict.youdao.com/jsonapi":"https://openapi.youdao.com/api"}});
-        }else if(name=="save"){m_services->save(m_drafts);configAction("close",{});}
+        }else if(name=="save"){m_services->save(m_drafts,m_routingDraft);configAction("close",{});}
         else if(name=="test"||name=="testAll")testServices(name=="testAll");
-        else if(name=="showTests")m_configBackend.update({{"showTestResults",true}});
+        else if(name=="testService")testServices(false,value.toString());
+        else if(name=="showTests")configAction("home",{});
         else if(name=="close"){
             if(m_config.window)m_config.window->hide();++m_configEpoch;
             for(auto c:m_testCancels)c->store(true);m_testCancels.clear();m_testQueue.clear();m_testRunning=0;
@@ -680,14 +702,15 @@ void App::configAction(const QString& name,const QVariant& value)
         }
     }catch(const std::exception& e){m_configBackend.update({{"message",failure(e)}});}
 }
-void App::testServices(bool all)
+void App::testServices(bool all,const QString& provider)
 {
     if(m_testRunning||!m_testQueue.isEmpty())return;
-    m_batch=all;m_tests.clear();m_testQueue=all?providers:QStringList{m_configProvider};
+    auto single=provider.isEmpty()?m_configProvider:provider;if(!all&&!providers.contains(single))return;
+    m_batch=all;if(all)m_tests.clear();m_testQueue=all?providers:QStringList{single};
     for(auto p:m_testQueue){
         if(!m_drafts.contains(p))m_drafts[p]=m_services->profile(p);
         m_tests[p]={{"status","waiting"},{"detail","等待测试"}};
-    }m_configBackend.update({{"showTestResults",all}});pumpTests();
+    }pumpTests();
 }
 void App::pumpTests()
 {
@@ -699,10 +722,13 @@ void App::pumpTests()
         }
         ++m_testRunning;m_tests[p]={{"status","running"},{"detail","测试中…"}};
         auto services=m_services;auto settings=m_settings;auto cancel=token();m_testCancels.push_back(cancel);auto epoch=m_configEpoch;
+        auto started=std::make_shared<QElapsedTimer>();started->start();
         background([services,settings,draft,cancel]{return services->translate(settings,{"hello"},"en","zh",cancel,draft);},
-            [this,p,cancel,epoch](Translation data,QString error){
+            [this,p,cancel,epoch,started,draft](Translation data,QString error){
                 if(epoch!=m_configEpoch||cancel->load())return;--m_testRunning;
-                m_tests[p]={{"status",error.isEmpty()?"success":"failed"},{"detail",error.isEmpty()?"连接成功："+data.segments.join('\n'):error}};pumpTests();
+                if(m_drafts.value(p).toObject()==draft)m_tests[p]={{"status",error.isEmpty()?"success":"failed"},{"elapsedMs",started->elapsed()},{"checkedAt",QDateTime::currentMSecsSinceEpoch()},
+                    {"detail",error.isEmpty()?"连接成功："+data.segments.join('\n'):error}};
+                pumpTests();
             });
     }publishTests();
 }
@@ -714,7 +740,20 @@ void App::publishTests()
         auto row=it->second;row["provider"]=p;row["name"]=m_configBackend.values["names"].toStringList().value(providers.indexOf(p));
         rows.append(row);if(row["status"]!="waiting"&&row["status"]!="running")++completed;
     }
+    QVariantList queue;int ready=0,cooling=0,unconfigured=0;
+    for(auto value:m_services->queue(m_settings,m_drafts,m_routingDraft)){
+        auto row=value.toObject().toVariantMap();auto p=row["provider"].toString();
+        row["name"]=m_configBackend.values["names"].toStringList().value(providers.indexOf(p));
+        if(!row["configured"].toBool())++unconfigured;else if(row["cooling"].toBool())++cooling;else ++ready;
+        if(auto it=m_tests.find(p);it!=m_tests.end()){
+            if(!it->second.contains("checkedAt")||it->second.value("checkedAt").toLongLong()>=row.value("checkedAt").toLongLong())
+                for(auto entry=it->second.begin();entry!=it->second.end();++entry)row[entry.key()]=entry.value();
+        }
+        queue.append(row);
+    }
     m_configBackend.update({{"testResults",rows},{"testing",m_testRunning>0||!m_testQueue.isEmpty()},{"batch",m_batch},
+        {"queue",queue},{"routingMode",m_routingDraft.value("mode").toString("manual")},{"readyCount",ready},{"coolingCount",cooling},{"unconfiguredCount",unconfigured},
+        {"fallbackEnabled",m_settings.value("fallbackEnabled").toBool(true)},{"recoveryMinutes",std::clamp(m_settings.value("fallbackRecoveryMinutes").toDouble(10),1.0,1440.0)},
         {"message",m_batch?QString("已测试 %1/%2").arg(completed).arg(rows.size()):m_tests[m_configProvider].value("detail").toString()}});
 }
 }

@@ -262,9 +262,48 @@ int main(int argc,char** argv)
             recovered.save({{"mymemory",QJsonObject{{"endpoint",base+"/mymemory"}}}});
             auto primary=recovered.translate(settings,{"Hello + 100%"},"en","zh",fresh());
             if(primary.fallback||primary.provider!="mymemory")throw std::runtime_error("config reset health");
+            // Exercise the actual routing path, not just the displayed order.
+            QTemporaryDir queueDir;st::Services queued(queueDir.path());
+            QJsonObject manual{{"mode","manual"},{"order",QJsonArray{"google","zvo","ecdict","google","unknown"}}};
+            queued.save({{"mymemory",QJsonObject{{"endpoint",base+"/queue-fail"}}},
+                {"google",QJsonObject{{"endpoint",base+"/google-slow"}}},{"zvo",QJsonObject{{"endpoint",base+"/zvo"}}}},manual);
+            if(queued.routing().value("order").toArray().size()!=st::providers.size())throw std::runtime_error("queue validates and completes provider IDs");
+            auto ordered=queued.translate(settings,{"Hello + 100%"},"en","zh",fresh());
+            if(ordered.provider!="google")throw std::runtime_error("manual queue takes first backup");
+            queued.translate({}, {"hello"},"en","zh",fresh(),queued.profile("zvo"));
+            auto automatic=queued.routing();automatic["mode"]="auto";queued.save({},automatic);
+            auto ranked=queued.queue(settings);
+            if(ranked[0].toObject().value("provider")!="mymemory"||ranked[1].toObject().value("provider")!="zvo")throw std::runtime_error("auto queue respects preferred and latency");
+            if(queued.translate(settings,{"Hello + 100%"},"en","zh",fresh()).provider!="zvo")throw std::runtime_error("automatic weights drive fallback");
+            st::Services queueReopened(queueDir.path());
+            if(queueReopened.routing().value("mode")!="auto"||queueReopened.translate(settings,{"hello"},"en","zh",fresh()).provider!="zvo")throw std::runtime_error("weights and queue survive restart");
+            queueReopened.save({},manual);
+            if(queueReopened.translate(settings,{"hello"},"en","zh",fresh()).provider!="google")throw std::runtime_error("manual order ignores automatic score");
+            auto queueEntry=[](const QJsonArray& values,const QString& provider){for(auto v:values)if(v.toObject().value("provider")==provider)return v.toObject();return QJsonObject();};
+            auto beforeMiss=queueEntry(queueReopened.queue(settings),"ecdict");
+            try{queueReopened.translate({}, {"zznotawordtest"},"en","zh",fresh(),queueReopened.profile("ecdict"));}catch(...){}
+            auto afterMiss=queueEntry(queueReopened.queue(settings),"ecdict");
+            if(beforeMiss.value("samples")!=afterMiss.value("samples")||afterMiss.value("cooling").toBool())throw std::runtime_error("dictionary miss doesn't reduce weight");
+            auto cancelledProfile=queueReopened.profile("google");cancelledProfile["endpoint"]=base+"/blocked";
+            auto stop=fresh();std::thread cancelQueue([stop]{QThread::msleep(70);stop->store(true);});
+            try{queueReopened.translate({}, {"hello"},"en","zh",stop,cancelledProfile);}catch(...){}cancelQueue.join();
+            auto cancelledState=queueEntry(queueReopened.queue(settings,{{"google",cancelledProfile}}),"google");
+            if(cancelledState.value("samples").toInt()||cancelledState.value("cooling").toBool())throw std::runtime_error("cancel doesn't change health or weight");
+            try{queueReopened.translate({}, {"hello"},"en","zh",fresh(),queueReopened.profile("ai"));}catch(...){}
+            if(queueEntry(queueReopened.queue(settings),"ai").value("samples").toInt())throw std::runtime_error("unconfigured service doesn't reduce weight");
+            auto changed=queueReopened.profile("mymemory");changed["endpoint"]=base+"/mymemory";
+            auto reset=queueEntry(queueReopened.queue(settings,{{"mymemory",changed}}),"mymemory");
+            if(reset.value("cooling").toBool()||reset.value("samples").toInt())throw std::runtime_error("changed configuration gets fresh health");
+            // A manual diagnostic can bypass cooldown, and success restores it.
+            auto failedProbe=queueReopened.profile("zvo");failedProbe["endpoint"]=base+"/zvo-recover";
+            try{queueReopened.translate({}, {"hello"},"en","zh",fresh(),failedProbe);}catch(...){}
+            if(!queueEntry(queueReopened.queue(settings,{{"zvo",failedProbe}}),"zvo").value("cooling").toBool())throw std::runtime_error("test failure enters cooldown");
+            queueReopened.translate({}, {"hello"},"en","zh",fresh(),failedProbe);
+            if(queueEntry(queueReopened.queue(settings,{{"zvo",failedProbe}}),"zvo").value("cooling").toBool())throw std::runtime_error("successful probe clears the same configuration cooldown");
             std::puts(QJsonDocument(QJsonObject{{"passed",true},{"fixtureRoutes",QJsonArray::fromStringList(routes)},
                 {"dpapi",true},{"smallScreenshotOcr",true},{"aiMigration",true},{"offlineDictionary",true},{"dictionaryFallback",true},{"youdaoSignature",true},{"sogouEncoding",true},
-                {"persistentFallback",true},{"recovery",true},{"cancel",true},{"httpProxy",true},{"pointerPhrases",true}}).toJson(QJsonDocument::Compact).constData());
+                {"persistentFallback",true},{"recovery",true},{"cancel",true},{"httpProxy",true},{"pointerPhrases",true},
+                {"manualQueue",true},{"automaticWeights",true},{"persistentQueue",true},{"diagnosticsHealth",true},{"neutralCancellationAndMisses",true}}).toJson(QJsonDocument::Compact).constData());
         }else if(args.contains("--live")){
             QJsonArray routes;
             auto live=args.contains("--live-providers")?args.value(args.indexOf("--live-providers")+1).split(','):QStringList{"google","edge","zvo","mymemory","sogou","youdao","ecdict"};
