@@ -460,6 +460,9 @@ void App::textFlow(const QString& command)
     // screenshot translation otherwise have independent cancellation/state.
     if(m_selector)return;
     auto point=m_mouse();
+    // Snapshot the source HWND before creating or showing the popup. Browser
+    // focus and hit-testing may otherwise refer to our own editable window.
+    if(command=="jsel")m_selectionTarget=selectionTarget();
     if(command=="ocr"&&m_word.window)m_word.window->hide();
     if(command!="ocr")openWord(command,point);
     if(command=="clip"){translateWord(m_readClipboard());return;}
@@ -502,6 +505,8 @@ void App::textFlow(const QString& command)
 }
 void App::openWord(QString mode,QPoint anchor,QRect selection)
 {
+    if(m_selectionCancel)m_selectionCancel->store(true);
+    m_selectionPendingEpoch=0;
     editWord(false);
     if(m_wordCancel)m_wordCancel->store(true);m_wordCancel=token();++m_wordEpoch;
     m_wordMode=mode;
@@ -533,6 +538,8 @@ void App::placeWord()
 }
 void App::closeWord()
 {
+    if(m_selectionCancel)m_selectionCancel->store(true);
+    m_selectionPendingEpoch=0;
     if(m_word.window)m_word.window->hide();
     editWord(false);
     if(m_wordCancel)m_wordCancel->store(true);++m_wordEpoch;
@@ -575,14 +582,23 @@ void App::readSelection(bool follow)
 {
     if(!m_word.window||!m_word.window->isVisible()||m_wordEditing||(follow&&!m_wordPinned))return;
     if(m_selectionReading){
-        if(!follow)m_wordBackend.update({{"loading",false},{"status","上一次选区读取尚未结束，请稍后重试；也可用鼠标 OCR"}});
+        // Repeated hotkeys (including close/reopen) replace the old request.
+        // Wait for its worker to be reaped before starting the latest one.
+        if(!follow){
+            if(m_selectionCancel)m_selectionCancel->store(true);
+            m_selectionPendingEpoch=m_wordEpoch;
+        }
         return;
     }
+    auto target=follow?selectionTarget():m_selectionTarget;
     m_selectionReading=true;auto epoch=m_wordEpoch;auto reader=m_readSelection;auto point=m_mouse();auto cancel=m_wordCancel;
-    background([reader,point]{return reader(POINT{point.x(),point.y()});},
-        [this,follow,epoch,cancel](Selection selection,QString error){
+    m_selectionCancel=token();auto selectionCancel=m_selectionCancel;
+    background([reader,point,target,selectionCancel]{return reader(POINT{point.x(),point.y()},target,selectionCancel);},
+        [this,follow,epoch,cancel,selectionCancel](Selection selection,QString error){
             m_selectionReading=false;
-            if(epoch!=m_wordEpoch||(!follow&&cancel->load())||m_wordEditing||!m_word.window->isVisible())return;
+            auto pending=m_selectionPendingEpoch;m_selectionPendingEpoch=0;
+            if(pending&&pending==m_wordEpoch){readSelection();return;}
+            if(epoch!=m_wordEpoch||selectionCancel->load()||(!follow&&cancel->load())||m_wordEditing||!m_word.window->isVisible())return;
             auto text=selection.text.trimmed();
             if(follow){
                 if(m_followBaseline){m_followBaseline=false;m_lastSelection=text;return;}
@@ -590,17 +606,13 @@ void App::readSelection(bool follow)
                 if(text==m_lastSelection||text==m_wordSource)return;
             }else if(!error.isEmpty()||text.isEmpty()){
                 m_wordBackend.update({{"loading",false},{"status",error.isEmpty()?
-                    QString("没有读到选区。此应用可能不支持划词，请用鼠标 OCR 热键 %1").arg(m_settings.value("wordOcrHotkey").toString()):error}});
+                    QString("没有读到选区，请保留文字选中后重试；也可用鼠标 OCR 热键 %1").arg(m_settings.value("wordOcrHotkey").toString()):error}});
                 return;
             }
             m_lastSelection=text;
             if(!m_wordPinned){m_wordSelection=selection.area;placeWord();}
             translateWord(text);
         });
-    if(!follow)QTimer::singleShot(6000,this,[this,epoch,cancel]{
-        if(epoch!=m_wordEpoch||cancel->load())return;cancel->store(true);
-        m_wordBackend.update({{"loading",false},{"status","选区读取超时，请尝试鼠标 OCR"}});
-    });
 }
 void App::translateWord(QString text)
 {

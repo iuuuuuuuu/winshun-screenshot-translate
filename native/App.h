@@ -73,14 +73,15 @@ private:
     Backend m_pinBackend,m_configBackend,m_wordBackend;
     View m_bar,m_status,m_config,m_text,m_menu,m_word;
     QTimer m_followSelection;
-    Cancel m_wordCancel;
-    quint64 m_wordEpoch=0;
+    Cancel m_wordCancel,m_selectionCancel;
+    quint64 m_wordEpoch=0,m_selectionPendingEpoch=0;
     bool m_wordPinned=false,m_wordEditing=false,m_selectionReading=false,m_followBaseline=false;
     DWORD m_wordOpened=0;
     QPoint m_wordAnchor;
     QRect m_wordSelection;
     QString m_wordMode,m_wordSource,m_lastSelection;
-    std::function<Selection(POINT)> m_readSelection=[](POINT p){return selectionAt(p);};
+    HWND m_selectionTarget=nullptr;
+    std::function<Selection(POINT,HWND,Cancel)> m_readSelection=[](POINT p,HWND target,Cancel cancel){return isolatedSelection(p,target,cancel);};
     std::function<QString()> m_readClipboard;
     std::function<QPoint()> m_mouse;
     std::unique_ptr<ws::capture::PinWindow> m_pin;

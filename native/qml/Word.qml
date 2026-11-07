@@ -12,7 +12,9 @@ Window {
     height: 44 + Math.min(300, Math.max(62, body.implicitHeight)) + 72
     visible: false
     flags: Qt.Tool | Qt.WindowStaysOnTopHint | Qt.FramelessWindowHint | (acceptsInput ? 0 : Qt.WindowDoesNotAcceptFocus)
-    color: "transparent"
+    // Use an opaque backing store for the whole card so native moves and caret
+    // updates cannot leave its unchanged controls in a translucent dirty region.
+    color: Theme.card
     function syncSource() {
         if (!editor || editing) return
         syncingSource = true
@@ -140,11 +142,6 @@ Window {
                     visible: !editor.text && !editor.activeFocus
                     text: backend.state.chinese ? "原文 · 可直接编辑" : "Source · edit directly"
                     font.family: "Segoe UI"; font.pixelSize: 17; color: Theme.faint
-                }
-                Rectangle {
-                    anchors.bottom: parent.bottom; width: parent.width
-                    height: editor.activeFocus ? 2 : 1
-                    color: editor.activeFocus ? Theme.accent : Theme.controlBorder
                 }
             }
             TextEdit {

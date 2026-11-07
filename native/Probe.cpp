@@ -335,11 +335,28 @@ void Probe::run(App& app,const QJsonObject& params)
         struct ReadResult {Selection selection;QString error;std::atomic_bool ready=false;};
         auto read=std::make_shared<ReadResult>();
         std::thread([read,edit]{
-            try{read->selection=selectionAt(POINT{},edit);}catch(const std::exception& e){read->error=e.what();}
+            try{read->selection=isolatedSelection(POINT{},edit,std::make_shared<std::atomic_bool>(false));}catch(const std::exception& e){read->error=e.what();}
             read->ready=true;
         }).detach();
         check(until([&]{return read->ready.load();},6000),"real Windows selection read completes");
         check(read->error.isEmpty()&&read->selection.text=="Hello"&&!read->selection.area.isEmpty(),"real Windows selection text and bounds");
+        report["wordIsolatedSelection"]=true;
+        // Force a native provider to stall without running its owning thread's
+        // message loop. The worker must exit, and the next read must succeed.
+        auto stalled=std::make_shared<ReadResult>();
+        std::thread([stalled,edit]{
+            try{stalled->selection=isolatedSelection(POINT{},edit,std::make_shared<std::atomic_bool>(false),40);}catch(const std::exception& e){stalled->error=e.what();}
+            stalled->ready=true;
+        }).detach();
+        QThread::msleep(1000);
+        check(stalled->ready.load()&&!stalled->error.isEmpty(),"stalled selection worker is reaped within its deadline");
+        auto recovered=std::make_shared<ReadResult>();
+        std::thread([recovered,edit]{
+            try{recovered->selection=isolatedSelection(POINT{},edit,std::make_shared<std::atomic_bool>(false));}catch(const std::exception& e){recovered->error=e.what();}
+            recovered->ready=true;
+        }).detach();
+        check(until([&]{return recovered->ready.load();},4000)&&recovered->error.isEmpty()&&recovered->selection.text=="Hello","selection works after a stalled provider");
+        report["wordSelectionTimeoutRecovery"]=true;
         DestroyWindow(parent);report["wordRealEditSelection"]=true;
         // Production hotkey routes, actual QML windows and Windows OCR. Only
         // input text/cursor/pixels are injected; never alter the Owner clipboard.
@@ -403,8 +420,25 @@ void Probe::run(App& app,const QJsonObject& params)
         PostMessageW(app.m_raw->m_hwnd,WM_INPUT,0,1);
         check(until([&]{return !app.m_word.window->isVisible();},300),"unpinned word outside close");
         report["wordOutsideDismiss"]=true;
+        auto readAttempts=std::make_shared<std::atomic_int>(0);
+        auto readCancelled=std::make_shared<std::atomic_bool>(false);
+        app.m_readSelection=[readAttempts,readCancelled](POINT,HWND,Cancel cancel){
+            if(readAttempts->fetch_add(1)==0){
+                QElapsedTimer wait;wait.start();
+                while(!cancel->load()&&wait.elapsed()<2000)QThread::msleep(5);
+                readCancelled->store(cancel->load());
+                return Selection{"Stale selection",QRect(540,220,100,30)};
+            }
+            return Selection{"Settings",QRect(540,220,100,30)};
+        };
+        app.textFlow("jsel");
+        check(until([&]{return readAttempts->load()==1;}),"selection read starts before replacement");
+        app.closeWord();app.textFlow("jsel");
+        check(until([&]{return app.m_wordBackend.values["translatedText"].toString()=="设置";}),"reopened selection starts after cancelled read without another hotkey");
+        check(readCancelled->load()&&readAttempts->load()==2&&!app.m_selectionReading,"only the latest selection read completes");
+        report["wordSelectionReplacement"]=true;app.closeWord();
         auto selectedIndex=std::make_shared<std::atomic_int>(0);
-        app.m_readSelection=[selectedIndex](POINT){
+        app.m_readSelection=[selectedIndex](POINT,HWND,Cancel){
             return Selection{selectedIndex->load()==0?"Hello + 100%":"Settings",QRect(540,220,100,30)};
         };
         app.m_settings["selectionHotkey"]="Alt+Shift+S";
@@ -421,6 +455,18 @@ void Probe::run(App& app,const QJsonObject& params)
         report["wordEditableSelection"]=true;
         click(app.m_word.window,app.m_word.window->findChild<QQuickItem*>("word-pin"));
         check(app.m_wordPinned&&app.m_followSelection.isActive(),"pin enables selection following");
+        auto movedWindow=app.m_word.window;
+        auto oldPosition=movedWindow->position();
+        SendMessageW(HWND(movedWindow->winId()),WM_ENTERSIZEMOVE,0,0);
+        for(int i=0;i<8;++i){movedWindow->setPosition(oldPosition+QPoint(12*i,8*i));pump(35);}
+        SendMessageW(HWND(movedWindow->winId()),WM_EXITSIZEMOVE,0,0);
+        pump(650); // include cursor blinking and a native expose, not just a fresh scene grab
+        auto frame=movedWindow->grabWindow();frame.save(out+"/word-moved-scene.png");
+        check(movedWindow->color().alpha()==255&&!(GetWindowLongPtrW(HWND(movedWindow->winId()),GWL_EXSTYLE)&WS_EX_LAYERED),"word popup uses an opaque native backing store during moves");
+        check(frame.pixelColor(frame.width()/2,frame.height()-6).alpha()==255&&
+            movedWindow->findChild<QQuickItem*>("word-close")->isVisible()&&
+            movedWindow->findChild<QQuickItem*>("word-submit-edit")->isVisible(),"moved popup keeps card and actions");
+        report["wordMoveRendering"]=true;
         auto fixedPosition=app.m_word.window->position();
         check(until([&]{return app.m_raw&&app.m_raw->m_hwnd.load();}),"pinned raw input");
         app.m_raw->m_read=&readRaw;app.m_raw->m_cursor=&cursor;app.m_wordOpened=GetTickCount()-500;

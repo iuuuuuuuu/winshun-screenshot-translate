@@ -31,7 +31,8 @@ int wmain(int argc, wchar_t** argv)
         return 5;
     }
     using Entry = int(__cdecl*)(const wchar_t*);
-    bool probe=false;for(int i=1;i<argc;++i)probe=probe||std::wstring_view(argv[i])==L"--probe";
-    auto entry = reinterpret_cast<Entry>(GetProcAddress(dll, probe?"screenshotTranslateProbe":"screenshotTranslateMain"));
+    bool probe=false,selection=false;
+    for(int i=1;i<argc;++i){probe=probe||std::wstring_view(argv[i])==L"--probe";selection=selection||std::wstring_view(argv[i])==L"--selection-worker";}
+    auto entry = reinterpret_cast<Entry>(GetProcAddress(dll, selection?"screenshotTranslateSelection":probe?"screenshotTranslateProbe":"screenshotTranslateMain"));
     return entry ? entry(appDir.c_str()) : 6;
 }

@@ -10,6 +10,11 @@
 #include <wrl/client.h>
 #include "Desktop.h"
 #include <QCoreApplication>
+#include <QProcess>
+#include <QJsonDocument>
+#include <QJsonArray>
+#include <QElapsedTimer>
+#include <QFile>
 #include <QFont>
 #include <QPainter>
 #include <QRegularExpression>
@@ -552,7 +557,7 @@ Block recognizeAt(const QImage& image,Cancel cancel,QPointF point)
 Selection selectionAt(POINT point,HWND target)
 {
     // UI Automation providers can block inside another application's COM
-    // server. A UI timeout releases the busy state, but never piles up reads.
+    // server. Production calls run in a disposable selection worker.
     static std::atomic_bool reading=false;
     bool idle=false;
     if(!reading.compare_exchange_strong(idle,true))throw std::runtime_error("上一次划词读取尚未结束，请稍后重试");
@@ -602,16 +607,16 @@ Selection selectionAt(POINT point,HWND target)
     HRESULT hr=CoInitializeEx(nullptr,COINIT_MULTITHREADED);bool initialized=SUCCEEDED(hr);
     struct Cleanup{bool initialized;~Cleanup(){if(initialized)CoUninitialize();}} cleanup{initialized};
     using Microsoft::WRL::ComPtr;
-    ComPtr<IUIAutomation> automation;ComPtr<IUIAutomationTreeWalker> walker;
-    if(FAILED(CoCreateInstance(CLSID_CUIAutomation,nullptr,CLSCTX_INPROC_SERVER,IID_PPV_ARGS(&automation))))return {};
-    automation->get_ControlViewWalker(&walker);
-    for(int route=0;route<(target?1:2);++route){
-        ComPtr<IUIAutomationElement> element;
-        if(target)automation->ElementFromHandle(target,&element);
-        else if(route==0)automation->GetFocusedElement(&element);else automation->ElementFromPoint(point,&element);
-        for(int depth=0;element&&depth<6;++depth){
+    ComPtr<IUIAutomation2> automation2;ComPtr<IUIAutomation> automation;ComPtr<IUIAutomationTreeWalker> walker;
+    if(SUCCEEDED(CoCreateInstance(__uuidof(CUIAutomation8),nullptr,CLSCTX_INPROC_SERVER,IID_PPV_ARGS(&automation2)))){
+        automation2->put_ConnectionTimeout(300);automation2->put_TransactionTimeout(300);automation=automation2;
+    }else if(FAILED(CoCreateInstance(CLSID_CUIAutomation,nullptr,CLSCTX_INPROC_SERVER,IID_PPV_ARGS(&automation))))return {};
+    automation->get_RawViewWalker(&walker);
+    auto selected=[&](IUIAutomationElement* element)->Selection {
+            BOOL password=FALSE;
+            if(FAILED(element->get_CurrentIsPassword(&password))||password)return {};
             int pid=0;element->get_CurrentProcessId(&pid);
-            if(!target&&pid==int(GetCurrentProcessId()))break;
+            if(!target&&pid==int(GetCurrentProcessId()))return {};
             ComPtr<IUIAutomationTextPattern> pattern;ComPtr<IUIAutomationTextRangeArray> ranges;
             if(SUCCEEDED(element->GetCurrentPatternAs(UIA_TextPatternId,IID_PPV_ARGS(&pattern)))&&pattern&&
                 SUCCEEDED(pattern->GetSelection(&ranges))&&ranges){
@@ -637,11 +642,97 @@ Selection selectionAt(POINT point,HWND target)
                 }
                 if(!pieces.isEmpty())return {pieces.join('\n').trimmed(),bounds.toAlignedRect()};
             }
+            return {};
+    };
+    // Chromium's focused native child can expose only the web-view host. The
+    // selection belongs to its descendant Document/TextPattern, not an ancestor.
+    HWND root=target?GetAncestor(target,GA_ROOT):GetForegroundWindow();
+    ComPtr<IUIAutomationElement> rootElement;
+    if(root)automation->ElementFromHandle(root,&rootElement);
+    for(int route=0;route<3;++route){
+        ComPtr<IUIAutomationElement> element;
+        if(route==0&&target)automation->ElementFromHandle(target,&element);
+        else if(route==1&&GetAncestor(WindowFromPoint(point),GA_ROOT)==root)automation->ElementFromPoint(point,&element);
+        else if(route==2&&GetAncestor(GetForegroundWindow(),GA_ROOT)==root)automation->GetFocusedElement(&element);
+        for(int depth=0;element&&depth<12;++depth){
+            if(auto result=selected(element.Get());!result.text.isEmpty())return result;
+            BOOL isRoot=FALSE;
+            if(rootElement&&SUCCEEDED(automation->CompareElements(element.Get(),rootElement.Get(),&isRoot))&&isRoot)break;
             ComPtr<IUIAutomationElement> parent;
             if(!walker||FAILED(walker->GetParentElement(element.Get(),&parent)))break;
             element=parent;
         }
-    }return {};
+    }
+    if(rootElement){
+        VARIANT available{};available.vt=VT_BOOL;available.boolVal=VARIANT_TRUE;
+        ComPtr<IUIAutomationCondition> condition;
+        ComPtr<IUIAutomationElementArray> containers;
+        if(SUCCEEDED(automation->CreatePropertyCondition(UIA_IsTextPatternAvailablePropertyId,available,&condition))&&
+            SUCCEEDED(rootElement->FindAll(TreeScope_Descendants,condition.Get(),&containers))&&containers){
+            int count=0;containers->get_Length(&count);
+            for(int i=0;i<std::min(count,128);++i){
+                ComPtr<IUIAutomationElement> element;containers->GetElement(i,&element);
+                if(element)if(auto result=selected(element.Get());!result.text.isEmpty())return result;
+            }
+        }
+    }
+    return {};
+}
+HWND selectionTarget()
+{
+    auto foreground=GetForegroundWindow();DWORD pid=0;
+    if(!foreground)return nullptr;
+    GetWindowThreadProcessId(foreground,&pid);
+    if(pid==GetCurrentProcessId())return nullptr;
+    GUITHREADINFO info{sizeof info};
+    if(GetGUIThreadInfo(GetWindowThreadProcessId(foreground,nullptr),&info)&&info.hwndFocus)return info.hwndFocus;
+    return foreground;
+}
+Selection isolatedSelection(POINT point,HWND target,Cancel cancel,int timeoutMs)
+{
+    if(!target||!IsWindow(target)||cancel->load())return {};
+    QProcess worker;
+    worker.setProcessChannelMode(QProcess::SeparateChannels);
+    wchar_t desktop[256]{};DWORD bytes=0;
+    GetUserObjectInformationW(GetThreadDesktop(GetCurrentThreadId()),UOI_NAME,desktop,sizeof desktop,&bytes);
+    worker.setCreateProcessArgumentsModifier([&](QProcess::CreateProcessArguments* args){
+        args->flags|=CREATE_NO_WINDOW;
+        auto startup=reinterpret_cast<STARTUPINFOW*>(args->startupInfo);
+        startup->lpDesktop=desktop;startup->dwFlags|=STARTF_USESHOWWINDOW;startup->wShowWindow=SW_HIDE;
+    });
+    worker.start(QCoreApplication::applicationDirPath()+"/ScreenshotTranslate.exe",{"--selection-worker"});
+    if(!worker.waitForStarted(800))throw std::runtime_error("无法启动选区读取，请重试");
+    QJsonObject request{{"x",int(point.x)},{"y",int(point.y)},{"target",QString::number(quintptr(target))}};
+    worker.write(QJsonDocument(request).toJson(QJsonDocument::Compact)+"\n");worker.closeWriteChannel();
+    QElapsedTimer elapsed;elapsed.start();
+    while(!worker.waitForFinished(25)){
+        if(cancel->load()||elapsed.elapsed()>=timeoutMs){
+            worker.kill();worker.waitForFinished(500);
+            if(cancel->load())return {};
+            throw std::runtime_error("选区读取超时，已释放读取任务，请重试或使用鼠标 OCR");
+        }
+    }
+    if(cancel->load())return {};
+    QJsonParseError parse{};auto response=QJsonDocument::fromJson(worker.readAllStandardOutput(),&parse).object();
+    if(worker.exitStatus()!=QProcess::NormalExit||worker.exitCode()!=0||parse.error!=QJsonParseError::NoError||
+        !response.contains("text")||!response.value("error").toString().isEmpty())throw std::runtime_error("无法读取选区，请重试或使用鼠标 OCR");
+    auto box=response.value("area").toArray();
+    return {response.value("text").toString(),box.size()==4?QRect(box[0].toInt(),box[1].toInt(),box[2].toInt(),box[3].toInt()):QRect()};
+}
+int selectionWorker()
+{
+    QFile input;input.open(stdin,QIODevice::ReadOnly);
+    auto request=QJsonDocument::fromJson(input.readLine(4096)).object();
+    auto target=reinterpret_cast<HWND>(quintptr(request.value("target").toString().toULongLong()));
+    if(!target||!IsWindow(target))return 2;
+    QJsonObject response;
+    try{
+        auto result=selectionAt(POINT{request.value("x").toInt(),request.value("y").toInt()},target);
+        response={{"text",result.text},{"area",QJsonArray{result.area.x(),result.area.y(),result.area.width(),result.area.height()}}};
+    }catch(...){response={{"error","read failed"}};}
+    auto data=QJsonDocument(response).toJson(QJsonDocument::Compact);
+    std::fwrite(data.constData(),1,size_t(data.size()),stdout);std::fflush(stdout);
+    return 0;
 }
 QString selectedText()
 {

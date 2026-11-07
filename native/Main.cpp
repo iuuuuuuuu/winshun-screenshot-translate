@@ -57,3 +57,9 @@ extern "C" __declspec(dllexport) int screenshotTranslateProbe(const wchar_t* app
     if(!st::Probe::privateDesktop())return 10;
     st::Probe::enable();return screenshotTranslateMain(appDir);
 }
+extern "C" __declspec(dllexport) int screenshotTranslateSelection(const wchar_t*)
+{
+    SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+    int argc=1;char name[]="SelectionReader";char* argv[]{name,nullptr};QCoreApplication app(argc,argv);
+    return st::selectionWorker();
+}
