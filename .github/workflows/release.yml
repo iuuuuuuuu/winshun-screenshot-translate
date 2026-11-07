@@ -1,14 +1,58 @@
-name: release
+name: 原生构建与打包
 
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
-  regression:
-    uses: ./.github/workflows/test.yml
-  package:
-    needs: regression
-    permissions:
-      contents: write
-    uses: LingCore/WinShun-plugins/.github/workflows/package.yml@main
+  build:
+    name: 构建 Windows 原生安装包
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: 安装固定版本 Qt
+        uses: jurplel/install-qt-action@b344308e4483fc892e0d27b3cd1b173ebdd95f06 # v4
+        with:
+          version: "6.10.0"
+          arch: win64_msvc2022_64
+          cache: true
+      - name: 检查标签并编译
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $manifest = Get-Content plugin.json -Raw | ConvertFrom-Json
+          if ($env:GITHUB_REF_TYPE -eq 'tag' -and $env:GITHUB_REF_NAME -ne "v$($manifest.version)") {
+            throw '标签与插件版本不一致'
+          }
+          $vsRoot = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          "VS_ROOT=$vsRoot" >> $env:GITHUB_ENV
+          .\native\build.ps1 -QtRoot $env:QT_ROOT_DIR -VsRoot $vsRoot -Output "$env:RUNNER_TEMP\native-build"
+      - name: 部署独立运行库并打包
+        shell: pwsh
+        run: |
+          python -B native/package.py --build "$env:RUNNER_TEMP\native-build" --qt-root "$env:QT_ROOT_DIR" --vs-root "$env:VS_ROOT"
+          if ($LASTEXITCODE) { throw '打包失败' }
+      - name: 保留安装包、校验值与开发验证程序
+        uses: actions/upload-artifact@v4
+        with:
+          name: 截图翻译原生包
+          if-no-files-found: error
+          path: |
+            dist/release-*/*.wsplugin
+            dist/release-*/*.sha256
+            dist/release-*/package.json
+            ${{ runner.temp }}/native-build/native_tests.exe
+      - name: 构建摘要
+        shell: pwsh
+        run: |
+          $report = Get-Content (Get-ChildItem dist/release-*/package.json | Select-Object -First 1).FullName -Raw | ConvertFrom-Json
+          "源码提交：$($report.sourceCommit)" >> $env:GITHUB_STEP_SUMMARY
+          "SHA-256：$($report.sha256)" >> $env:GITHUB_STEP_SUMMARY
+          "安装包已生成；下载构建产物并完成独立桌面验证后，再发布正式 Release。旧版附件不会覆盖。" >> $env:GITHUB_STEP_SUMMARY

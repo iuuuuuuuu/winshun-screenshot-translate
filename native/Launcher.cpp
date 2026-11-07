@@ -1,4 +1,4 @@
-// Shared-host Qt loading, following LingCore/WinShun's MIT capture launcher.
+// The administrator-capable package loads only its own deployed Qt runtime.
 #include <windows.h>
 #include <cstdio>
 #include <string>
@@ -7,21 +7,20 @@
 int wmain(int argc, wchar_t** argv)
 {
     SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOOPENFILEERRORBOX);
-    std::wstring appDir(32768, L'\0');
-    DWORD n = GetEnvironmentVariableW(L"WS_APP_DIR", appDir.data(), DWORD(appDir.size()));
-    if (n && n < appDir.size()) appDir.resize(n); else appDir.clear();
-    for (int i = 1; i + 1 < argc; ++i)
-        if (std::wstring_view(argv[i]) == L"--app-dir") appDir = argv[i + 1];
-    if (appDir.empty() || GetFileAttributesW((appDir + L"\\Qt6Core.dll").c_str()) == INVALID_FILE_ATTRIBUTES) {
-        std::fputs("ScreenshotTranslate: start from WinShun 0.20+ (WS_APP_DIR required)\n", stderr);
-        return 2;
-    }
-    SetEnvironmentVariableW(L"WS_APP_DIR", appDir.c_str());
     std::wstring self(32768, L'\0');
-    n = GetModuleFileNameW(nullptr, self.data(), DWORD(self.size()));
+    DWORD n = GetModuleFileNameW(nullptr, self.data(), DWORD(self.size()));
     if (!n || n >= self.size()) return 3;
     self.resize(n);
     auto dir = self.substr(0, self.find_last_of(L"\\/"));
+    auto appDir = dir + L"\\runtime";
+    if (GetFileAttributesW((appDir + L"\\Qt6Core.dll").c_str()) == INVALID_FILE_ATTRIBUTES) {
+        std::fputs("ScreenshotTranslate: bundled runtime missing; reinstall the complete plugin package\n", stderr);
+        return 2;
+    }
+    SetEnvironmentVariableW(L"WS_APP_DIR", appDir.c_str());
+    SetEnvironmentVariableW(L"QT_PLUGIN_PATH", appDir.c_str());
+    SetEnvironmentVariableW(L"QML_IMPORT_PATH", (appDir + L"\\qml").c_str());
+    SetEnvironmentVariableW(L"QML2_IMPORT_PATH", nullptr);
     if (!SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_DEFAULT_DIRS) ||
         !AddDllDirectory(appDir.c_str())) return 4;
     auto dll = LoadLibraryExW((dir + L"\\ScreenshotTranslateApp.dll").c_str(), nullptr,

@@ -59,7 +59,7 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(refine([typo], [block("transformation", [90, 5, 120, 20]), correct]), [correct])
 
     def test_combined_provider_setting_and_legacy_input(self):
-        manifest = json.loads((Path(__file__).resolve().parents[1] / "plugin.json").read_text(encoding="utf-8"))
+        manifest = json.loads((Path(__file__).parent / "plugin-0.3.3.json").read_text(encoding="utf-8"))
         settings = {entry["key"]: entry for entry in manifest["settings"]}
         self.assertEqual(manifest["version"], VERSION)
         self.assertNotIn("aiProvider", settings)

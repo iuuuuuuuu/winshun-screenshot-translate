@@ -1,7 +1,8 @@
 """Native runtime QA. Private desktops, synthetic input and local service fixtures.
 
 Python is the development harness only. Child PATH contains Windows and the
-installed WinShun runtime; shipped modules do not import Python/PySide.
+selected Qt runtime; shipped modules do not import Python/PySide. Public
+packages must pass --runtime with their own bundled runtime directory.
 """
 import ctypes
 from ctypes import wintypes as w
@@ -113,6 +114,8 @@ def launch(program, args, data, output, initial=None, gpu=False):
     if not desktop:
         raise OSError("Private desktop unavailable; no test on user's desktop")
     host = Path(os.environ["LOCALAPPDATA"]) / "Programs/WinShun"
+    if "--runtime" in sys.argv:
+        host = Path(sys.argv[sys.argv.index("--runtime")+1]).resolve()
     env = dict(os.environ)
     env.update(PATH=str(host) + os.pathsep + str(Path(os.environ["SystemRoot"]) / "System32") + os.pathsep + os.environ["SystemRoot"],
                WS_APP_DIR=str(host), WS_DATA_DIR=str(data), QT_PLUGIN_PATH=str(host), QML_IMPORT_PATH=str(host / "qml"),

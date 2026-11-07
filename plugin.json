@@ -5,26 +5,25 @@
     "zh": "截图翻译",
     "en": "Screenshot Translate"
   },
-  "version": "0.3.3",
+  "version": "0.4.0",
   "settingsWindow": true,
   "description": {
-    "zh": "Windows OCR 截图翻译，译文按原位置显示，支持对照、剪贴板翻译及独立渠道配置。",
-    "en": "Translate screen regions with Windows OCR, preserve text positions, compare the source, and configure each service independently."
+    "zh": "无需 Python 的原生截图、剪贴板、划词和鼠标指词翻译；支持可编辑原文、固定跟随、管理员选区及渠道自动降级。",
+    "en": "Native screenshot, clipboard, selection and pointer OCR translation, with editable source, pinned following, elevated selection access and service fallback."
   },
   "author": "iuuuuuuuu",
   "homepage": "https://github.com/iuuuuuuuu/winshun-screenshot-translate",
   "license": "MIT",
-  "minWinShun": "0.19.0",
+  "minWinShun": "0.22.0",
   "runtime": {
     "mode": "resident",
-    "program": "python",
-    "script": "broker.py",
-    "env": {"PYTHONDONTWRITEBYTECODE": "1"},
+    "program": "ScreenshotTranslate.exe",
+    "start": "eager",
+    "sandbox": "normal",
     "timeoutMs": 25000,
     "debounceMs": 300,
-    "start": "eager",
     "idleExitSec": 0,
-    "memoryMB": 512
+    "memoryMB": 1024
   },
   "permissions": [
     "ui",
@@ -32,7 +31,8 @@
     "clipboard:write",
     "network",
     "files:write",
-    "processes"
+    "processes",
+    "elevated"
   ],
   "commands": [
     {
@@ -161,17 +161,78 @@
       },
       "default": "mymemory",
       "options": [
-        { "value": "mymemory", "title": { "zh": "MyMemory", "en": "MyMemory" } },
-        { "value": "google", "title": { "zh": "Google", "en": "Google" } },
-        { "value": "edge", "title": { "zh": "Edge", "en": "Edge" } },
-        { "value": "zvo", "title": { "zh": "translate.js", "en": "translate.js" } },
-        { "value": "microsoft", "title": { "zh": "微软", "en": "Microsoft" } },
-        { "value": "deepl", "title": { "zh": "DeepL", "en": "DeepL" } },
-        { "value": "openai", "title": { "zh": "OpenAI", "en": "OpenAI" } },
-        { "value": "deepseek", "title": { "zh": "DeepSeek", "en": "DeepSeek" } },
-        { "value": "doubao", "title": { "zh": "豆包", "en": "Doubao" } },
-        { "value": "hunyuan", "title": { "zh": "混元", "en": "Hunyuan" } }
-      ]
+        {
+          "value": "mymemory",
+          "title": {
+            "zh": "MyMemory",
+            "en": "MyMemory"
+          }
+        },
+        {
+          "value": "google",
+          "title": {
+            "zh": "Google",
+            "en": "Google"
+          }
+        },
+        {
+          "value": "edge",
+          "title": {
+            "zh": "Edge",
+            "en": "Edge"
+          }
+        },
+        {
+          "value": "zvo",
+          "title": {
+            "zh": "translate.js",
+            "en": "translate.js"
+          }
+        },
+        {
+          "value": "microsoft",
+          "title": {
+            "zh": "微软",
+            "en": "Microsoft"
+          }
+        },
+        {
+          "value": "deepl",
+          "title": {
+            "zh": "DeepL",
+            "en": "DeepL"
+          }
+        },
+        {
+          "value": "openai",
+          "title": {
+            "zh": "OpenAI",
+            "en": "OpenAI"
+          }
+        },
+        {
+          "value": "deepseek",
+          "title": {
+            "zh": "DeepSeek",
+            "en": "DeepSeek"
+          }
+        },
+        {
+          "value": "doubao",
+          "title": {
+            "zh": "豆包",
+            "en": "Doubao"
+          }
+        },
+        {
+          "value": "hunyuan",
+          "title": {
+            "zh": "混元",
+            "en": "Hunyuan"
+          }
+        }
+      ],
+      "presentation": "exclusive"
     },
     {
       "key": "proxy",
@@ -189,7 +250,10 @@
     {
       "key": "fallbackEnabled",
       "type": "bool",
-      "title": { "zh": "自动降级", "en": "Automatic fallback" },
+      "title": {
+        "zh": "自动降级",
+        "en": "Automatic fallback"
+      },
       "hint": {
         "zh": "记住暂时失败的渠道，使用其他免费渠道或已配置的服务；不会改变选定的主渠道",
         "en": "Remember unavailable services and use another free or configured service without changing the preferred service"
@@ -199,7 +263,10 @@
     {
       "key": "fallbackRecoveryMinutes",
       "type": "number",
-      "title": { "zh": "自动恢复间隔（分钟）", "en": "Recovery interval (minutes)" },
+      "title": {
+        "zh": "自动恢复间隔（分钟）",
+        "en": "Recovery interval (minutes)"
+      },
       "hint": {
         "zh": "1–1440 分钟。间隔到后，在下一次翻译中优先重试主渠道；修改地址、密钥或代理会立即重试",
         "en": "1–1440 minutes. Retry the preferred service on the next translation after this interval; changed configuration retries immediately"
@@ -212,19 +279,43 @@
       "key": "comparisonOrder",
       "type": "choice",
       "presentation": "exclusive",
-      "title": { "zh": "双语对照顺序", "en": "Comparison order" },
-      "hint": { "zh": "上下排列，保留原文与译文的图片布局", "en": "Stack the original and translated images vertically" },
+      "title": {
+        "zh": "双语对照顺序",
+        "en": "Comparison order"
+      },
+      "hint": {
+        "zh": "上下排列，保留原文与译文的图片布局",
+        "en": "Stack the original and translated images vertically"
+      },
       "default": "translation-first",
       "options": [
-        { "value": "translation-first", "title": { "zh": "译文在上", "en": "Translation first" } },
-        { "value": "source-first", "title": { "zh": "原文在上", "en": "Source first" } }
+        {
+          "value": "translation-first",
+          "title": {
+            "zh": "译文在上",
+            "en": "Translation first"
+          }
+        },
+        {
+          "value": "source-first",
+          "title": {
+            "zh": "原文在上",
+            "en": "Source first"
+          }
+        }
       ]
     },
     {
       "key": "closeOnOutsideClick",
       "type": "bool",
-      "title": { "zh": "点击其他区域关闭贴图", "en": "Close the pin on outside click" },
-      "hint": { "zh": "贴图、工具条、语言菜单和渠道配置窗口内的点击会保留贴图", "en": "Clicks inside the pin, toolbar, language menus or service settings keep it open" },
+      "title": {
+        "zh": "点击其他区域关闭贴图",
+        "en": "Close the pin on outside click"
+      },
+      "hint": {
+        "zh": "贴图、工具条、语言菜单和渠道配置窗口内的点击会保留贴图",
+        "en": "Clicks inside the pin, toolbar, language menus or service settings keep it open"
+      },
       "default": true
     },
     {
@@ -320,8 +411,8 @@
         "en": "Clipboard hotkey"
       },
       "hint": {
-        "zh": "清空即关闭；旧版 Win顺 不支持插件热键时仍可用关键字 jft",
-        "en": "Clear to disable; on older WinShun versions use the jft keyword"
+        "zh": "在鼠标附近打开词义窗口；清空关闭",
+        "en": "Open a word popup near the pointer; clear to disable"
       },
       "default": "Alt+Shift+C"
     },
@@ -333,10 +424,23 @@
         "en": "Selection hotkey"
       },
       "hint": {
-        "zh": "留空关闭；用 UI Automation 读取当前窗口的选中文字，不改剪贴板、不模拟按键；很多应用不支持",
-        "en": "Empty disables it; reads the active window's selected text through UI Automation without touching the clipboard or sending keys; unsupported in many apps"
+        "zh": "在选区旁显示词义；固定后跟随新选区。读取管理员程序需以管理员启动 WinShun 并确认本插件权限",
+        "en": "Show a popup by the selection; pin to follow. For elevated apps, run WinShun as administrator and confirm this plugin's permissions"
       },
-      "default": ""
+      "default": "Alt+Shift+W"
+    },
+    {
+      "key": "wordOcrHotkey",
+      "type": "hotkey",
+      "title": {
+        "zh": "鼠标指词 OCR 热键",
+        "en": "Pointer word OCR hotkey"
+      },
+      "hint": {
+        "zh": "混排时，少数语言只取所在片段，主要语言取整句；原文可编辑，清空热键关闭",
+        "en": "In mixed text, point at a minority language for that phrase or the main language for the sentence; source is editable; clear to disable"
+      },
+      "default": "Alt+Shift+O"
     }
   ]
 }

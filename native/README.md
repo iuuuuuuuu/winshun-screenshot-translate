@@ -1,23 +1,23 @@
-# Screenshot Translate 0.4.0 — native Windows candidate
+# 截图翻译 0.4.0：原生版构建与验证
 
 原生 C++ / Qt Quick 版本，运行时不需要 Python、PySide6、PowerShell OCR 脚本或另装 Qt。
-小型启动器从 WinShun 提供的 `WS_APP_DIR` 加载宿主 Qt，系统 Windows OCR 在后台线程识别图片。
-支持 Windows 10/11 x64、WinShun 0.20.0+ 和至少一种 Windows OCR 语言包。
-本地构建使用 Qt 6.10 公共 API，验证运行库为已安装的 Qt 6.12。
+小型启动器只从本插件的 `runtime/` 加载随包 Qt，系统 Windows OCR 在后台线程识别图片。
+支持 Windows 10/11 x64、WinShun 0.22.0+ 和至少一种 Windows OCR 语言包。
+构建与分发使用 Qt 6.10.0 公共 API；运行时不从宿主目录加载 Qt。
 
-这是本地原生候选包。公开 v0.3.3 和官方插件库仍为 Python 版本；原生 EXE / DLL
-进入官方索引需要维护者接受新的二进制分发方式，原 PR 的脚本版本合并不等于原生许可。
+原生 EXE / DLL 按官方“未审核的原生插件”类别提交，最低宿主版本为 0.22.0。
+管理员插件自带运行库，不声明 `runtime.qt: host`；代码审核状态以官方索引为准。
 本包沿用社区 ID `iuuuuuuuu.screenshot-translate`。
 
 ## 安装和回退
 
 在 WinShun 设置 → 插件 → 从压缩包安装，选择
-`iuuuuuuuu.screenshot-translate-0.4.0-native.wsplugin`。运行时不检查或启动 Python。
-WinShun 提供 Qt DLL，包内仅有启动器、应用 DLL 和文档；DLL 内包含 QML 控件与授权图标字体。
+`iuuuuuuuu.screenshot-translate-0.4.0.wsplugin`。运行时不检查或启动 Python。
+包内包括启动器、应用 DLL、Qt/Visual C++ 运行库、许可和文档；DLL 内包含 QML 控件与授权图标字体。
 现有渠道、热键、代理、偏好和 DPAPI 密钥格式保持兼容，不迁移或删除用户的数据目录。
 
-开发机安装脚本在 `dist/before-native-日期时间/` 完整备份旧入口，将清单最后写入，
-并逐文件校验。回退时可安装原 v0.3.3 包，或恢复备份中的 `plugin.json` 和旧文件。
+本地候选版的安装脚本和备份仍用于历史回退。公开版使用 WinShun 的压缩包安装流程。
+回退时可安装原 v0.3.3 包及其 Python 依赖，或恢复已保存的完整备份。
 不要同时启用历史 `winshun.screenshot-translate` 和当前社区 ID。
 
 ### 读取以管理员身份运行的软件
@@ -108,17 +108,16 @@ DPAPI 加密。日志不记录截图、OCR 文字、凭据或服务响应正文�
 ## 构建和验证
 
 ```powershell
-.\native\build.ps1 -QtRoot <Qt6-msvc2022_64> -VsRoot <VisualStudio>
-python -B native/test_native.py --core
-python -B native/test_native.py
-python -B native/test_native_standard.py --output .test-output/native-standard
-python -B native/test_native.py --gpu
-python -B native/test_native.py --live
-python -B native/package.py
+.\native\build.ps1 -QtRoot <Qt6.10.0-msvc2022_64> -VsRoot <VisualStudio> -Output <构建目录>
+python -B native/package.py --build <构建目录> --qt-root <Qt目录> --vs-root <VisualStudio>
+# package.json 中的 stage 是完整待发布目录；开发中可加 --allow-dirty，仅供本地验证。
+python -B native/test_native.py --build <stage目录> --runtime <stage目录>/runtime
+python -B native/test_native_standard.py --build <stage目录> --runtime <stage目录>/runtime --output .test-output/native-standard
+python -B native/test_native.py --build <构建目录> --runtime <stage目录>/runtime --core
 ```
 
-Python 仅用于开发时打包、测试和本机安装。测试子进程的 PATH 不含 Python，使用
-已安装 WinShun 的 Qt。UI 测试在从不切换到前台的独立桌面运行，使用合成截图、
+Python 仅用于开发时打包和测试。测试子进程的 PATH 不含 Python，公开包验证使用
+包内 Qt。UI 测试在从不切换到前台的独立桌面运行，使用合成截图、
 本地模拟服务和真实 Windows OCR；真实 Win32 窗口检查双屏蒙版、贴图像素、对照、
 菜单、关闭按钮、原始输入线程和热键协议。独立桌面不提供桌面 BitBlt，截图像素注入
 仅存在于受独立桌面约束的预览入口；正常入口始终使用 Win32 BitBlt 抓屏。

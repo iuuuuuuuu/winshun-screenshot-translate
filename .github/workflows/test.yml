@@ -1,4 +1,4 @@
-name: regression
+name: 兼容性回归
 
 on:
   push:
@@ -17,7 +17,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Install the declared UI dependency
+      - name: 安装旧版回归测试依赖
         run: python -m pip install -r requirements.txt
-      - name: Protocol, services and private-desktop UI regressions
+      - name: 检查协议、渠道与独立桌面界面回归
         run: python -B -m unittest discover -s .tests -v

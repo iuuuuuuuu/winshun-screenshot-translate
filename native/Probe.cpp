@@ -63,9 +63,16 @@ bool until(std::function<bool()> ready,int max=3000)
 void click(QQuickWindow* w,QQuickItem* item)
 {
     check(w&&item,"missing click target");auto p=item->mapToScene(QPointF(item->width()/2,item->height()/2));
-    QMouseEvent press(QEvent::MouseButtonPress,p,w->mapToGlobal(p.toPoint()),Qt::LeftButton,Qt::LeftButton,Qt::NoModifier);
-    QMouseEvent release(QEvent::MouseButtonRelease,p,w->mapToGlobal(p.toPoint()),Qt::LeftButton,Qt::NoButton,Qt::NoModifier);
-    QCoreApplication::sendEvent(w,&press);QCoreApplication::sendEvent(w,&release);pump(20);
+    check(item->isVisible()&&item->isEnabled()&&item->width()>0&&item->height()>0,"click target is visible and enabled");
+    // Route through the native event dispatcher so Qt's global button state
+    // matches the window events, including on Qt 6.10. These messages target
+    // only this test's HWND on its never-activated private desktop.
+    check(Probe::privateDesktop(),"click requires private test desktop");
+    auto point=p*w->devicePixelRatio();auto position=MAKELPARAM(qRound(point.x()),qRound(point.y()));
+    auto hwnd=reinterpret_cast<HWND>(w->winId());
+    PostMessageW(hwnd,WM_MOUSEMOVE,0,position);pump(10);
+    PostMessageW(hwnd,WM_LBUTTONDOWN,MK_LBUTTON,position);pump(10);
+    PostMessageW(hwnd,WM_LBUTTONUP,0,position);pump(20);
 }
 void typeDraft(QQuickWindow* window,const QString& text)
 {
@@ -116,17 +123,23 @@ void Probe::run(App& app,const QJsonObject& params)
         report["qtVersion"]=qVersion();
         report["uiRenderer"]="software";
         report["hostRenderer"]=params.value("appearance").toObject().value("renderer");
-        QStringList modules;bool python=false;
+        QStringList modules;QJsonObject modulePaths;bool python=false;
+        auto runtime=QDir::cleanPath(QCoreApplication::applicationDirPath()+"/runtime");
         HANDLE snapshot=CreateToolhelp32Snapshot(TH32CS_SNAPMODULE,GetCurrentProcessId());
         MODULEENTRY32W entry{sizeof entry};
         if(snapshot!=INVALID_HANDLE_VALUE){
             if(Module32FirstW(snapshot,&entry))do{
                 QString name=QString::fromWCharArray(entry.szModule);modules<<name;
+                auto path=QDir::fromNativeSeparators(QString::fromWCharArray(entry.szExePath));
+                modulePaths[name]=path;
+                if(name.startsWith("Qt6",Qt::CaseInsensitive)||name=="qwindows.dll")
+                    check(path.startsWith(runtime+"/",Qt::CaseInsensitive),"Qt must load from bundled runtime");
                 python=python||name.startsWith("python",Qt::CaseInsensitive)||name.startsWith("pyside",Qt::CaseInsensitive);
             }while(Module32NextW(snapshot,&entry));CloseHandle(snapshot);
         }
         check(!python,"runtime imported Python");report["pythonLoaded"]=python;
         report["loadedModules"]=QJsonArray::fromStringList(modules);
+        report["loadedModulePaths"]=modulePaths;report["bundledRuntime"]=runtime;
         report["startupMemory"]=memory();
         QImage fixture(820,380,QImage::Format_RGB32);fixture.fill(Qt::white);
         QPainter paint(&fixture);QFont font("Segoe UI");font.setPixelSize(24);paint.setFont(font);paint.setPen(QColor("#1B1B1B"));
@@ -270,6 +283,9 @@ void Probe::run(App& app,const QJsonObject& params)
         app.showSettings();pump(250);check(app.m_config.window->isVisible(),"settings visible");
         app.m_config.window->grabWindow().save(out+"/settings.png");
         auto testAll=app.m_config.window->findChild<QQuickItem*>("test-all");click(app.m_config.window,testAll);
+        report["batchAfterClick"]=QJsonObject{{"count",int(app.m_tests.size())},{"running",app.m_testRunning},{"queued",int(app.m_testQueue.size())},
+            {"message",app.m_configBackend.values.value("message").toString()}};
+        check(app.m_batch,"batch button starts service tests");
         check(until([&]{return app.m_testRunning==0&&app.m_testQueue.isEmpty();},25000),"batch tests finish");
         check(app.m_tests.size()==10,"batch covers all ten providers");
         report["batchResults"]=QJsonValue::fromVariant(app.m_configBackend.values.value("testResults"));
