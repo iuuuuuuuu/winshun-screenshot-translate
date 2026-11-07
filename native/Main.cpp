@@ -45,7 +45,12 @@ extern "C" __declspec(dllexport) int screenshotTranslateMain(const wchar_t* appD
         QObject::connect(&protocol,&ws::captureplugin::Protocol::notified,&plugin,[&](auto method,auto params){plugin.dispatch({},method,params);});
         QObject::connect(&protocol,&ws::captureplugin::Protocol::closed,&app,[]{ExitProcess(0);});
         protocol.respond(first->value("id"),QJsonObject{{"protocolVersion","1"},{"name","iuuuuuuuu.screenshot-translate"}});
-        std::fputs("[screenshot-translate] version=0.4.0 runtime=native ocr=windows\n",stderr);
+        HANDLE token=nullptr;TOKEN_ELEVATION elevation{};DWORD size=0;
+        if(OpenProcessToken(GetCurrentProcess(),TOKEN_QUERY,&token)){
+            GetTokenInformation(token,TokenElevation,&elevation,sizeof elevation,&size);CloseHandle(token);
+        }
+        std::fprintf(stderr,"[screenshot-translate] version=0.4.0 runtime=native ocr=windows selection-reader=%s\n",
+            elevation.TokenIsElevated?"administrator":"standard");
         if(st::Probe::requested())QTimer::singleShot(0,&plugin,[&]{st::Probe::run(plugin,params);});
         return app.exec();
     }catch(const std::exception&){

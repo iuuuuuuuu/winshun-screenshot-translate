@@ -20,6 +20,19 @@ WinShun 提供 Qt DLL，包内仅有启动器、应用 DLL 和文档；DLL 内�
 并逐文件校验。回退时可安装原 v0.3.3 包，或恢复备份中的 `plugin.json` 和旧文件。
 不要同时启用历史 `winshun.screenshot-translate` 和当前社区 ID。
 
+### 读取以管理员身份运行的软件
+
+本包声明 WinShun 的 `elevated` 权限。以管理员身份启动 WinShun 后，在设置 → 插件 →
+截图翻译中允许新增的“跟随 Win顺 的管理员权限”，并点击“确认”（如果卡片提示需要确认）。
+WinShun 会创建受保护的插件副本并重新启动插件，名称旁出现管理员盾牌后，再回到目标软件
+选中文字、按划词快捷键。可以继续保留 Codex 等目标软件的管理员运行方式。
+
+普通启动 WinShun 时，插件仍以普通权限工作；不会自行弹出 UAC。管理员启动但未确认副本时
+也仍是普通权限。更新新增权限可能使插件暂时等待重新启用；请在插件页允许新权限。
+手动更新插件后，WinShun 可能要求重新确认管理员副本。固定窗口的后续选区读取继承插件
+当前权限，无需每次授权。管理员权限不代替应用的选区接口；未提供接口的界面可用鼠标 OCR。
+启动日志中的 `selection-reader=administrator` / `standard` 表示插件实际运行权限。
+
 ## 界面与操作
 
 - `Alt+Shift+T` / `jst` 框选；`Ctrl+Enter` 全屏；`Shift+Enter` 当前窗口。
@@ -85,8 +98,8 @@ UI Automation，依次查找原控件、鼠标处、焦点及页面内部支持�
 Chromium/Electron 中焦点停留在外层容器的情况。读取使用无窗口的原生辅助进程，
 2.2 秒超时或关闭时回收；单次应用卡住不会阻塞后续划词。同一时间至多一次读取，
 不模拟复制快捷键、不改剪贴板、不占用截图入口。未公开选区的应用仍可使用鼠标 OCR。
-读取失败且检测到权限差异或访问限制时，会明确提示权限问题。管理员程序可能拒绝
-普通权限插件读取选区；可用普通权限启动目标程序，或用鼠标 OCR。插件不会自行申请管理员权限。
+读取失败且检测到权限差异或访问限制时，会提示以管理员身份启动 WinShun 并确认本插件权限。
+选区辅助进程直接继承插件权限；授权由 WinShun 管理，普通插件不另行启动提权读取器。
 
 截图留在本机内存；仅 OCR 文字发送到选择或降级的服务。密钥继续由当前用户的 Windows
 DPAPI 加密。日志不记录截图、OCR 文字、凭据或服务响应正文。免费入口仍可能限流或失效。
@@ -98,6 +111,7 @@ DPAPI 加密。日志不记录截图、OCR 文字、凭据或服务响应正文�
 .\native\build.ps1 -QtRoot <Qt6-msvc2022_64> -VsRoot <VisualStudio>
 python -B native/test_native.py --core
 python -B native/test_native.py
+python -B native/test_native_standard.py --output .test-output/native-standard
 python -B native/test_native.py --gpu
 python -B native/test_native.py --live
 python -B native/package.py
@@ -109,6 +123,8 @@ Python 仅用于开发时打包、测试和本机安装。测试子进程的 PAT
 菜单、关闭按钮、原始输入线程和热键协议。独立桌面不提供桌面 BitBlt，截图像素注入
 仅存在于受独立桌面约束的预览入口；正常入口始终使用 Win32 BitBlt 抓屏。
 `--gpu` 验证宿主 GPU 设置下的小控件软件渲染兼容性。
+`test_native_standard.py` 从管理员开发终端运行，使用与 WinShun 相同方式移除管理员组、
+特权并降低完整性的令牌，验证普通权限兼容性；只调整测试临时目录和测试桌面的权限。
 `python -B native/test_selection_browser.py --electron <Electron.exe>` 可选验证真实 Chromium
 页面的选区读取：在独立桌面用临时配置打开本地页面，焦点留在无关输入框，检查嵌套
 文本容器中的完整选区。`--build <目录>` 可指定安装包入口；不操作当前浏览器或 Codex。

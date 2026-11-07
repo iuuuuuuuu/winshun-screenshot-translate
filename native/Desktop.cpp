@@ -689,8 +689,8 @@ HWND selectionTarget()
     return foreground;
 }
 namespace {
-const char* elevatedSelectionMessage="目标程序以管理员权限运行，当前插件权限不足。请用普通权限启动该程序，或使用鼠标 OCR。";
-const char* restrictedSelectionMessage="目标程序限制了选区访问。若它以管理员权限运行，请用普通权限重新启动，或使用鼠标 OCR。";
+const char* elevatedSelectionMessage="当前插件权限不足。请以管理员身份启动 WinShun，在设置 → 插件 → 截图翻译中允许新增权限并确认管理员副本，然后重新按划词热键。也可使用鼠标 OCR。";
+const char* restrictedSelectionMessage="目标程序限制了选区访问。若它以管理员权限运行，请以管理员身份启动 WinShun，并在设置 → 插件 → 截图翻译中确认管理员权限；仍无法读取时可使用鼠标 OCR。";
 DWORD integrityOf(HANDLE token)
 {
     alignas(TOKEN_MANDATORY_LABEL) BYTE bytes[256]{};DWORD size=0;

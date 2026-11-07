@@ -13,6 +13,9 @@ if "--build" in sys.argv:build=Path(sys.argv[sys.argv.index("--build")+1])
 manifest=json.loads((root/"plugin.json").read_text(encoding="utf-8"))
 manifest["version"]="0.4.0"
 manifest["minWinShun"]="0.20.0"
+# Native EXE only: WinShun keeps ordinary launches at normal rights and uses
+# its confirmed, protected copy when the host runs as administrator.
+manifest["permissions"].append("elevated")
 manifest["runtime"]={"mode":"resident","program":"ScreenshotTranslate.exe","start":"eager","sandbox":"normal",
     "timeoutMs":25000,"debounceMs":300,"idleExitSec":0,"memoryMB":1024}
 for setting in manifest["settings"]:
@@ -21,8 +24,8 @@ for setting in manifest["settings"]:
         setting["hint"]={"zh":"在鼠标附近打开词义窗口；清空关闭","en":"Open a word popup near the pointer; clear to disable"}
     if setting["key"]=="selectionHotkey":
         setting["default"]="Alt+Shift+W"
-        setting["hint"]={"zh":"在选区旁显示词义；固定后跟随新选区。不支持划词的应用可用鼠标 OCR",
-            "en":"Show a popup by the selection; pin to follow new selections. Use pointer OCR in unsupported apps"}
+        setting["hint"]={"zh":"在选区旁显示词义；固定后跟随新选区。读取管理员程序需以管理员启动 WinShun 并确认本插件权限",
+            "en":"Show a popup by the selection; pin to follow. For elevated apps, run WinShun as administrator and confirm this plugin's permissions"}
 manifest["settings"].append({"key":"wordOcrHotkey","type":"hotkey",
     "title":{"zh":"鼠标指词 OCR 热键","en":"Pointer word OCR hotkey"},
     "hint":{"zh":"混排时，少数语言只取所在片段，主要语言取整句；原文可编辑，清空热键关闭","en":"In mixed text, point at a minority language for that phrase or the main language for the sentence; source is editable; clear to disable"},
