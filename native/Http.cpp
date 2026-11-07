@@ -70,7 +70,7 @@ HINTERNET session(const QString& proxy)
     static std::mutex mutex;static std::map<QString,HINTERNET> sessions;
     std::lock_guard lock(mutex);
     if(auto found=sessions.find(proxy);found!=sessions.end())return found->second;
-    auto handle=WinHttpOpen(L"WinShun-screenshot-translate/0.4.3",
+    auto handle=WinHttpOpen(L"WinShun-screenshot-translate/0.4.4",
         proxy.isEmpty()?WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY:WINHTTP_ACCESS_TYPE_NO_PROXY,
         WINHTTP_NO_PROXY_NAME,WINHTTP_NO_PROXY_BYPASS,WINHTTP_FLAG_ASYNC);
     if(handle)sessions.emplace(proxy,handle);
@@ -78,7 +78,8 @@ HINTERNET session(const QString& proxy)
 }
 }
 HttpResponse nativeRequest(const QString& url,const QByteArray& body,bool post,
-    const QMap<QByteArray,QByteArray>& headers,const QString& proxy,Cancel cancel,int budget)
+    const QMap<QByteArray,QByteArray>& headers,const QString& proxy,Cancel cancel,int budget,
+    qint64 maxBytes,std::function<bool(const char*,qint64)> sink)
 {
     HttpResponse response;
     auto failed=[&](DWORD error){response.error=error;return response;};
@@ -142,16 +143,20 @@ HttpResponse nativeRequest(const QString& url,const QByteArray& body,bool post,
         }
         return response;
     }
+    qint64 received=0;
     for(;;){
         request.prepare();
         error=request.wait(WinHttpQueryDataAvailable(request.handle,nullptr),WINHTTP_CALLBACK_STATUS_DATA_AVAILABLE,deadline);
         if(error)return failed(error);
         if(!request.bytes)break;
-        if(request.bytes>8*1024*1024-response.body.size())return failed(ERROR_FILE_TOO_LARGE);
+        if(request.bytes>maxBytes-received)return failed(ERROR_FILE_TOO_LARGE);
         auto count=std::min(request.bytes,DWORD(request.buffer.size()));request.prepare();
         error=request.wait(WinHttpReadData(request.handle,request.buffer.data(),count,nullptr),WINHTTP_CALLBACK_STATUS_READ_COMPLETE,deadline);
         if(error)return failed(error);
-        response.body.append(request.buffer.data(),request.bytes);if(!request.bytes)break;
+        if(!request.bytes)break;
+        received+=request.bytes;
+        if(sink){if(!sink(request.buffer.data(),request.bytes))return failed(ERROR_WRITE_FAULT);}
+        else response.body.append(request.buffer.data(),request.bytes);
     }
     return response;
 }

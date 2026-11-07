@@ -3,6 +3,7 @@
 #include "Services.h"
 #include <QMap>
 #include <QByteArray>
+#include <functional>
 namespace st {
 struct HttpResponse {
     DWORD status=0,error=0;
@@ -10,5 +11,6 @@ struct HttpResponse {
     QString location;
 };
 HttpResponse nativeRequest(const QString& url,const QByteArray& body,bool post,
-    const QMap<QByteArray,QByteArray>& headers,const QString& proxy,Cancel cancel,int budget);
+    const QMap<QByteArray,QByteArray>& headers,const QString& proxy,Cancel cancel,int budget,
+    qint64 maxBytes=8*1024*1024,std::function<bool(const char*,qint64)> sink={});
 }

@@ -2,6 +2,7 @@
 #include "Desktop.h"
 #include "PinWindow.h"
 #include "Protocol.h"
+#include "Dictionary.h"
 #include <QQmlEngine>
 #include <QQuickWindow>
 #include <QTimer>
@@ -64,6 +65,8 @@ private:
     void testServices(bool all, const QString& provider = {});
     void pumpTests();
     void publishTests();
+    void publishDictionary();
+    void startDictionaryDownload();
     void dispose(View& view);
     void used();
     bool idleReady() const;
@@ -112,6 +115,10 @@ private:
     std::vector<Cancel> m_testCancels;
     int m_testRunning=0;
     bool m_batch=false;
+    Cancel m_dictionaryCancel;
+    QString m_dictionaryMessage;
+    qint64 m_dictionaryReceived=0;
+    DictionarySource m_dictionarySource=dictionarySource();
     HWND m_keyWindow=nullptr;
     std::map<int,QString> m_nativeKeys;
     quint64 m_keyRevision=0;

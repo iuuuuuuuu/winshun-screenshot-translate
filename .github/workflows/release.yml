@@ -46,6 +46,7 @@ jobs:
           if-no-files-found: error
           path: |
             dist/release-*/*.wsplugin
+            dist/release-*/*.bin
             dist/release-*/*.sha256
             dist/release-*/package.json
             ${{ runner.temp }}/native-build/native_tests.exe

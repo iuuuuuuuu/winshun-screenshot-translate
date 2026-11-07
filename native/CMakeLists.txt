@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(ScreenshotTranslate VERSION 0.4.3 LANGUAGES CXX)
+project(ScreenshotTranslate VERSION 0.4.4 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_AUTOMOC ON)
 find_package(Qt6 6.10 REQUIRED COMPONENTS Core Gui Qml Quick Network)
@@ -56,6 +56,5 @@ if(BUILD_NATIVE_TESTS)
     target_link_libraries(native_tests PRIVATE Qt6::Gui Qt6::Network windowsapp ole32 oleaut32 user32 gdi32 imm32 crypt32 winhttp)
 endif()
 
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../data/ecdict.bin")
-    file(COPY "${CMAKE_CURRENT_SOURCE_DIR}/../data" DESTINATION "${CMAKE_CURRENT_BINARY_DIR}")
-endif()
+# The dictionary is an optional Release asset, never a runtime dependency of
+# the plugin package. Integration tests install it through the download path.

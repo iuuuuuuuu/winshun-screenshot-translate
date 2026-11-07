@@ -27,7 +27,7 @@ Window {
     function statusText(row) {
         if (row.status === "running") return t("测试中", "Testing")
         if (row.status === "waiting") return t("等待中", "Queued")
-        if (!row.configured) return t("待配置", "Configure")
+        if (!row.configured) return row.provider === "ecdict" ? t("未下载", "Not downloaded") : t("待配置", "Configure")
         if (row.cooling) return t("冷却 ", "Retry in ") + Math.ceil(row.retrySeconds / 60) + t(" 分钟", " min")
         if (row.status === "success") return t("可用", "Available")
         if (row.status === "failed") return t("待重试", "Retry ready")
@@ -373,7 +373,43 @@ Window {
                     ServiceRow {
                         visible: window.provider === "ecdict"
                         title: window.t("离线英汉词典", "Offline English-Chinese dictionary")
-                        description: window.t("内置 77 万词条。支持单词及收录短语；长句 / 未收录词可自动切换其他渠道。", "770,000 entries. Words and known phrases; automatic fallback for sentences or unknown words.")
+                        description: window.t("77 万词条 · 约 55 MB。从 GitHub 下载一次，之后离线使用；升级保留。未下载时自动降级会跳过此渠道。", "770,000 entries · about 55 MB. Download once from GitHub for offline use; kept across upgrades. Skipped by fallback until installed.")
+                        Column {
+                            spacing: 8; width: Math.max(180, scroll.width * .36)
+                            Text {
+                                width: parent.width; wrapMode: Text.Wrap; font.pixelSize: Theme.fontBody
+                                color: Theme.subtext
+                                text: backend.state.dictionaryDownloading
+                                    ? window.t("正在下载 ", "Downloading ") + Math.floor(100 * (backend.state.dictionaryReceived || 0) / (backend.state.dictionarySize || 1)) + "%"
+                                    : backend.state.dictionaryReady ? window.t("已安装 · 可离线使用", "Installed · available offline") : window.t("未下载", "Not downloaded")
+                            }
+                            Rectangle {
+                                visible: backend.state.dictionaryDownloading || false
+                                width: parent.width; height: 4; radius: 2; color: Theme.cardBorder
+                                Rectangle {
+                                    width: parent.width * Math.min(1, (backend.state.dictionaryReceived || 0) / (backend.state.dictionarySize || 1))
+                                    height: parent.height; radius: 2; color: Theme.accent
+                                }
+                            }
+                            FlatButton {
+                                objectName: "dictionary-download"
+                                visible: !backend.state.dictionaryDownloading
+                                enabled: !backend.state.dictionaryReady
+                                text: backend.state.dictionaryReady ? window.t("已下载", "Downloaded") : window.t("一键下载", "Download")
+                                onClicked: backend.action("downloadDictionary", null)
+                            }
+                            FlatButton {
+                                objectName: "dictionary-cancel"
+                                visible: backend.state.dictionaryDownloading || false
+                                text: window.t("取消下载", "Cancel download")
+                                onClicked: backend.action("cancelDictionary", null)
+                            }
+                            Text {
+                                width: parent.width; wrapMode: Text.Wrap; font.pixelSize: Theme.fontCaption
+                                color: Theme.subtext; text: backend.state.dictionaryMessage || ""
+                                visible: text.length > 0
+                            }
+                        }
                     }
                     ServiceRow {
                         visible: window.provider === "sogou"

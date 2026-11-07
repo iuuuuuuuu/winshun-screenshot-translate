@@ -70,6 +70,19 @@ class Server(http.server.BaseHTTPRequestHandler):
     def respond(self):
         path = urllib.parse.urlsplit(self.path).path
         counts[path] = counts.get(path, 0) + 1
+        if path.startswith('/dictionary'):
+            if path == '/dictionary-redirect':
+                self.send_response(302);self.send_header('Location','/dictionary');self.end_headers();return
+            if path == '/dictionary-truncated':
+                self.send_response(200);self.end_headers();self.wfile.write(b'bad');return
+            self.send_response(200);self.end_headers()
+            try:
+                with (ROOT/'data/ecdict.bin').open('rb') as stream:
+                    while chunk := stream.read(65536):
+                        self.wfile.write(chunk)
+                        if path == '/dictionary-slow':time.sleep(.03)
+            except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):pass
+            return
         query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
         raw = self.rfile.read(int(self.headers.get("Content-Length", 0)))
         body = (urllib.parse.parse_qs(raw.decode()) if "urlencoded" in self.headers.get("Content-Type", "")
@@ -156,7 +169,7 @@ def launch(program, args, data, output, initial=None, gpu=False):
                 process.stdin.write(json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": initial}).encode()+b"\n")
                 process.stdin.flush()
             try:
-                code = process.wait(timeout=75)
+                code = process.wait(timeout=660 if "--dictionary-download" in args else 75)
             except subprocess.TimeoutExpired:
                 process.kill();process.wait();reader.join(5);process.close()
                 raise RuntimeError("Native private probe timed out")
@@ -170,7 +183,7 @@ def launch(program, args, data, output, initial=None, gpu=False):
         api("user32", "CloseDesktop", w.BOOL, w.HANDLE)(desktop)
 
 def main():
-    build = Path(tempfile.gettempdir()) / "winshun-st-native-040"
+    build = Path(tempfile.gettempdir()) / "winshun-st-native-044"
     if "--build" in sys.argv:
         build = Path(sys.argv[sys.argv.index("--build")+1])
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Server)
@@ -198,6 +211,11 @@ def main():
                 if key in sys.argv:options.extend([key,sys.argv[sys.argv.index(key)+1]])
             launch(build/"native_tests.exe",["--live",*options],data,out)
             print(json.dumps(json.loads((out/"stdout.jsonl").read_text(encoding="utf-8")),ensure_ascii=True))
+        elif "--dictionary-live" in sys.argv:
+            launch(build/"native_tests.exe",["--dictionary-download"],data,out)
+            result=json.loads((out/"stdout.jsonl").read_text(encoding="utf-8"))
+            assert result["passed"] and result["githubDictionaryDownload"]
+            print(json.dumps(result))
         elif "--core" in sys.argv:
             from services import Profiles
             profiles=Profiles(data)
@@ -215,7 +233,7 @@ def main():
                 "probeRuntime":str(Path(sys.argv[sys.argv.index("--runtime")+1]).resolve()) if "--runtime" in sys.argv else str(build.resolve()/"runtime"),
                 "locale":"zh", "appearance":{"theme":"light","renderer":"d3d11" if "--gpu" in sys.argv else "software","locale":"zh"},
                 "settings":{"provider":"zvo","fallbackEnabled":False}, "capabilities":{"hostHotkeys":True},
-                "probePointerFixtures":pointer_fixtures,
+                "probePointerFixtures":pointer_fixtures, "probeDictionaryEndpoint":base,
                 "probeMemory":"--memory" in sys.argv
             }, "--gpu" in sys.argv)
             report=json.loads((out/"report.json").read_text(encoding="utf-8"))
@@ -233,7 +251,7 @@ def main():
             for flag in ("wordRealEditSelection","wordClipboard","wordPinnedSelection","wordCancellation","wordMouseOcr","wordMousePhraseOcr","wordMouseSpacingOcr","wordOutsideDismiss",
                          "wordDefaultEditable","wordEditableClipboard","wordEditableSelection","wordEditableOcr","wordEditingPausesFollow","wordMouseMixedOcr","wordMouseWrappedOcr",
                          "wordIsolatedSelection","wordSelectionTimeoutRecovery","wordSelectionReplacement","wordMoveRendering","wordRetryStable","wordRetryTarget",
-                         "actualProviderLabels","providerFallbackAppearance","wordAutoTranslateOnBlur","wordRestoreHoverOnly","wordExplicitPinOnly"):
+                         "actualProviderLabels","providerFallbackAppearance","wordAutoTranslateOnBlur","wordRestoreHoverOnly","wordExplicitPinOnly","dictionaryDownloadUi"):
                 assert report[flag], report
             for request in (200,201,202):assert responses[request]["items"]==[],responses
             assert responses[203]["items"][0]["title"]=="你好 + 100%",responses[203]

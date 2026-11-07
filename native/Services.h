@@ -33,6 +33,8 @@ class Services {
 public:
     explicit Services(QString directory);
     QJsonObject profile(const QString& provider);
+    QString configurationProblem(const QJsonObject& profile) const;
+    QString directory() const {return m_directory;}
     void migrateAi(const QJsonObject& settings);
     void save(const QJsonObject& drafts, const QJsonObject& routing = {});
     QJsonObject routing();

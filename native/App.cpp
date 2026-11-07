@@ -749,7 +749,34 @@ void App::configSelect(const QString& p)
     state["modelHint"]="填写服务商提供的模型名 / 接入点 ID";
     if(p=="youdao"&&!draft.value("appId").toString().isEmpty())state["endpointHint"]="https://openapi.youdao.com/api";
     state["today"]=QString("%1 / 5,000").arg(m_services->today());state["showTestResults"]=false;state["message"]=m_tests[p].value("detail","");
-    m_configBackend.update(state);
+    m_configBackend.update(state);publishDictionary();
+}
+void App::publishDictionary()
+{
+    m_configBackend.update({{"dictionaryReady",dictionaryAvailable(m_services->directory())},
+        {"dictionaryDownloading",bool(m_dictionaryCancel)},{"dictionaryReceived",m_dictionaryReceived},
+        {"dictionarySize",m_dictionarySource.size},{"dictionaryMessage",m_dictionaryMessage}});
+}
+void App::startDictionaryDownload()
+{
+    if(m_dictionaryCancel)return;
+    used();auto cancel=token();m_dictionaryCancel=cancel;m_dictionaryReceived=0;m_dictionaryMessage.clear();publishDictionary();
+    auto directory=m_services->directory();auto proxy=m_settings.value("proxy").toString();auto source=m_dictionarySource;
+    QPointer<App> self(this);
+    background([directory,proxy,cancel,source,self]{
+        QElapsedTimer throttle;throttle.start();
+        downloadDictionary(directory,proxy,cancel,[&](qint64 received,qint64 total){
+            if(received!=total&&throttle.elapsed()<100)return;throttle.restart();
+            QMetaObject::invokeMethod(qApp,[self,cancel,received]{
+                if(!self||self->m_dictionaryCancel!=cancel)return;
+                self->m_dictionaryReceived=received;self->publishDictionary();
+            },Qt::QueuedConnection);
+        },source);return true;
+    },[self,cancel](bool,QString error){
+        if(!self||self->m_dictionaryCancel!=cancel)return;
+        self->m_dictionaryCancel.reset();self->m_dictionaryMessage=error;
+        self->m_tests.erase("ecdict");self->publishDictionary();self->publishTests();self->used();
+    });
 }
 void App::configAction(const QString& name,const QVariant& value)
 {
@@ -758,6 +785,10 @@ void App::configAction(const QString& name,const QVariant& value)
         else if(name=="selectProvider")configSelect(value.toString());
         else if(name=="home"){m_configBackend.update({{"home",true}});publishTests();}
         else if(name=="refreshQueue")publishTests();
+        else if(name=="downloadDictionary")startDictionaryDownload();
+        else if(name=="cancelDictionary"){
+            if(m_dictionaryCancel)m_dictionaryCancel->store(true);
+        }
         else if(name=="routingMode"){
             if(value.toString()!="manual"&&value.toString()!="auto")return;
             m_routingDraft["mode"]=value.toString();publishTests();
@@ -801,7 +832,7 @@ void App::pumpTests()
 {
     while(m_testRunning<3&&!m_testQueue.isEmpty()){
         auto p=m_testQueue.takeFirst();auto draft=m_drafts.value(p).toObject();
-        auto problem=configurationError(draft);
+        auto problem=m_services->configurationProblem(draft);
         if(!problem.isEmpty()){
             m_tests[p]={{"status","skipped"},{"detail",problem+"，已跳过"}};continue;
         }
@@ -819,6 +850,7 @@ void App::pumpTests()
 }
 void App::publishTests()
 {
+    publishDictionary();
     QVariantList rows;int completed=0;
     for(auto p:providers){
         auto it=m_tests.find(p);if(it==m_tests.end())continue;

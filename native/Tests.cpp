@@ -159,6 +159,12 @@ int main(int argc,char** argv)
             }
             std::puts(QJsonDocument(QJsonObject{{"words",found},{"pointed",pointed}}).toJson(QJsonDocument::Compact).constData());return 0;
         }
+        if(args.contains("--dictionary-download")){
+            QTemporaryDir data;
+            st::downloadDictionary(data.path(),{},std::make_shared<std::atomic_bool>(false));
+            if(st::dictionaryEntry("hello",data.path()).isEmpty())throw std::runtime_error("downloaded dictionary lookup");
+            std::puts("{\"passed\":true,\"githubDictionaryDownload\":true,\"sha256Verified\":true,\"offlineLookup\":true}");return 0;
+        }
         checkPhrases();
         checkWrappedPhrases();
         if(st::detect("你好世界")!="zh"||st::targetFor("Hello","auto")!="zh")throw std::runtime_error("language");
@@ -202,9 +208,24 @@ int main(int argc,char** argv)
             QTemporaryDir defaultsDir;st::Services legacyDefaults(defaultsDir.path());
             legacyDefaults.save({{"deepseek",QJsonObject{{"apiKey","secret"}}}});legacyDefaults.migrateAi({{"provider","deepseek"}});
             if(legacyDefaults.profile("ai").value("endpoint")!="https://api.deepseek.com"||legacyDefaults.profile("ai").value("model")!="deepseek-flash")throw std::runtime_error("legacy AI defaults retained");
-            if(st::dictionaryEntry("HELLO").isEmpty()||st::dictionaryEntry("baby").isEmpty()||!st::dictionaryEntry("zznotaword7789").isEmpty())throw std::runtime_error("bundled ECDICT lookup");
             QTemporaryDir dictionaryDir;st::Services dictionary(dictionaryDir.path());
             dictionary.save({{"zvo",QJsonObject{{"endpoint",base+"/zvo"}}}});
+            if(st::dictionaryAvailable(dictionaryDir.path()))throw std::runtime_error("fresh package must not bundle the dictionary");
+            auto noDictionary=dictionary.translate({{"provider","ecdict"},{"fallbackEnabled",true}},{"hello"},"en","zh",freshCancel());
+            if(noDictionary.provider!="zvo"||dictionary.configurationProblem(dictionary.profile("ecdict")).isEmpty())throw std::runtime_error("undownloaded dictionary is unconfigured, not failed");
+            auto source=st::dictionarySource();source.url=base+"/dictionary-redirect";
+            st::downloadDictionary(dictionaryDir.path(),{},freshCancel(),{},source);
+            if(st::dictionaryEntry("HELLO",dictionaryDir.path()).isEmpty()||st::dictionaryEntry("baby",dictionaryDir.path()).isEmpty()||!st::dictionaryEntry("zznotaword7789",dictionaryDir.path()).isEmpty())throw std::runtime_error("downloaded ECDICT lookup");
+            auto preserved=st::dictionaryEntry("hello",dictionaryDir.path());
+            auto bad=source;bad.sha256=QString(64,'0');bool rejected=false;
+            try{st::downloadDictionary(dictionaryDir.path(),{},freshCancel(),{},bad);}catch(...){rejected=true;}
+            if(!rejected||st::dictionaryEntry("hello",dictionaryDir.path())!=preserved)throw std::runtime_error("bad hash preserves installed dictionary");
+            auto stopped=freshCancel();auto slow=source;slow.url=base+"/dictionary-slow";
+            rejected=false;try{st::downloadDictionary(dictionaryDir.path(),{},stopped,[&](qint64,qint64){stopped->store(true);},slow);}catch(...){rejected=true;}
+            if(!rejected||st::dictionaryEntry("hello",dictionaryDir.path())!=preserved)throw std::runtime_error("cancel preserves installed dictionary");
+            // Reopen the same persistent directory, not a process-only cache.
+            st::Services installedAgain(dictionaryDir.path());
+            if(!installedAgain.configurationProblem(installedAgain.profile("ecdict")).isEmpty())throw std::runtime_error("download survives service restart");
             auto missing=dictionary.translate({{"provider","ecdict"},{"fallbackEnabled",true}},{"zznotawordtest"},"en","zh",freshCancel());
             auto known=dictionary.translate({{"provider","ecdict"},{"fallbackEnabled",true}},{"hello"},"en","zh",freshCancel());
             if(missing.provider!="zvo"||known.provider!="ecdict"||known.fallback)throw std::runtime_error("dictionary misses must not quarantine lookup");
@@ -301,7 +322,7 @@ int main(int argc,char** argv)
             queueReopened.translate({}, {"hello"},"en","zh",fresh(),failedProbe);
             if(queueEntry(queueReopened.queue(settings,{{"zvo",failedProbe}}),"zvo").value("cooling").toBool())throw std::runtime_error("successful probe clears the same configuration cooldown");
             std::puts(QJsonDocument(QJsonObject{{"passed",true},{"fixtureRoutes",QJsonArray::fromStringList(routes)},
-                {"dpapi",true},{"smallScreenshotOcr",true},{"aiMigration",true},{"offlineDictionary",true},{"dictionaryFallback",true},{"youdaoSignature",true},{"sogouEncoding",true},
+                {"dpapi",true},{"smallScreenshotOcr",true},{"aiMigration",true},{"offlineDictionary",true},{"dictionaryFallback",true},{"dictionaryDownload",true},{"dictionaryIntegrity",true},{"youdaoSignature",true},{"sogouEncoding",true},
                 {"persistentFallback",true},{"recovery",true},{"cancel",true},{"httpProxy",true},{"pointerPhrases",true},
                 {"manualQueue",true},{"automaticWeights",true},{"persistentQueue",true},{"diagnosticsHealth",true},{"neutralCancellationAndMisses",true}}).toJson(QJsonDocument::Compact).constData());
         }else if(args.contains("--live")){

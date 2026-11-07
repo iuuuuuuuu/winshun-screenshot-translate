@@ -15,7 +15,7 @@ import zipfile
 def main():
     root = Path(__file__).resolve().parents[1]
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--build', type=Path, default=Path(tempfile.gettempdir())/'winshun-st-native-040')
+    parser.add_argument('--build', type=Path, default=Path(tempfile.gettempdir())/'winshun-st-native-044')
     parser.add_argument('--qt-root', type=Path, default=root/'.host/qt/6.10.0/msvc2022_64')
     parser.add_argument('--vs-root', type=Path, default=Path('D:/VisualStudio/Product'))
     parser.add_argument('--out', type=Path)
@@ -45,11 +45,17 @@ def main():
     for name in ('plugin.json', 'README.md', 'CHANGELOG.md', 'LICENSE', 'THIRD_PARTY_NOTICES.md'):
         shutil.copy2(root/name, stage/name)
     shutil.copytree(root/'native/licenses', stage/'licenses')
-    shutil.copytree(root/'data', stage/'data')
+    (stage/'data').mkdir()
+    shutil.copy2(root/'data/ecdict.json', stage/'data/ecdict.json')
+    dictionary = out/'ecdict-39cfb967-v2.bin'
+    shutil.copy2(root/'data/ecdict.bin', dictionary)
+    dictionary_info = json.loads((root/'data/ecdict.json').read_text(encoding='utf-8'))
+    assert hashlib.sha256(dictionary.read_bytes()).hexdigest() == dictionary_info['sha256']
+    dictionary.with_suffix('.bin.sha256').write_text(dictionary_info['sha256']+'  '+dictionary.name+'\n', encoding='utf-8')
     (stage/'native').mkdir()
     shutil.copy2(root/'native/README.md', stage/'native/README.md')
     (stage/'.screenshots').mkdir()
-    for name in ('word-0.4.3.png', 'settings-0.4.3.png', 'toolbar-0.4.3.png'):
+    for name in ('word-0.4.4.png', 'settings-0.4.4.png', 'toolbar-0.4.4.png', 'ecdict-0.4.4.png'):
         shutil.copy2(root/'.screenshots'/name, stage/'.screenshots'/name)
     (runtime/'fonts').mkdir()
     shutil.copy2(root/'native/assets/AlibabaPuHuiTi-3-55-Regular.ttf', runtime/'fonts/AlibabaPuHuiTi-3-55-Regular.ttf')
@@ -71,6 +77,7 @@ def main():
         'version': version, 'sourceCommit': commit, 'sourceDirty': dirty,
         'sourceUrl': f'https://github.com/iuuuuuuuu/winshun-screenshot-translate/tree/{commit}',
         'qtVersion': '6.10.0', 'qtBundled': True, 'pythonRequired': False,
+        'dictionaryBundled': False, 'dictionaryAsset': dictionary.name, 'dictionarySha256': dictionary_info['sha256'],
         'buildWorkflow': '原生构建与打包', 'runtime': 'Windows x64 / MSVC / Qt 6.10.0',
     }, ensure_ascii=False, indent=2)+'\n', encoding='utf-8')
     files = {p.relative_to(stage).as_posix(): p for p in stage.rglob('*') if p.is_file()}
@@ -91,6 +98,7 @@ def main():
     report = {'package': str(package), 'stage': str(stage), 'sha256': sha, 'size': package.stat().st_size,
               'unpackedSize': total, 'version': version, 'sourceCommit': commit, 'sourceDirty': dirty,
               'runtime': 'native-x64', 'pythonRequired': False, 'qtBundled': True,
+              'dictionaryBundled': False, 'dictionaryAsset': str(dictionary), 'dictionarySha256': dictionary_info['sha256'],
               'files': list(files), 'fileHashes': {n: hashlib.sha256(p.read_bytes()).hexdigest() for n,p in files.items()}}
     (out/'package.json').write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
     print(json.dumps({k:v for k,v in report.items() if k not in ('files','fileHashes')}, ensure_ascii=True))

@@ -1,4 +1,4 @@
-# 截图翻译 0.4.3：原生版构建与验证
+# 截图翻译 0.4.4：原生版构建与验证
 
 原生 C++ / Qt Quick 版本，运行时不需要 Python、PySide6、PowerShell OCR 脚本或另装 Qt。
 小型启动器只从本插件的 `runtime/` 加载随包 Qt，系统 Windows OCR 在后台线程识别图片。
@@ -12,7 +12,7 @@
 ## 安装和回退
 
 在 WinShun 设置 → 插件 → 从压缩包安装，选择
-`iuuuuuuuu.screenshot-translate-0.4.3.wsplugin`。运行时不检查或启动 Python。
+`iuuuuuuuu.screenshot-translate-0.4.4.wsplugin`。运行时不检查或启动 Python。
 包内包括启动器、应用 DLL、Qt/Visual C++ 运行库、许可和文档；DLL 内包含 QML 控件与授权图标字体。
 现有渠道、热键、代理、偏好和 DPAPI 密钥格式保持兼容，不迁移或删除用户的数据目录。
 
@@ -101,7 +101,7 @@ Google 保留浏览器请求头及多客户端重试；Edge 缓存七分钟凭�
 成功后解除冷却。词典不支持的文本、未配置和取消不计入统计；配置指纹变化使用独立统计。
 权重与失败记忆保存在 `service-health.json`，不保存请求正文、密钥或翻译结果。
 
-搜狗使用公开网页的服务端结果，有道支持免费英汉查词与官方 v3 签名翻译。ECDICT 内置 770,611 个词条，
+搜狗使用公开网页的服务端结果，有道支持免费英汉查词与官方 v3 签名翻译。ECDICT 以独立 Release 附件提供 770,611 个词条，在设置中一键下载后，
 按文件索引查找，无网络或 Python 依赖；未收录词和长句可降级，但不标记词典服务故障。
 
 自动降级默认开启。失败时间和配置指纹沿用 `service-health.json`，默认十分钟、
@@ -178,3 +178,7 @@ Python 仅用于开发时打包和测试。测试子进程的 PATH 不含 Python
 失败记忆、恢复、配置变化和取消。Edge 的在线认证和 Bing 入口另用合成文字验证。
 付费渠道仅测试本地协议模拟，不使用真实用户密钥计费。
 Qt/WinShun 和 Phosphor 的许可见 THIRD_PARTY_NOTICES.md 和 native/vendor/LICENSE。
+
+### 可选 ECDICT 词库
+
+公开 `.wsplugin` 仅含词库元数据与许可。`native/package.py` 另生成 `ecdict-39cfb967-v2.bin` 和校验值，随插件 Release 上传。客户端固定下载 v0.4.4 的这一数据版本；后续更新插件不需要重复下载相同词库。下载以 64 KiB 分块写入 QSaveFile、增量校验 SHA-256，限制大小和跳转域名；完成前不替换已有数据。下载存入 WS_DATA_DIR/dictionaries/ecdict.bin，禁止将数据作为代码加载。未下载时的队列和批量测试显示待下载并跳过，不降低渠道权重。

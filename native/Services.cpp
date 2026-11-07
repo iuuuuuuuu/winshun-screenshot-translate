@@ -94,7 +94,7 @@ public:
         int remaining = m_budget - int(m_clock.elapsed());
         if (cap > 0) remaining = std::min(remaining, cap);
         if (remaining <= 0) fail("翻译超时");
-        if(!headers.contains("User-Agent"))headers["User-Agent"]="WinShun-screenshot-translate/0.4.3";
+        if(!headers.contains("User-Agent"))headers["User-Agent"]="WinShun-screenshot-translate/0.4.4";
         if(!headers.contains("Accept"))headers["Accept"]="application/json,text/plain,*/*";
         QByteArray bytes;
         if (!body.isUndefined() && !body.isNull()) {
@@ -275,6 +275,12 @@ void Services::migrateAi(const QJsonObject& settings)
         atomicJson(m_directory+"/services.json",{{"version",3},{"profiles",next},{"routing",m_routing}});m_stored=next;return;
     }
 }
+QString Services::configurationProblem(const QJsonObject& p) const
+{
+    if(field(p,"provider")=="ecdict"&&!dictionaryAvailable(m_directory))
+        return "词库未下载，请到 ECDICT 页面一键下载";
+    return configurationError(p);
+}
 void Services::save(const QJsonObject& drafts,const QJsonObject& routing)
 {
     QMutexLocker lock(&m_lock);auto values=m_stored;
@@ -304,7 +310,7 @@ QJsonArray Services::queue(const QJsonObject& settings,const QJsonObject& drafts
         const auto p=v.toString();auto config=drafts.contains(p)?drafts.value(p).toObject():profile(p);config["provider"]=p;
         config["proxy"]=settings.value("proxy").toString().trimmed();
         const auto h=health.value(fingerprint(config)).toObject();
-        const auto problem=configurationError(config);const int samples=h.value("samples").toInt();
+        const auto problem=configurationProblem(config);const int samples=h.value("samples").toInt();
         const double latency=h.value("latencyMs").toDouble(-1);
         const double rate=std::clamp(h.value("successRate").toDouble(.75),0.0,1.0);
         const int weight=samples?int(std::round(80*rate+20*(latency<0?.5:1000/(1000+latency)))):50;
@@ -366,14 +372,14 @@ Translation Services::translate(const QJsonObject& settings,const QStringList& p
     if(fallback)for(auto row:queue(settings)){
         auto p=row.toObject().value("provider").toString();
         if(p==preferred)continue;auto config=profile(p);
-        if(configurationError(config).isEmpty())candidates<<config;
+        if(configurationProblem(config).isEmpty())candidates<<config;
     }
     double recovery=std::clamp(settings.value("fallbackRecoveryMinutes").toDouble(10),1.0,1440.0)*60;
     QElapsedTimer total;total.start();QString last;int attempted=0;
     for(auto p:candidates){
         if(cancel->load())fail("cancelled");
         p["proxy"]=settings.value("proxy").toString().trimmed();
-        auto problem=configurationError(p);
+        auto problem=configurationProblem(p);
         if(!problem.isEmpty()){last=problem;if(!fallback)fail(problem);continue;}
         auto id=fingerprint(p);
         {
@@ -405,7 +411,7 @@ Translation Services::route(const QJsonObject& p,const QStringList& parts,const 
 {
     QString provider=field(p,"provider"),key=field(p,"apiKey"),url=endpoint(p);
     if(!providers.contains(provider))fail("未知翻译渠道");
-    auto problem=configurationError(p);if(!problem.isEmpty())fail(problem);
+    auto problem=configurationProblem(p);if(!problem.isEmpty())fail(problem);
     Translation result;result.source=source=="auto"?detect(parts.join('\n')):source;result.target=target;
     QString destination=code(target,"zh-CN"),origin=code(source,"zh-CN");
     if(provider=="ecdict"){
@@ -413,7 +419,7 @@ Translation Services::route(const QJsonObject& p,const QStringList& parts,const 
         for(auto part:parts){
             if(cancel->load())fail("cancelled");
             if(!dictionaryText(part))throw Unsupported("ECDICT 不支持这段长句；可开启自动降级");
-            auto text=dictionaryEntry(part);if(text.isEmpty())throw Unsupported("ECDICT 未收录该词；可开启自动降级");
+            auto text=dictionaryEntry(part,m_directory);if(text.isEmpty())throw Unsupported("ECDICT 未收录该词；可开启自动降级");
             result.segments<<text;
         }
         return result;

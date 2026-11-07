@@ -19,7 +19,7 @@ from test_native import NativeProcess, ROOT, api, w
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--electron', type=Path, required=True)
-    parser.add_argument('--build', type=Path, default=Path(tempfile.gettempdir())/'winshun-st-native-040')
+    parser.add_argument('--build', type=Path, default=Path(tempfile.gettempdir())/'winshun-st-native-044')
     parser.add_argument('--output', type=Path, default=ROOT/'.test-output/browser-selection')
     args = parser.parse_args()
     assert args.electron.is_file(), args.electron
