@@ -9,6 +9,8 @@ Rectangle {
     property string text
     property string glyph
     property string trailingGlyph // after the text (a drop-down's chevron)
+    property int textPixelSize: Theme.fontBody
+    property real maximumTextWidth: -1
     property bool highlighted: false
     property bool flat: false // no background until hovered
     // false: Tab skips it and Space and Enter do nothing; only a click works
@@ -49,8 +51,10 @@ Rectangle {
             anchors.verticalCenter: parent.verticalCenter
             visible: button.text.length > 0
             text: button.text
+            width: button.maximumTextWidth >= 0 ? Math.min(implicitWidth, button.maximumTextWidth) : implicitWidth
+            elide: Text.ElideRight
             color: button.foreground
-            font.pixelSize: Theme.fontBody
+            font.pixelSize: button.textPixelSize
         }
         Glyph {
             anchors.verticalCenter: parent.verticalCenter

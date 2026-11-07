@@ -192,6 +192,7 @@ def main():
                 pointer_fixtures=json.loads(Path(sys.argv[sys.argv.index("--pointer-fixture")+1]).read_text(encoding="utf-8"))
             launch(build/"ScreenshotTranslate.exe",["--probe"],data,out,{
                 "dataDir":str(data), "probeOutput":str(out), "probeBlockedEndpoint":base+"/blocked",
+                "probeRuntime":str(Path(sys.argv[sys.argv.index("--runtime")+1]).resolve()) if "--runtime" in sys.argv else str(build.resolve()/"runtime"),
                 "locale":"zh", "appearance":{"theme":"light","renderer":"d3d11" if "--gpu" in sys.argv else "software","locale":"zh"},
                 "settings":{"provider":"zvo","fallbackEnabled":False}, "capabilities":{"hostHotkeys":True},
                 "probePointerFixtures":pointer_fixtures

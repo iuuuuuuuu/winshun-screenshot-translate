@@ -449,7 +449,7 @@ void App::pinAction(const QString& name,const QVariant& value)
         }else if(name=="text"){
             if(!m_text.window)m_text=view("qrc:/ui/qml/Text.qml",&m_pinBackend);
             bool showing=!m_text.window->isVisible();m_text.window->setVisible(showing);
-            if(showing){m_text.window->setPosition(m_bar.window->position()+QPoint(0,54));m_text.window->requestActivate();}
+            if(showing){m_text.window->setPosition(m_bar.window->position()+QPoint(0,m_bar.window->height()+8));m_text.window->requestActivate();}
             m_pinBackend.update({{"fullText",showing}});
         }
     }catch(const std::exception& e){status(failure(e),false);m_busy=false;}

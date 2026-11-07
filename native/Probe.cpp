@@ -124,7 +124,7 @@ void Probe::run(App& app,const QJsonObject& params)
         report["uiRenderer"]="software";
         report["hostRenderer"]=params.value("appearance").toObject().value("renderer");
         QStringList modules;QJsonObject modulePaths;bool python=false;
-        auto runtime=QDir::cleanPath(QCoreApplication::applicationDirPath()+"/runtime");
+        auto runtime=QDir::cleanPath(params.value("probeRuntime").toString(QCoreApplication::applicationDirPath()+"/runtime"));
         HANDLE snapshot=CreateToolhelp32Snapshot(TH32CS_SNAPMODULE,GetCurrentProcessId());
         MODULEENTRY32W entry{sizeof entry};
         if(snapshot!=INVALID_HANDLE_VALUE){
@@ -133,13 +133,14 @@ void Probe::run(App& app,const QJsonObject& params)
                 auto path=QDir::fromNativeSeparators(QString::fromWCharArray(entry.szExePath));
                 modulePaths[name]=path;
                 if(name.startsWith("Qt6",Qt::CaseInsensitive)||name=="qwindows.dll")
-                    check(path.startsWith(runtime+"/",Qt::CaseInsensitive),"Qt must load from bundled runtime");
+                    check(path.startsWith(runtime+"/",Qt::CaseInsensitive),"Qt must load from the selected runtime");
                 python=python||name.startsWith("python",Qt::CaseInsensitive)||name.startsWith("pyside",Qt::CaseInsensitive);
             }while(Module32NextW(snapshot,&entry));CloseHandle(snapshot);
         }
         check(!python,"runtime imported Python");report["pythonLoaded"]=python;
         report["loadedModules"]=QJsonArray::fromStringList(modules);
-        report["loadedModulePaths"]=modulePaths;report["bundledRuntime"]=runtime;
+        report["loadedModulePaths"]=modulePaths;report["runtimeDirectory"]=runtime;
+        report["qtBundled"]=runtime.compare(QDir::cleanPath(QCoreApplication::applicationDirPath()+"/runtime"),Qt::CaseInsensitive)==0;
         report["startupMemory"]=memory();
         QImage fixture(820,380,QImage::Format_RGB32);fixture.fill(Qt::white);
         QPainter paint(&fixture);QFont font("Segoe UI");font.setPixelSize(24);paint.setFont(font);paint.setPen(QColor("#1B1B1B"));
@@ -210,6 +211,9 @@ void Probe::run(App& app,const QJsonObject& params)
         app.openPin(word,{400,300,40,20});
         app.m_pinBackend.update({{"loadingStage","translate"}});
         app.status("正在翻译…");pump(40);
+        check(app.m_bar.window->property("compact").toBool()&&app.m_bar.window->width()<=210,"word-sized capture uses compact toolbar");
+        report["compactToolbarSize"]=QJsonArray{app.m_bar.window->width(),app.m_bar.window->height()};
+        app.m_bar.window->grabWindow().save(out+"/toolbar-compact.png");
         check(app.m_status.window->size()==QSize(24,24),"tiny capture has 24px loading indicator");
         auto unobscured=[&]{
             RECT r{};GetWindowRect(HWND(app.m_status.window->winId()),&r);
@@ -265,6 +269,8 @@ void Probe::run(App& app,const QJsonObject& params)
         report["dpiPixelStable"]=true;
         app.m_translated.save(out+"/translation.png");
         app.m_bar.window->grabWindow().save(out+"/toolbar.png");
+        check(!app.m_bar.window->property("compact").toBool()&&app.m_bar.window->width()<=340,"large capture toolbar remains compact");
+        report["toolbarSize"]=QJsonArray{app.m_bar.window->width(),app.m_bar.window->height()};
         app.m_pin->image().save(out+"/pin.png");
         app.pinAction("compare",{});check(app.m_pin->pictureRect().height()==fixture.height()*2+60,"vertical comparison");
         check(app.m_pin->image().pixelColor(30,fixture.height()+75)==fixture.pixelColor(30,15),"translation first");
@@ -280,7 +286,30 @@ void Probe::run(App& app,const QJsonObject& params)
         // immediate open above verifies the action; restore only the preview.
         if(!menu->isVisible()){menu->setProperty("receivedFocus",false);menu->show();pump(15);}
         menu->grabWindow().save(out+"/languages.png");menu->hide();
-        app.showSettings();pump(250);check(app.m_config.window->isVisible(),"settings visible");
+        auto moreMenu=app.m_bar.window->findChild<QQuickWindow*>("toolbar-more-menu");check(moreMenu,"toolbar overflow menu");
+        auto moreOpened=std::make_shared<bool>(false);
+        QObject::connect(moreMenu,&QWindow::visibleChanged,moreMenu,[moreOpened](bool visible){if(visible)*moreOpened=true;});
+        // Check the moved actions through the actual popup, including the small
+        // capture layout. Merely resizing the bar must not remove any action.
+        app.m_pin->setPicture(fixture.copy(0,0,180,80),{});app.place();pump(60);
+        click(app.m_bar.window,app.m_bar.window->findChild<QQuickItem*>("toolbar-more"));
+        check(*moreOpened,"compact toolbar opens more actions");
+        // As for LanguageMenu above, the inactive private desktop can remove
+        // focus immediately. Restore only after the real click opened it.
+        if(!moreMenu->isVisible()){moreMenu->setProperty("receivedFocus",false);moreMenu->show();pump(15);}
+        moreMenu->grabWindow().save(out+"/toolbar-more.png");
+        auto sourceMenu=app.m_bar.window->findChild<QQuickWindow*>("source-menu");check(sourceMenu,"source menu");
+        auto sourceOpened=std::make_shared<bool>(false);
+        QObject::connect(sourceMenu,&QWindow::visibleChanged,sourceMenu,[sourceOpened](bool visible){if(visible)*sourceOpened=true;});
+        click(moreMenu,moreMenu->findChild<QQuickItem*>("toolbar-menu-source"));
+        check(*sourceOpened,"compact toolbar keeps source language picker");sourceMenu->hide();
+        *moreOpened=false;
+        click(app.m_bar.window,app.m_bar.window->findChild<QQuickItem*>("toolbar-more"));
+        check(*moreOpened,"toolbar menu reopens");
+        if(!moreMenu->isVisible()){moreMenu->setProperty("receivedFocus",false);moreMenu->show();pump(15);}
+        click(moreMenu,moreMenu->findChild<QQuickItem*>("toolbar-menu-settings"));
+        pump(250);check(app.m_config.window&&app.m_config.window->isVisible(),"settings reachable from toolbar menu");
+        report["toolbarOverflowActions"]=true;
         app.m_config.window->grabWindow().save(out+"/settings.png");
         auto testAll=app.m_config.window->findChild<QQuickItem*>("test-all");click(app.m_config.window,testAll);
         report["batchAfterClick"]=QJsonObject{{"count",int(app.m_tests.size())},{"running",app.m_testRunning},{"queued",int(app.m_testQueue.size())},
