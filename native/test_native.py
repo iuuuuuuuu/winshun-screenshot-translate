@@ -202,14 +202,14 @@ def main():
                   and row["params"]["name"]=="register_hotkeys"]
             assert keys==[["Alt+Shift+T","Alt+Shift+C","Alt+Shift+W","Alt+Shift+O"]],keys
             for flag in ("wordRealEditSelection","wordClipboard","wordPinnedSelection","wordCancellation","wordMouseOcr","wordMousePhraseOcr","wordMouseSpacingOcr","wordOutsideDismiss",
-                         "wordEditableClipboard","wordEditableOcr","wordEditingPausesFollow","wordMouseMixedOcr","wordMouseWrappedOcr"):
+                         "wordDefaultEditable","wordEditableClipboard","wordEditableSelection","wordEditableOcr","wordEditingPausesFollow","wordMouseMixedOcr","wordMouseWrappedOcr"):
                 assert report[flag], report
             for request in (200,201,202):assert responses[request]["items"]==[],responses
             assert responses[203]["items"][0]["title"]=="你好 + 100%",responses[203]
             print(json.dumps({k:report[k] for k in ("passed","qtVersion","pythonLoaded","uiRenderer","hostRenderer",
                 "selectorShowMs","outsideDismissMs","closeWhileBlockedMs","hotkeyProtocol","nativeHotkeyFallback","queryProtocol",
                 "wordClipboard","wordPinnedSelection","wordMouseOcr","wordMousePhraseOcr","wordMouseSpacingOcr",
-                "wordEditableClipboard","wordEditableOcr","wordEditingPausesFollow","wordMouseMixedOcr","wordCloseWhileBlockedMs","closedMemory")},ensure_ascii=True))
+                "wordDefaultEditable","wordEditableClipboard","wordEditableSelection","wordEditableOcr","wordEditingPausesFollow","wordMouseMixedOcr","wordCloseWhileBlockedMs","closedMemory")},ensure_ascii=True))
     server.shutdown()
 if __name__ == "__main__":
     main()

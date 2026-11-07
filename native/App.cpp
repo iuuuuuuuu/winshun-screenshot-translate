@@ -514,6 +514,7 @@ void App::openWord(QString mode,QPoint anchor,QRect selection)
         m_word=view("qrc:/ui/qml/Word.qml",&m_wordBackend);
         QObject::connect(m_word.window,&QWindow::heightChanged,this,[this]{placeWord();});
     }
+    QMetaObject::invokeMethod(m_word.window,"resetInteraction");
     placeWord();m_word.window->show();ensureRaw();
 }
 void App::placeWord()
@@ -545,17 +546,16 @@ void App::editWord(bool editing)
     m_wordEditing=editing;m_wordBackend.update({{"editing",editing}});
     if(editing){
         m_followSelection.stop();m_wordOpened=GetTickCount();
-        if(m_word.window)QMetaObject::invokeMethod(m_word.window,"beginEditing");
     }else if(m_wordPinned&&m_word.window&&m_word.window->isVisible())m_followSelection.start();
 }
 void App::wordAction(const QString& name,const QVariant& value)
 {
     if(name=="close")closeWord();
-    else if(name=="edit"&&!m_wordSource.isEmpty())editWord(true);
+    else if(name=="edit")editWord(true);
     else if(name=="cancelEdit")editWord(false);
-    else if(name=="submitEdit"&&m_wordEditing){
+    else if(name=="submitEdit"){
         auto text=value.toString().trimmed();if(text.isEmpty())return;
-        editWord(false);translateWord(text);
+        translateWord(text);editWord(false);
     }
     else if(name=="pin"){
         m_wordPinned=!m_wordPinned;m_wordBackend.update({{"pinned",m_wordPinned}});
