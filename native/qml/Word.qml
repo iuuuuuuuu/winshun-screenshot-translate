@@ -48,6 +48,7 @@ Window {
         if (visible && !resetting && sourceDirty) blurSubmit.restart()
     }
     function blurEditor() { focusSink.forceActiveFocus(Qt.MouseFocusReason) }
+    function prepareMove() { blurEditor(); backend.action("move", null) }
     function restoreSource() { blurSubmit.stop(); backend.action("cancelEdit", null) }
     function updateDraftState() {
         if (!syncingSource && visible)
@@ -83,7 +84,7 @@ Window {
     }
     MouseArea {
         x: 1; y: 1; width: parent.width - 107; height: 40
-        onPressed: { wordWindow.blurEditor(); if (!backend.state.pinned) backend.action("pin", null); wordWindow.startSystemMove() }
+        onPressed: { wordWindow.prepareMove(); wordWindow.startSystemMove() }
     }
     Text {
         x: 14; y: 13

@@ -587,11 +587,47 @@ void Probe::run(App& app,const QJsonObject& params)
         app.m_raw->m_read=&readRaw;app.m_raw->m_cursor=&cursor;app.m_wordOpened=GetTickCount()-500;
         rawPoint={-30000,-30000};rawFlags=RI_MOUSE_LEFT_BUTTON_DOWN;
         app.m_settings["closeOnOutsideClick"]=false;
-        PostMessageW(app.m_raw->m_hwnd,WM_INPUT,0,1);pump(30);
-        check(app.m_word.window->isVisible(),"word outside close configurable");
-        app.m_settings["closeOnOutsideClick"]=true;
         PostMessageW(app.m_raw->m_hwnd,WM_INPUT,0,1);
-        check(until([&]{return !app.m_word.window->isVisible();},300),"unpinned word outside close");
+        check(until([&]{return !app.m_word.window->isVisible();},300),"unpinned word closes independently of screenshot setting");
+        auto originalReader=app.m_readSelection;
+        app.m_readSelection=[](POINT,HWND,Cancel){return Selection{};};
+        for(const auto& mode:QStringList{"clip","ocr","jsel"}){
+            app.openWord(mode,{400,180});app.translateWord("Hello + 100%");
+            check(until([&]{return !app.m_wordBackend.values.value("loading").toBool();}),"outside close fixture translates");
+            check(!app.m_wordPinned&&!app.m_wordBackend.values.value("pinned").toBool(),"every popup opens unpinned");
+            QMetaObject::invokeMethod(app.m_word.window,"prepareMove");
+            auto moved=app.m_word.window->position()+QPoint(80,30);app.m_word.window->setPosition(moved);
+            app.translateWord("Settings");
+            check(until([&]{return !app.m_wordBackend.values.value("loading").toBool();}),"moved unpinned popup translates");
+            check(!app.m_wordPinned&&!app.m_followSelection.isActive()&&app.m_word.window->position()==moved,"title move preserves position without pinning or following");
+            check(until([&]{return app.m_raw&&app.m_raw->m_hwnd.load();}),"outside close raw input ready");
+            app.m_raw->m_read=&readRaw;app.m_raw->m_cursor=&cursor;
+            RECT bounds{};GetWindowRect(HWND(app.m_word.window->winId()),&bounds);
+            rawPoint={(bounds.left+bounds.right)/2,(bounds.top+bounds.bottom)/2};app.m_wordOpened=GetTickCount()-500;
+            PostMessageW(app.m_raw->m_hwnd,WM_INPUT,0,1);pump(30);
+            check(app.m_word.window->isVisible(),"internal clicks keep unpinned popup open");
+            click(app.m_word.window,app.m_word.window->findChild<QQuickItem*>("word-pin"));
+            check(app.m_wordPinned,"only pin button pins popup");
+            rawPoint={-30000,-30000};app.m_wordOpened=GetTickCount()-500;
+            PostMessageW(app.m_raw->m_hwnd,WM_INPUT,0,1);pump(30);
+            check(app.m_word.window->isVisible(),"explicitly pinned popup survives outside click");
+            click(app.m_word.window,app.m_word.window->findChild<QQuickItem*>("word-pin"));
+            check(!app.m_wordPinned,"pin button unpins popup");
+            if(mode=="clip"){
+                app.m_wordBackend.update({{"providerNote",QString("用于检查悬浮提示的外部点击不会阻挡自动关闭。").repeated(4)}});
+                hoverItem(app.m_word.window,app.m_word.window->findChild<QQuickItem*>("word-provider"));
+                auto tip=app.m_word.window->findChild<QQuickWindow*>("provider-tip");
+                check(tip&&until([&]{return tip->isVisible();}),"outside dismissal tooltip appears");
+                RECT tipBounds{};GetWindowRect(HWND(tip->winId()),&tipBounds);GetWindowRect(HWND(app.m_word.window->winId()),&bounds);
+                rawPoint={tipBounds.left+2,(tipBounds.top+tipBounds.bottom)/2};
+                check(!PtInRect(&bounds,rawPoint),"tooltip click fixture is outside word popup");
+            }
+            PostMessageW(app.m_raw->m_hwnd,WM_INPUT,0,1);
+            check(until([&]{return !app.m_word.window->isVisible();},300),"unpin immediately restores outside dismissal");
+            rawPoint={-30000,-30000};
+        }
+        app.m_readSelection=originalReader;app.m_settings["closeOnOutsideClick"]=true;
+        report["wordExplicitPinOnly"]=true;
         report["wordOutsideDismiss"]=true;
         auto retryReads=std::make_shared<std::atomic_int>(0);
         auto retryTargets=std::make_shared<std::atomic_bool>(true);

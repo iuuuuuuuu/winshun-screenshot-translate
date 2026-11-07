@@ -233,7 +233,7 @@ def main():
             for flag in ("wordRealEditSelection","wordClipboard","wordPinnedSelection","wordCancellation","wordMouseOcr","wordMousePhraseOcr","wordMouseSpacingOcr","wordOutsideDismiss",
                          "wordDefaultEditable","wordEditableClipboard","wordEditableSelection","wordEditableOcr","wordEditingPausesFollow","wordMouseMixedOcr","wordMouseWrappedOcr",
                          "wordIsolatedSelection","wordSelectionTimeoutRecovery","wordSelectionReplacement","wordMoveRendering","wordRetryStable","wordRetryTarget",
-                         "actualProviderLabels","providerFallbackAppearance","wordAutoTranslateOnBlur","wordRestoreHoverOnly"):
+                         "actualProviderLabels","providerFallbackAppearance","wordAutoTranslateOnBlur","wordRestoreHoverOnly","wordExplicitPinOnly"):
                 assert report[flag], report
             for request in (200,201,202):assert responses[request]["items"]==[],responses
             assert responses[203]["items"][0]["title"]=="你好 + 100%",responses[203]

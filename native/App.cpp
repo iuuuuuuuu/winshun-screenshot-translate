@@ -408,15 +408,21 @@ void App::ensureRaw()
             auto contains=[&](HWND hwnd){
                 RECT r{};return hwnd&&IsWindowVisible(hwnd)&&GetWindowRect(hwnd,&r)&&PtInRect(&r,point);
             };
+            auto insideView=[&](View& view){
+                if(view.engine)for(auto window:view.engine->findChildren<QQuickWindow*>())
+                    if(window->isVisible()&&!window->flags().testFlag(Qt::WindowTransparentForInput)&&contains(HWND(window->winId())))return true;
+                return false;
+            };
+            // Word popups are transient unless the user explicitly pins them.
+            // Screenshot pin preferences and other plugin windows do not keep
+            // an unpinned word popup open.
+            const bool insideWord=insideView(m_word);
+            if(m_word.window&&m_word.window->isVisible()&&!m_wordPinned&&!insideWord&&LONG(timestamp-m_wordOpened)>=150)closeWord();
+            if(insideWord)return;
             if(m_pin&&contains(m_pin->hwnd()))return;
-            for(auto v:{&m_bar,&m_status,&m_config,&m_text,&m_menu,&m_word}){
-                if(!v->engine)continue;
-                for(auto window:v->engine->findChildren<QQuickWindow*>())
-                    if(window->isVisible()&&contains(HWND(window->winId())))return;
-            }
+            for(auto v:{&m_bar,&m_status,&m_config,&m_text,&m_menu})if(insideView(*v))return;
             DWORD pid=0;auto clicked=WindowFromPoint(point);GetWindowThreadProcessId(clicked,&pid);
             if(pid==GetCurrentProcessId())return;
-            if(m_word.window&&m_word.window->isVisible()&&!m_wordPinned&&m_settings.value("closeOnOutsideClick").toBool(true)&&LONG(timestamp-m_wordOpened)>=150)closeWord();
             if(m_pin&&m_settings.value("closeOnOutsideClick").toBool(true)&&LONG(timestamp-m_pinOpened)>=150)closePin();
         },Qt::QueuedConnection);
     });
@@ -638,12 +644,13 @@ void App::editWord(bool editing)
     if(m_wordEditing==editing)return;
     m_wordEditing=editing;m_wordBackend.update({{"editing",editing}});
     if(editing){
-        m_followSelection.stop();m_wordOpened=GetTickCount();
+        m_followSelection.stop();
     }else if(m_wordPinned&&m_word.window&&m_word.window->isVisible())m_followSelection.start();
 }
 void App::wordAction(const QString& name,const QVariant& value)
 {
     if(name=="close")closeWord();
+    else if(name=="move")m_wordPlacementFrozen=true;
     else if(name=="edit")editWord(true);
     else if(name=="cancelEdit")editWord(false);
     else if(name=="submitEdit"){
@@ -657,7 +664,6 @@ void App::wordAction(const QString& name,const QVariant& value)
             m_followBaseline=m_lastSelection.isEmpty();
             if(!m_wordEditing){m_followSelection.start();readSelection(true);}
         }else m_followSelection.stop();
-        m_wordOpened=GetTickCount();
     }else if(name=="retry"){
         if(m_wordSource.isEmpty())textFlow(m_wordMode,true);else translateWord(m_wordSource);
     }else if(name=="copy"){
