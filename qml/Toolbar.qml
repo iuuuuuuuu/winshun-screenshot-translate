@@ -82,14 +82,18 @@ Window {
                 onClicked: backend.action("compare", null)
             }
             Text {
+                id: serviceLabel
                 anchors.verticalCenter: parent.verticalCenter
                 objectName: "toolbar-provider"
                 text: backend.state.provider
-                color: Theme.subtext; font.pixelSize: 11
-                width: Math.min(66, implicitWidth); elide: Text.ElideRight
+                color: backend.state.providerFallback ? Theme.caution : Theme.subtext; font.pixelSize: 11
+                width: implicitWidth
                 HoverHandler { id: serviceHover }
-                ToolTip.visible: serviceHover.hovered
-                ToolTip.text: backend.state.providerNote
+                ServiceTip {
+                    objectName: "provider-tip"
+                    anchorItem: serviceLabel; hovered: serviceHover.hovered
+                    text: backend.state.providerNote || ""
+                }
             }
             BarButton {
                 objectName: "toolbar-copy"; glyph: "\uE8C8"; tip: bar.t("复制译文 · Ctrl+C", "Copy translation · Ctrl+C")

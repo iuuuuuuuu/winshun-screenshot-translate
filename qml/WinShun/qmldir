@@ -7,3 +7,4 @@ Glyph 1.0 Glyph.qml
 ToolButton 1.0 ToolButton.qml
 ServiceRow 1.0 ServiceRow.qml
 LanguageMenu 1.0 LanguageMenu.qml
+ServiceTip 1.0 ServiceTip.qml

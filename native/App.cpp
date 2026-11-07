@@ -12,7 +12,10 @@
 #include <QKeySequence>
 #include <QUrl>
 #include <QDebug>
+#include <QPixmapCache>
 #include <dwmapi.h>
+#include <psapi.h>
+#include <realtimeapiset.h>
 #include <thread>
 #include <cstdio>
 namespace st {
@@ -22,14 +25,20 @@ QJsonObject row(QString id,QString title,QString subtitle={},bool valid=true)
 QJsonObject effect(const QString& type){return {{"type",type}};}
 bool hasId(const QJsonValue& id){return !id.isNull()&&!id.isUndefined();}
 Cancel token(){return std::make_shared<std::atomic_bool>(false);}
+std::atomic_int backgroundJobs{0};
+quint64 awakeMilliseconds(){ULONGLONG time=0;QueryUnbiasedInterruptTime(&time);return time/10000;}
 QRect rect(RECT r){return {r.left,r.top,r.right-r.left,r.bottom-r.top};}
 QString failure(const std::exception& e){return QString::fromUtf8(e.what());}
 template<class Work,class Done> void background(Work work,Done done)
 {
+    ++backgroundJobs;
     std::thread([work=std::move(work),done=std::move(done)]() mutable {
         using Result=decltype(work());Result value{};QString error;
         try{value=work();}catch(const std::exception& e){error=failure(e);}catch(...){error="操作失败";}
-        QMetaObject::invokeMethod(qApp,[done=std::move(done),value=std::move(value),error]()mutable{done(value,error);},Qt::QueuedConnection);
+        QMetaObject::invokeMethod(qApp,[done=std::move(done),value=std::move(value),error]()mutable{
+            struct Finished {~Finished(){--backgroundJobs;}} finished;
+            done(value,error);
+        },Qt::QueuedConnection);
     }).detach();
 }
 QPoint logical(const QPoint& physical,QScreen* s)
@@ -76,7 +85,71 @@ App::App(ws::captureplugin::Protocol& protocol,QString appDir,QJsonObject initia
     QObject::connect(&m_wordBackend,&Backend::invoked,this,&App::wordAction);
     m_followSelection.setInterval(450);
     QObject::connect(&m_followSelection,&QTimer::timeout,this,[this]{readSelection(true);});
+    m_idleTimer.setSingleShot(true);
+    QObject::connect(&m_idleTimer,&QTimer::timeout,this,&App::reclaimIdle);
+    used();
     registerKeys();
+}
+void App::used()
+{
+    ++*m_activityRevision;m_idleReleased=false;m_holdAfterResume=false;
+    m_idleSince=m_lastTick=GetTickCount64();m_lastAwake=awakeMilliseconds();m_idleTimer.start(20000);
+}
+bool App::idleReady() const
+{
+    if(m_busy||m_pin||m_selector||m_selectionReading||!m_queries.empty()||m_testRunning||backgroundJobs.load())return false;
+    for(auto window:QGuiApplication::allWindows())if(window->isVisible())return false;
+    return true;
+}
+void App::reclaimIdle()
+{
+    // Follow WinShun's idle policy: keep hotkeys responsive and hold trimming
+    // after sleep until the next use. A visible pinned popup is always in use.
+    const quint64 tick=GetTickCount64(),awake=awakeMilliseconds();
+    const auto elapsed=tick-m_lastTick,awakeFor=std::min(elapsed,awake-m_lastAwake);
+    m_lastTick=tick;m_lastAwake=awake;
+    if(elapsed-awakeFor>10000)m_holdAfterResume=true;
+    m_idleTimer.start(30000);
+    if(m_holdAfterResume)return;
+    if(!idleReady()){m_idleSince=tick;return;}
+    if(tick-m_idleSince<20000){m_idleTimer.start(int(20000-(tick-m_idleSince)));return;}
+    if(!m_idleReleased){
+        m_idleReleased=true;
+        dispose(m_word);dispose(m_bar);dispose(m_status);dispose(m_text);dispose(m_menu);dispose(m_config);
+        m_original={};m_translated={};m_blocks.clear();m_data={};m_drafts={};m_tests.clear();m_testCancels.clear();
+        m_pinBackend.update({{"translatedText",""},{"sourceText",""},{"provider",""},{"providerNote",""}});
+        m_wordBackend.update({{"sourceText",""},{"translatedText",""},{"provider",""},{"providerNote",""},{"status",""}});
+        m_configBackend.update({{"apiKey",""},{"endpoint",""},{"model",""},{"region",""},{"appId",""},
+            {"testResults",QVariantList()},{"queue",QVariantList()},{"message",""}});
+        QPixmapCache::clear();
+        // QQmlEngine deletion is deferred: let it finish before returning pages.
+        m_idleTimer.start(250);return;
+    }
+    for(auto it=m_cache.begin();it!=m_cache.end();)if(QDateTime::currentSecsSinceEpoch()-it->second.first>=120)it=m_cache.erase(it);else ++it;
+    PROCESS_MEMORY_COUNTERS_EX2 info{};info.cb=sizeof info;
+    if(GetProcessMemoryInfo(GetCurrentProcess(),reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&info),sizeof info)&&info.PrivateWorkingSetSize<24*1024*1024)return;
+    if(m_trimRunning->exchange(true))return;
+    auto running=m_trimRunning;auto revision=m_activityRevision;auto count=m_trimCount;auto expected=revision->load();
+    std::thread([running,revision,count,expected]{
+        if(revision->load()==expected&&!backgroundJobs.load()&&SetProcessWorkingSetSizeEx(GetCurrentProcess(),SIZE_T(-1),SIZE_T(-1),0))++*count;
+        running->store(false);
+    }).detach();
+}
+QString App::providerLabel(const QJsonObject& data) const
+{
+    const auto provider=data.value("provider").toString();
+    if(provider.isEmpty())return {};
+    auto label=names.value(providers.indexOf(provider),provider);
+    if(!m_chinese){if(provider=="sogou")label="Sogou";else if(provider=="youdao")label="Youdao";else if(provider=="ai")label="AI";}
+    return (m_chinese?"渠道：":"Service: ")+label+(data.value("fallback").toBool()?(m_chinese?" · 已降级":" · fallback"):QString());
+}
+QString App::providerNote(const QJsonObject& data) const
+{
+    auto label=providerLabel(data);
+    if(label.isEmpty()||!data.value("fallback").toBool())return label;
+    return label+(m_chinese
+        ?"\n主渠道本次未提供结果，已使用备选渠道。失败渠道会在设定的恢复间隔结束后，于后续请求中自动重试；未配置的渠道需先补全配置。"
+        :"\nA backup service provided this result. Failed services are retried on later requests after the configured recovery interval. Unconfigured services need setup first.");
 }
 void App::defaults(const QJsonObject& settings)
 {
@@ -114,7 +187,7 @@ View App::view(const QString& file,Backend* backend)
 }
 void App::dispose(View& v)
 {
-    if(v.window)v.window->hide();
+    if(v.window){v.window->hide();v.window->releaseResources();}
     if(v.engine){auto engine=v.engine.release();engine->deleteLater();}v.window=nullptr;
 }
 LRESULT CALLBACK App::hotkeyProc(HWND window,UINT message,WPARAM key,LPARAM data)
@@ -186,12 +259,13 @@ QJsonArray App::results(const QJsonObject& data,const QString& command)
         QJsonObject{{"id","copy-source"},{"title","复制原文"},{"key","Ctrl+Enter"}},
         QJsonObject{{"id","retry-text"},{"title","重新翻译"},{"key","Shift+Enter"}}};
     for(auto field:{"translated","source"}){
-        auto item=row(field,data.value(field).toString(),data.value("sourceLanguage").toString()+" → "+data.value("targetLanguage").toString());
+        auto item=row(field,data.value(field).toString(),providerLabel(data)+" · "+data.value("sourceLanguage").toString()+" → "+data.value("targetLanguage").toString());
         item["copy"]=data.value(field);item["data"]=d;item["actions"]=actions;items.append(item);
     }return items;
 }
 void App::query(const QJsonValue& id,const QJsonObject& params)
 {
+    used();
     QString command=params.value("command").toString(),text=params.value("text").toString().trimmed();
     int qid=params.value("queryId").toInt();QJsonArray items;
     if(command=="shot"){
@@ -270,6 +344,7 @@ void App::dispatch(const QJsonValue& id,const QString& method,const QJsonObject&
 void App::shot(const QString& kind,int delay)
 {
     if(m_busy)return;
+    used();
     closePin();m_busy=true;HWND foreground=GetForegroundWindow();auto epoch=++m_epoch;
     QTimer::singleShot(delay,this,[this,epoch,kind,foreground]{
         if(epoch!=m_epoch)return;
@@ -296,11 +371,11 @@ void App::shot(const QString& kind,int delay)
 }
 void App::openPin(QImage image,QRect area)
 {
+    used();
     m_original=image;m_translated=image;m_blocks.clear();m_data={};m_compare=false;m_fullText=false;m_cancel=token();m_pinOpened=GetTickCount();
-    auto provider=m_settings.value("provider").toString("mymemory");
     auto captureScreen=screenAt(area.center());
     m_pinBackend.update({{"translatedText",""},{"sourceText",""},{"ready",false},{"loading",true},{"comparison",false},{"fullText",false},
-        {"provider",names.value(providers.indexOf(provider),provider)},{"providerNote",""},{"source","auto"},{"target","zh"},
+        {"provider",m_chinese?"等待翻译":"Awaiting translation"},{"providerNote",""},{"providerFallback",false},{"source","auto"},{"target","zh"},
         {"captureWidth",area.width()/captureScreen->devicePixelRatio()},{"captureHeight",area.height()/captureScreen->devicePixelRatio()},
         {"loadingStage","recognize"},{"status",""}});
     ws::capture::PinWindow::Host host;
@@ -348,6 +423,7 @@ void App::ensureRaw()
 }
 void App::closePin()
 {
+    used();
     if(m_bar.window)m_bar.window->hide();if(m_status.window)m_status.window->hide();if(m_text.window)m_text.window->hide();if(m_menu.window)m_menu.window->hide();
     if(m_pin)m_pin->setShown(false);
     if(m_cancel)m_cancel->store(true);++m_epoch;m_busy=false;m_position.stop();
@@ -377,20 +453,19 @@ void App::translatePin(QString source,QString target,QStringList parts)
     if(!m_pin||m_busy)return;
     if(source.isEmpty())source=m_source;if(target.isEmpty())target=m_target;
     if(parts.isEmpty())for(auto b:m_blocks)parts<<b.text;
-    m_busy=true;m_pinBackend.update({{"loadingStage","translate"}});
+    m_busy=true;m_pinBackend.update({{"loadingStage","translate"},{"provider",m_chinese?"正在选择渠道…":"Selecting service…"},{"providerNote",""},{"providerFallback",false}});
     status(m_chinese?"正在翻译…":"Translating…");m_source=source;m_target=target;
     m_pinBackend.update({{"source",source},{"target",target},{"ready",true}});
     auto services=m_services;auto settings=m_settings;auto cancel=m_cancel;auto epoch=m_epoch;
     background([services,settings,parts,source,target,cancel]{return services->translate(settings,parts,source,target,cancel).json(parts);},
         [this,parts,cancel,epoch](QJsonObject data,QString error){
             if(!m_pin||cancel->load()||epoch!=m_epoch)return;m_busy=false;
-            if(!error.isEmpty()){status(error,false);return;}
+            if(!error.isEmpty()){m_pinBackend.update({{"provider",m_chinese?"渠道请求失败":"Service failed"}});status(error,false);return;}
             QStringList original;for(auto b:m_blocks)original<<b.text;
             data["source"]=original.join('\n');m_data=data;
-            auto p=data.value("provider").toString(),label=names.value(providers.indexOf(p),p);
-            QString note=data.value("fallback").toBool()?"临时使用 "+label+"；间隔到后自动重试主渠道":label;
             m_pinBackend.update({{"translatedText",data.value("translated").toString()},{"sourceText",data.value("source").toString()},
-                {"provider",label},{"providerNote",note},{"source",data.value("sourceLanguage").toString()},{"target",data.value("targetLanguage").toString()}});
+                {"provider",providerLabel(data)},{"providerNote",providerNote(data)},{"providerFallback",data.value("fallback").toBool()},
+                {"source",data.value("sourceLanguage").toString()},{"target",data.value("targetLanguage").toString()}});
             status("",false);render();
         });
 }
@@ -514,6 +589,7 @@ void App::textFlow(const QString& command,bool retry)
 }
 void App::openWord(QString mode,QPoint anchor,QRect selection)
 {
+    used();
     if(m_selectionCancel)m_selectionCancel->store(true);
     m_selectionPendingEpoch=0;
     editWord(false);
@@ -522,7 +598,7 @@ void App::openWord(QString mode,QPoint anchor,QRect selection)
     if(!m_wordPinned&&!m_wordPlacementFrozen){m_wordAnchor=anchor;m_wordSelection=selection;}
     m_wordSource.clear();m_lastSelection.clear();m_wordOpened=GetTickCount();
     m_followBaseline=m_wordPinned&&mode!="jsel";
-    m_wordBackend.update({{"mode",mode},{"sourceText",""},{"translatedText",""},{"provider",""},{"loading",true},
+    m_wordBackend.update({{"mode",mode},{"sourceText",""},{"translatedText",""},{"provider",""},{"providerNote",""},{"providerFallback",false},{"loading",true},
         {"status",mode=="jsel"?"正在读取选中文字…":mode=="ocr"?"正在识别鼠标处的短句…":"正在翻译…"}});
     if(!m_word.window){
         m_word=view("qrc:/ui/qml/Word.qml",&m_wordBackend);
@@ -547,6 +623,7 @@ void App::placeWord()
 }
 void App::closeWord()
 {
+    used();
     if(m_selectionCancel)m_selectionCancel->store(true);
     m_selectionPendingEpoch=0;
     if(m_word.window)m_word.window->hide();
@@ -571,6 +648,7 @@ void App::wordAction(const QString& name,const QVariant& value)
     else if(name=="cancelEdit")editWord(false);
     else if(name=="submitEdit"){
         auto text=value.toString().trimmed();if(text.isEmpty())return;
+        if(text==m_wordSource){editWord(false);return;}
         translateWord(text);editWord(false);
     }
     else if(name=="pin"){
@@ -627,7 +705,7 @@ void App::readSelection(bool follow)
 void App::translateWord(QString text)
 {
     text=text.trimmed();if(m_wordCancel)m_wordCancel->store(true);m_wordCancel=token();auto cancel=m_wordCancel;auto epoch=++m_wordEpoch;
-    m_wordSource=text;m_wordBackend.update({{"sourceText",text},{"translatedText",""},{"provider",""},
+    m_wordSource=text;m_wordBackend.update({{"sourceText",text},{"translatedText",""},{"provider",""},{"providerNote",""},{"providerFallback",false},
         {"loading",!text.isEmpty()},{"status",text.isEmpty()?"没有读取到剪贴板文字":"正在翻译…"}});
     if(text.isEmpty())return;
     auto services=m_services;auto settings=m_settings;auto command=m_wordMode;
@@ -635,9 +713,8 @@ void App::translateWord(QString text)
         return services->translate(settings,{text},"auto",targetFor(text,settings.value("target").toString()),cancel).json({text});
     },[this,epoch,cancel,command](QJsonObject data,QString error){
         if(epoch!=m_wordEpoch||cancel->load())return;
-        auto p=data.value("provider").toString(),label=names.value(providers.indexOf(p),p);
         m_wordBackend.update({{"translatedText",data.value("translated").toString()},{"loading",false},{"status",error},
-            {"provider",data.value("fallback").toBool()?"临时使用 "+label:label}});
+            {"provider",providerLabel(data)},{"providerNote",providerNote(data)},{"providerFallback",data.value("fallback").toBool()}});
         if(error.isEmpty())m_cache[command]={QDateTime::currentSecsSinceEpoch(),results(data,command)};
     });
     QTimer::singleShot(25000,this,[this,epoch,cancel]{
@@ -647,6 +724,7 @@ void App::translateWord(QString text)
 }
 void App::showSettings()
 {
+    used();
     if(m_config.window){m_config.window->show();m_config.window->requestActivate();return;}
     ++m_configEpoch;m_drafts={};m_tests.clear();m_batch=false;
     m_routingDraft=m_services->routing();
@@ -696,6 +774,7 @@ void App::configAction(const QString& name,const QVariant& value)
         else if(name=="testService")testServices(false,value.toString());
         else if(name=="showTests")configAction("home",{});
         else if(name=="close"){
+            used();
             if(m_config.window)m_config.window->hide();++m_configEpoch;
             for(auto c:m_testCancels)c->store(true);m_testCancels.clear();m_testQueue.clear();m_testRunning=0;
             dispose(m_config);m_drafts={};

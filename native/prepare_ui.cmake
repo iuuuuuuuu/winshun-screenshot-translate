@@ -6,9 +6,6 @@ foreach(name Settings Toolbar)
     if(name STREQUAL "Settings")
         string(REPLACE "ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }"
             "ListScrollBar { parent: scroll.parent; anchors.top: scroll.top; anchors.bottom: scroll.bottom; anchors.right: scroll.right; flickable: scroll }" content "${content}")
-    else()
-        string(REPLACE "ToolTip.visible: serviceHover.hovered\n                ToolTip.text: backend.state.providerNote"
-            "HoverTip { target: serviceHover.hovered ? parent : null; text: backend.state.providerNote }" content "${content}")
     endif()
     file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/nativeui/${name}.qml" "${content}")
 endforeach()

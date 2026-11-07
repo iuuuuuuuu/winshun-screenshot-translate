@@ -28,6 +28,7 @@ QtObject {
     readonly property color menuBackground: dark ? "#2C2C2C" : "#F9F9F9"
     readonly property color menuHover: dark ? "#3A3A3A" : "#ECECEC"
     readonly property color danger: dark ? "#FF99A4" : "#C42B1C"
+    readonly property color caution: dark ? "#FCE100" : "#9D5D00"
     readonly property color success: dark ? "#6CCB5F" : "#0F7B0F"
     readonly property int controlRadius: 4
     readonly property int largeControlRadius: 6

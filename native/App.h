@@ -65,6 +65,17 @@ private:
     void pumpTests();
     void publishTests();
     void dispose(View& view);
+    void used();
+    bool idleReady() const;
+    void reclaimIdle();
+    QString providerLabel(const QJsonObject& data) const;
+    QString providerNote(const QJsonObject& data) const;
+    QTimer m_idleTimer;
+    quint64 m_idleSince=0,m_lastTick=0,m_lastAwake=0;
+    bool m_holdAfterResume=false,m_idleReleased=false;
+    std::shared_ptr<std::atomic_bool> m_trimRunning=std::make_shared<std::atomic_bool>(false);
+    std::shared_ptr<std::atomic_uint64_t> m_activityRevision=std::make_shared<std::atomic_uint64_t>(0);
+    std::shared_ptr<std::atomic_uint> m_trimCount=std::make_shared<std::atomic_uint>(0);
     bool m_busy=false,m_chinese=true,m_dark=false,m_hostHotkeys=false,m_compare=false,m_fullText=false;
     QString m_appDir,m_source="auto",m_target="zh",m_configProvider;
     QJsonObject m_settings,m_data,m_drafts,m_routingDraft;

@@ -35,10 +35,11 @@ BOOL WINAPI cursor(LPPOINT p){*p=rawPoint;return TRUE;}
 void check(bool yes,const char* message){if(!yes)throw std::runtime_error(message);}
 QJsonObject memory()
 {
-    PROCESS_MEMORY_COUNTERS_EX info{};info.cb=sizeof info;
+    PROCESS_MEMORY_COUNTERS_EX2 info{};info.cb=sizeof info;
     GetProcessMemoryInfo(GetCurrentProcess(),reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&info),sizeof info);
     DWORD handles=0;GetProcessHandleCount(GetCurrentProcess(),&handles);
-    return {{"privateMB",double(info.PrivateUsage)/(1024*1024)},{"workingMB",double(info.WorkingSetSize)/(1024*1024)},{"handles",int(handles)}};
+    return {{"privateMB",double(info.PrivateUsage)/(1024*1024)},{"workingMB",double(info.WorkingSetSize)/(1024*1024)},
+        {"privateWorkingMB",double(info.PrivateWorkingSetSize)/(1024*1024)},{"handles",int(handles)}};
 }
 QImage printed(HWND window,QSize size)
 {
@@ -158,6 +159,43 @@ void Probe::run(App& app,const QJsonObject& params)
         report["loadedModulePaths"]=modulePaths;report["runtimeDirectory"]=runtime;
         report["qtBundled"]=runtime.compare(QDir::cleanPath(QCoreApplication::applicationDirPath()+"/runtime"),Qt::CaseInsensitive)==0;
         report["startupMemory"]=memory();
+        if(params.value("probeMemory").toBool()){
+            app.m_mouse=[] {return QPoint(100,100);};
+            app.m_readClipboard=[] {return QString("Hello world");};
+            QElapsedTimer elapsed;elapsed.start();app.textFlow("clip");
+            check(until([&]{return !app.m_wordBackend.values.value("loading").toBool();}),"memory probe clipboard translation");
+            report["firstWordMs"]=double(elapsed.elapsed());
+            report["wordMemory"]=memory();app.closeWord();
+            QImage captureFixture(820,380,QImage::Format_RGB32);captureFixture.fill(Qt::white);
+            {QPainter draw(&captureFixture);QFont font("Segoe UI");font.setPixelSize(24);draw.setFont(font);draw.setPen(Qt::black);draw.drawText(20,60,"Screenshot translation");}
+            app.openPin(captureFixture,{100,100,820,380});app.recognizePin();
+            check(until([&]{return !app.m_busy&&!app.m_blocks.isEmpty();},15000),"memory probe screenshot OCR");
+            report["screenshotMemory"]=memory();app.closePin();
+            app.showSettings();pump(200);report["settingsMemory"]=memory();app.configAction("close",{});
+            pump(500);report["closedMemory"]=memory();
+            // Use the real idle delay, without touching the Owner desktop.
+            pump(24000);report["idleMemory"]=memory();
+            report["idleWordEngineRetained"]=bool(app.m_word.engine);
+            check(!app.m_word.engine&&!app.m_config.engine&&!app.m_bar.engine,"idle destroys unused QML engines");
+            check(app.m_original.isNull()&&app.m_translated.isNull()&&!app.m_raw,"idle frees capture and input resources");
+            check(app.m_trimCount->load()>0,"idle returns resident pages to Windows");
+            report["idleTrimCount"]=int(app.m_trimCount->load());
+            elapsed.restart();app.dispatch({},"hotkey",{{"key","Alt+Shift+C"}});
+            check(until([&]{return app.m_word.window&&app.m_word.window->isVisible();}),"word reopens after idle");
+            report["reopenWindowMs"]=double(elapsed.elapsed());
+            check(until([&]{return !app.m_wordBackend.values.value("loading").toBool();}),"word translates after idle");
+            report["reopenTranslationMs"]=double(elapsed.elapsed());app.closeWord();
+            // A pinned popup must survive idle cleanup, including after sleep.
+            app.openWord("clip",{100,100});app.wordAction("pin",{});app.translateWord("Hello");
+            check(until([&]{return !app.m_wordBackend.values.value("loading").toBool();}),"pinned memory fixture");
+            auto live=app.m_word.window;auto trims=app.m_trimCount->load();app.m_idleSince=GetTickCount64()-21000;app.reclaimIdle();pump(300);
+            check(app.m_word.window==live&&live->isVisible()&&app.m_trimCount->load()==trims,"pinned popup prevents idle release and trim");
+            app.closeWord();app.m_holdAfterResume=true;app.m_idleSince=GetTickCount64()-21000;app.reclaimIdle();pump(300);
+            check(app.m_word.engine&&app.m_trimCount->load()==trims,"sleep resume holds trimming until next use");
+            app.used();check(!app.m_holdAfterResume,"next use releases sleep hold");
+            report["idlePreservesPinnedAndResume"]=true;
+            report["passed"]=true;atomicJson(out+"/report.json",report);ExitProcess(0);
+        }
         QImage fixture(820,380,QImage::Format_RGB32);fixture.fill(Qt::white);
         QPainter paint(&fixture);QFont font("Segoe UI");font.setPixelSize(24);paint.setFont(font);paint.setPen(QColor("#1B1B1B"));
         paint.drawText(32,70,"Screenshot translation");
@@ -276,6 +314,11 @@ void Probe::run(App& app,const QJsonObject& params)
         check(until([&]{return !app.m_busy;},25000),"translation completion");
         std::fputs("[probe] translation completed\n",stderr);std::fflush(stderr);
         check(!app.m_data.value("translated").toString().isEmpty(),"native screenshot translation");
+        auto screenshotProvider=app.m_bar.window->findChild<QQuickItem*>("toolbar-provider");
+        check(screenshotProvider&&screenshotProvider->isVisible()&&screenshotProvider->property("text").toString()=="渠道：translate.js","screenshot shows actual service inline");
+        app.pinAction("text",{});pump(30);
+        check(app.m_text.window->findChild<QQuickItem*>("text-provider")->property("text").toString()=="渠道：translate.js","full translation shows service");
+        app.m_text.window->hide();
         check(app.m_pin->pictureRect().size()==fixture.size(),"translation pixel stability");
         auto pinOrigin=app.m_pin->pictureRect().topLeft();RECT suggestion{20,20,600,300};
         UINT dpi=GetDpiForWindow(app.m_pin->hwnd());
@@ -285,7 +328,7 @@ void Probe::run(App& app,const QJsonObject& params)
         report["dpiPixelStable"]=true;
         app.m_translated.save(out+"/translation.png");
         app.m_bar.window->grabWindow().save(out+"/toolbar.png");
-        check(app.m_bar.window->width()<=460&&app.m_bar.window->height()==32,"large capture keeps full compact toolbar");
+        check(app.m_bar.window->width()<=520&&app.m_bar.window->height()==32,"large capture keeps full compact toolbar and readable provider");
         report["toolbarSize"]=QJsonArray{app.m_bar.window->width(),app.m_bar.window->height()};
         app.m_pin->image().save(out+"/pin.png");
         app.pinAction("compare",{});check(app.m_pin->pictureRect().height()==fixture.height()*2+60,"vertical comparison");
@@ -471,6 +514,8 @@ void Probe::run(App& app,const QJsonObject& params)
         check(until([&]{return !app.m_wordBackend.values["loading"].toBool();}),"clipboard popup translation");
         check(app.m_wordBackend.values["translatedText"].toString()=="你好 + 100%","clipboard popup meaning");
         editableSource(app.m_word.window,"Hello + 100%");
+        check(!app.m_word.window->findChild<QQuickItem*>("word-submit-edit")&&!app.m_word.window->findChild<QQuickItem*>("word-cancel-edit"),"word popup has no footer edit buttons");
+        check(app.m_word.window->findChild<QQuickItem*>("word-restore")->isVisible(),"source restore icon is visible");
         auto sourceFont=app.m_word.window->findChild<QQuickItem*>("word-editor")->property("font").value<QFont>().family();
         check(sourceFont=="Segoe UI","word popup uses Windows body font");
         report["wordFontFamily"]=sourceFont;
@@ -486,6 +531,10 @@ void Probe::run(App& app,const QJsonObject& params)
         key(app.m_word.window,Qt::Key_Escape);
         check(!app.m_wordEditing&&app.m_wordSource=="Hello + 100%","cancel discards draft without replacing source");
         editableSource(app.m_word.window,"Hello + 100%");
+        typeDraft(app.m_word.window,"History");auto restoreEpoch=app.m_wordEpoch;
+        click(app.m_word.window,app.m_word.window->findChild<QQuickItem*>("word-restore"));pump(220);
+        check(app.m_wordEpoch==restoreEpoch&&!app.m_wordEditing,"restore icon cancels draft without translating");
+        editableSource(app.m_word.window,"Hello + 100%");
         typeDraft(app.m_word.window,QString("Long editable source line\n").repeated(24));pump(30);
         auto editor=app.m_word.window->findChild<QQuickItem*>("word-editor");
         auto scroller=app.m_word.window->findChild<QQuickItem*>("word-scroll");
@@ -497,16 +546,23 @@ void Probe::run(App& app,const QJsonObject& params)
         check(app.m_wordEditing&&app.m_word.window->findChild<QQuickItem*>("word-editor")->property("text").toString()=="Settings\n","Shift Enter inserts a line without translating");
         typeDraft(app.m_word.window,"Settings");
         QInputMethodEvent composing("设",{});QCoreApplication::sendEvent(app.m_word.window,&composing);pump(10);
+        auto composingEpoch=app.m_wordEpoch;
+        QMetaObject::invokeMethod(app.m_word.window,"submitEditing");
         check(app.m_word.window->findChild<QQuickItem*>("word-editor")->property("inputMethodComposing").toBool()&&
-            !app.m_word.window->findChild<QQuickItem*>("word-submit-edit")->isEnabled(),"IME composition cannot submit partial text");
+            app.m_wordEpoch==composingEpoch,"IME composition cannot submit partial text");
         QInputMethodEvent stopComposing;QCoreApplication::sendEvent(app.m_word.window,&stopComposing);
         check(app.m_word.window->findChild<QQuickItem*>("word-meaning")->isVisible()&&
             app.m_word.window->findChild<QQuickItem*>("word-copy")->isEnabled(),"draft editing retains the previous translation and copy action");
         app.m_word.window->grabWindow().save(out+"/word-edit.png");
-        click(app.m_word.window,app.m_word.window->findChild<QQuickItem*>("word-submit-edit"));
+        click(app.m_word.window,app.m_word.window->findChild<QQuickItem*>("word-provider"));
         check(until([&]{return app.m_wordBackend.values["translatedText"].toString()=="设置";}),"edited clipboard source is translated");
         check(!app.m_wordEditing&&app.m_wordSource=="Settings"&&!app.m_word.window->flags().testFlag(Qt::WindowDoesNotAcceptFocus),"submit keeps the source keyboard editable");
         editableSource(app.m_word.window,"Settings");
+        auto cleanEpoch=app.m_wordEpoch;
+        click(app.m_word.window,app.m_word.window->findChild<QQuickItem*>("word-editor"));
+        click(app.m_word.window,app.m_word.window->findChild<QQuickItem*>("word-provider"));pump(220);
+        check(app.m_wordEpoch==cleanEpoch,"leaving unchanged source does not repeat translation");
+        report["wordAutoTranslateOnBlur"]=true;
         typeDraft(app.m_word.window,"History");key(app.m_word.window,Qt::Key_Return);
         check(until([&]{return app.m_wordBackend.values["translatedText"].toString()=="历史";}),"source can be edited again immediately after submission");
         editableSource(app.m_word.window,"History");
@@ -595,7 +651,7 @@ void Probe::run(App& app,const QJsonObject& params)
         check(movedWindow->color().alpha()==255&&!(GetWindowLongPtrW(HWND(movedWindow->winId()),GWL_EXSTYLE)&WS_EX_LAYERED),"word popup uses an opaque native backing store during moves");
         check(frame.pixelColor(frame.width()/2,frame.height()-6).alpha()==255&&
             movedWindow->findChild<QQuickItem*>("word-close")->isVisible()&&
-            movedWindow->findChild<QQuickItem*>("word-submit-edit")->isVisible(),"moved popup keeps card and actions");
+            movedWindow->findChild<QQuickItem*>("word-restore")->isVisible(),"moved popup keeps card and actions");
         report["wordMoveRendering"]=true;
         auto fixedPosition=app.m_word.window->position();
         check(until([&]{return app.m_raw&&app.m_raw->m_hwnd.load();}),"pinned raw input");
@@ -613,7 +669,7 @@ void Probe::run(App& app,const QJsonObject& params)
         typeDraft(app.m_word.window,"草稿");selectedIndex->store(0);app.readSelection(true);pump(500);
         check(!app.m_followSelection.isActive()&&app.m_wordSource=="Settings"&&
             app.m_word.window->findChild<QQuickItem*>("word-editor")->property("text").toString()=="草稿","pinned following pauses while editing");
-        click(app.m_word.window,app.m_word.window->findChild<QQuickItem*>("word-cancel-edit"));
+        click(app.m_word.window,app.m_word.window->findChild<QQuickItem*>("word-restore"));
         check(app.m_followSelection.isActive(),"pinned following resumes after editing");
         check(until([&]{return app.m_wordSource=="Hello + 100%";}),"new selection is translated after editing");
         check(app.m_word.window->findChild<QQuickItem*>("word-editor")->property("text").toString()=="Hello + 100%","resumed selection updates the default editor");
@@ -730,15 +786,20 @@ void Probe::run(App& app,const QJsonObject& params)
                     editableSource(app.m_word.window,app.m_wordSource);
                     click(app.m_word.window,app.m_word.window->findChild<QQuickItem*>("word-editor"));
                     typeDraft(app.m_word.window,"");
-                    check(!app.m_word.window->findChild<QQuickItem*>("word-submit-edit")->isEnabled(),"empty edit cannot submit");
-                    typeDraft(app.m_word.window,"History");key(app.m_word.window,Qt::Key_Return);
+                    auto emptyEpoch=app.m_wordEpoch;
+                    click(app.m_word.window,app.m_word.window->findChild<QQuickItem*>("word-provider"));pump(220);
+                    check(app.m_wordEpoch==emptyEpoch,"empty edit cannot submit on blur");
+                    typeDraft(app.m_word.window,"History");
+                    click(app.m_word.window,app.m_word.window->findChild<QQuickItem*>("word-meaning"));
                     check(until([&]{return app.m_wordBackend.values["translatedText"].toString()=="历史";}),"edited OCR source is translated");
-                    check(app.m_wordSource=="History"&&!app.m_wordEditing,"Enter submits OCR correction");
+                    check(app.m_wordSource=="History"&&!app.m_wordEditing,"leaving source submits OCR correction");
                     editableSource(app.m_word.window,"History");
                     app.m_word.window->grabWindow().save(out+"/word-ocr-edited.png");
                     report["wordEditableOcr"]=true;
                     typeDraft(app.m_word.window,"Edited OCR draft");
+                    auto closeEpoch=app.m_wordEpoch;
                     click(app.m_word.window,app.m_word.window->findChild<QQuickItem*>("word-close"));
+                    pump(220);check(app.m_wordEpoch==closeEpoch+1,"closing edited popup cancels without submitting");
                     check(!app.m_word.window->isVisible()&&!app.m_wordEditing&&!app.m_followSelection.isActive(),"close while editing leaves no focus or follow state");
                 }
                 app.closeWord();
@@ -814,6 +875,67 @@ void Probe::run(App& app,const QJsonObject& params)
         check(RegisterHotKey(app.m_keyWindow,20,MOD_CONTROL|MOD_ALT|MOD_SHIFT|MOD_NOREPEAT,VK_F23),"old hotkey released");
         UnregisterHotKey(app.m_keyWindow,20);
         report["nativeHotkeyFallback"]=true;
+        // All word entry points share the actual result provider, not the
+        // preferred provider. Use a real local-fallback request for each mode.
+        app.appearance({{"theme","light"}});
+        auto hoverProvider=[&](View& view,const char* name,const QString& snapshot){
+            auto label=view.window->findChild<QQuickItem*>(name);
+            auto tip=view.window->findChild<QQuickWindow*>("provider-tip");
+            check(label&&tip,"provider hover target and separate tooltip exist");
+            auto focus=GetForegroundWindow();
+            auto point=label->mapToScene(QPointF(label->width()/2,label->height()/2));
+            QMouseEvent move(QEvent::MouseMove,point,view.window->mapToGlobal(point.toPoint()),Qt::NoButton,Qt::NoButton,Qt::NoModifier);
+            QCoreApplication::sendEvent(view.window,&move);
+            check(until([&]{return tip->isVisible();},2000),"hover shows provider explanation");
+            check(tip->property("text").toString().contains("恢复间隔"),"fallback tooltip explains recovery");
+            check(GetForegroundWindow()==focus,"provider tooltip does not steal focus");
+            check(tip->height()>32,"provider explanation is not clipped to compact toolbar");
+            tip->grabWindow().save(out+"/"+snapshot+"-tip.png");
+            QMouseEvent leave(QEvent::MouseMove,QPointF(1,1),view.window->mapToGlobal(QPoint(1,1)),Qt::NoButton,Qt::NoButton,Qt::NoModifier);
+            QCoreApplication::sendEvent(view.window,&leave);
+            check(until([&]{return !tip->isVisible();}),"leaving provider hides explanation");
+        };
+        app.m_settings["provider"]="deepl";app.m_settings["fallbackEnabled"]=true;
+        app.m_services->save({},{{"mode","manual"},{"order",QJsonArray{"google","zvo","ecdict"}}});
+        for(const auto& mode:QStringList{"clip","ocr","jsel"}){
+            app.openWord(mode,{100,100});app.translateWord("Hello + 100%");
+            check(until([&]{return !app.m_wordBackend.values.value("loading").toBool();}),"fallback word result complete");
+            auto label=app.m_word.window->findChild<QQuickItem*>("word-provider");
+            check(label&&label->isVisible()&&label->property("text").toString()=="渠道：Google · 已降级","every word mode displays actual fallback provider");
+            check(label->property("color").value<QColor>()==QColor("#9D5D00"),"fallback word service uses caution color");
+            app.m_word.window->grabWindow().save(out+"/provider-"+mode+".png");
+            hoverProvider(app.m_word,"word-provider","provider-"+mode);
+            if(mode=="clip"){
+                app.appearance({{"theme","dark"}});pump(30);
+                check(label->property("color").value<QColor>()==QColor("#FCE100"),"fallback color follows dark theme");
+                app.m_word.window->grabWindow().save(out+"/provider-clip-dark.png");
+                app.appearance({{"theme","light"}});
+            }
+            app.m_settings["provider"]="google";app.translateWord("Hello + 100%");
+            check(!app.m_wordBackend.values.value("providerFallback").toBool()&&app.m_wordBackend.values.value("providerNote").toString().isEmpty(),"new word request clears old fallback state");
+            check(until([&]{return !app.m_wordBackend.values.value("loading").toBool();}),"preferred word result complete");
+            check(label->property("text").toString()=="渠道：Google"&&label->property("color").value<QColor>()==QColor("#666666"),"successful preferred service restores default word color");
+            check(!app.m_wordBackend.values.value("providerNote").toString().contains("恢复间隔"),"normal word result has no fallback explanation");
+            app.m_settings["provider"]="deepl";app.closeWord();
+        }
+        app.openPin(fixture,{100,100,820,380});app.m_blocks={{"Hello + 100%",QRectF(20,20,180,32),24}};
+        app.translatePin("en","zh",{"Hello + 100%"});
+        check(until([&]{return !app.m_busy;}),"fallback screenshot result complete");
+        check(app.m_bar.window->findChild<QQuickItem*>("toolbar-provider")->property("text").toString()=="渠道：Google · 已降级","screenshot displays actual fallback provider");
+        check(app.m_bar.window->findChild<QQuickItem*>("toolbar-provider")->property("color").value<QColor>()==QColor("#9D5D00"),"screenshot fallback color");
+        app.m_bar.window->grabWindow().save(out+"/provider-toolbar.png");
+        hoverProvider(app.m_bar,"toolbar-provider","provider-toolbar");
+        app.pinAction("text",{});pump(30);
+        check(app.m_text.window->findChild<QQuickItem*>("text-provider")->property("color").value<QColor>()==QColor("#9D5D00"),"full translation fallback color");
+        hoverProvider(app.m_text,"text-provider","provider-text");
+        auto queryRows=app.results(app.m_data,"clip");
+        check(queryRows.first().toObject().value("subtitle").toString().contains("渠道：Google · 已降级"),"keyword clipboard result displays actual fallback provider");
+        app.m_settings["provider"]="google";app.translatePin("en","zh",{"Hello + 100%"});
+        check(!app.m_pinBackend.values.value("providerFallback").toBool()&&app.m_pinBackend.values.value("providerNote").toString().isEmpty(),"new screenshot request clears fallback state");
+        check(until([&]{return !app.m_busy;}),"preferred screenshot result complete");
+        for(auto label:{app.m_bar.window->findChild<QQuickItem*>("toolbar-provider"),app.m_text.window->findChild<QQuickItem*>("text-provider")})
+            check(label->property("text").toString()=="渠道：Google"&&label->property("color").value<QColor>()==QColor("#666666"),"preferred screenshot restores default color");
+        report["providerFallbackAppearance"]=true;report["actualProviderLabels"]=true;app.closePin();
         pump(200);report["closedMemory"]=memory();
         report["passed"]=true;code=0;
     }catch(const std::exception& e){report["passed"]=false;report["error"]=QString::fromUtf8(e.what());}

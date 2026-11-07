@@ -8,8 +8,9 @@ Window {
     readonly property bool sourceDirty: editor.text !== sourceText
     property bool syncingSource: false
     property bool acceptsInput: false
+    property bool resetting: false
     width: 324
-    height: 44 + Math.min(300, Math.max(62, body.implicitHeight)) + 72
+    height: 44 + Math.min(300, Math.max(62, body.implicitHeight)) + 48
     visible: false
     flags: Qt.Tool | Qt.WindowStaysOnTopHint | Qt.FramelessWindowHint | (acceptsInput ? 0 : Qt.WindowDoesNotAcceptFocus)
     // Use an opaque backing store for the whole card so native moves and caret
@@ -22,10 +23,13 @@ Window {
         syncingSource = false
     }
     function resetInteraction() {
+        resetting = true
+        blurSubmit.stop()
         acceptsInput = false
         editor.focus = false
         syncSource()
         scroll.contentY = 0
+        resetting = false
     }
     function focusEditor() {
         acceptsInput = true
@@ -36,9 +40,15 @@ Window {
         })
     }
     function submitEditing() {
-        if (editor.text.trim().length && !editor.inputMethodComposing)
+        blurSubmit.stop()
+        if (sourceDirty && editor.text.trim().length && !editor.inputMethodComposing)
             backend.action("submitEdit", editor.text)
     }
+    function scheduleBlur() {
+        if (visible && !resetting && sourceDirty) blurSubmit.restart()
+    }
+    function blurEditor() { focusSink.forceActiveFocus(Qt.MouseFocusReason) }
+    function restoreSource() { blurSubmit.stop(); backend.action("cancelEdit", null) }
     function updateDraftState() {
         if (!syncingSource && visible)
             backend.action(editor.text !== sourceText || editor.inputMethodComposing ? "edit" : "cancelEdit", null)
@@ -46,8 +56,17 @@ Window {
     onSourceTextChanged: syncSource()
     onEditingChanged: if (!editing) syncSource()
     onVisibleChanged: if (!visible) resetInteraction()
+    onActiveChanged: if (!active) scheduleBlur()
     Component.onCompleted: syncSource()
     onClosing: event => { event.accepted = false; backend.action("close", null) }
+    Timer {
+        id: blurSubmit
+        interval: 150
+        onTriggered: {
+            if (wordWindow.visible && !wordWindow.resetting && (!editor.activeFocus || !wordWindow.active))
+                wordWindow.submitEditing()
+        }
+    }
     Rectangle {
         anchors.fill: parent
         radius: Theme.largeCardRadius
@@ -56,13 +75,15 @@ Window {
         border.width: 1
     }
     Item {
+        id: focusSink
         anchors.fill: parent
         focus: true
+        MouseArea { anchors.fill: parent; onPressed: wordWindow.blurEditor() }
         Keys.onEscapePressed: backend.action(wordWindow.editing ? "cancelEdit" : "close", null)
     }
     MouseArea {
         x: 1; y: 1; width: parent.width - 107; height: 40
-        onPressed: { if (!backend.state.pinned) backend.action("pin", null); wordWindow.startSystemMove() }
+        onPressed: { wordWindow.blurEditor(); if (!backend.state.pinned) backend.action("pin", null); wordWindow.startSystemMove() }
     }
     Text {
         x: 14; y: 13
@@ -78,13 +99,13 @@ Window {
             glyph: "\uE3E2"
             checked: backend.state.pinned
             tip: backend.state.chinese ? (checked ? "取消固定" : "固定并跟随新选区") : "Pin and follow selections"
-            onClicked: backend.action("pin", null)
+            onClicked: { wordWindow.blurEditor(); backend.action("pin", null) }
         }
         ToolButton {
             objectName: "word-copy"
             glyph: "\uE8C8"; enabled: !!backend.state.translatedText
             tip: backend.state.chinese ? "复制释义" : "Copy translation"
-            onClicked: backend.action("copy", null)
+            onClicked: { wordWindow.blurEditor(); backend.action("copy", null) }
         }
         ToolButton {
             objectName: "word-close"
@@ -95,7 +116,7 @@ Window {
     Flickable {
         id: scroll
         objectName: "word-scroll"
-        x: 14; y: 44; width: parent.width - 28; height: parent.height - 116
+        x: 14; y: 44; width: parent.width - 28; height: parent.height - 92
         contentWidth: width; contentHeight: body.implicitHeight
         clip: true; boundsBehavior: Flickable.StopAtBounds
         onContentHeightChanged: if (!wordWindow.editing) contentY = 0
@@ -106,7 +127,7 @@ Window {
                 width: parent.width; height: editor.height + 10
                 TextEdit {
                     id: editor; objectName: "word-editor"
-                    width: parent.width; height: Math.max(22, contentHeight)
+                    width: parent.width - 30; height: Math.max(22, contentHeight)
                     readOnly: false
                     enabled: !!wordWindow.sourceText || !backend.state.loading
                     textFormat: TextEdit.PlainText; wrapMode: TextEdit.Wrap
@@ -114,8 +135,16 @@ Window {
                     font.family: "Segoe UI"; font.pixelSize: 17; font.weight: Font.DemiBold; color: Theme.text
                     selectionColor: Theme.textSelection; selectedTextColor: Theme.text
                     onTextChanged: wordWindow.updateDraftState()
-                    onInputMethodComposingChanged: wordWindow.updateDraftState()
-                    onActiveFocusChanged: if (activeFocus && !wordWindow.acceptsInput) wordWindow.focusEditor()
+                    onInputMethodComposingChanged: {
+                        wordWindow.updateDraftState()
+                        if (!inputMethodComposing && !activeFocus) wordWindow.scheduleBlur()
+                    }
+                    onActiveFocusChanged: {
+                        if (activeFocus) {
+                            blurSubmit.stop()
+                            if (!wordWindow.acceptsInput) wordWindow.focusEditor()
+                        } else wordWindow.scheduleBlur()
+                    }
                     TapHandler {
                         acceptedButtons: Qt.LeftButton
                         onPressedChanged: if (pressed) wordWindow.focusEditor()
@@ -138,10 +167,18 @@ Window {
                     }
                 }
                 Text {
-                    width: parent.width
+                    width: parent.width - 30
                     visible: !editor.text && !editor.activeFocus
                     text: backend.state.chinese ? "原文 · 可直接编辑" : "Source · edit directly"
                     font.family: "Segoe UI"; font.pixelSize: 17; color: Theme.faint
+                }
+                ToolButton {
+                    objectName: "word-restore"
+                    anchors.right: parent.right; y: -2; width: 26; height: 26
+                    glyph: "\uE7A7"
+                    enabled: wordWindow.sourceDirty && !editor.inputMethodComposing
+                    tip: backend.state.chinese ? "还原原文" : "Restore source"
+                    onClicked: wordWindow.restoreSource()
                 }
             }
             TextEdit {
@@ -187,26 +224,29 @@ Window {
         }
         ListScrollBar { flickable: scroll; parent: scroll.parent; anchors.right: scroll.right; anchors.top: scroll.top; anchors.bottom: scroll.bottom }
     }
-    Row {
-        x: 14; y: parent.height - 65; spacing: 8
-        FlatButton {
-            objectName: "word-submit-edit"; height: 30; highlighted: true
-            enabled: editor.text.trim().length > 0 && !editor.inputMethodComposing
-            text: backend.state.chinese ? "重新翻译" : "Translate"
-            onClicked: wordWindow.submitEditing()
-        }
-        FlatButton {
-            objectName: "word-cancel-edit"; height: 30
-            enabled: wordWindow.sourceDirty && !editor.inputMethodComposing
-            text: backend.state.chinese ? "还原" : "Revert"
-            onClicked: backend.action("cancelEdit", null)
+    Text {
+        id: serviceLabel
+        objectName: "word-provider"
+        x: 14; y: parent.height - 43; width: parent.width - 28
+        height: 18; verticalAlignment: Text.AlignVCenter
+        text: backend.state.provider || (backend.state.loading
+            ? (backend.state.chinese ? "等待翻译渠道" : "Awaiting service")
+            : (backend.state.chinese ? "暂无翻译结果" : "No translation"))
+        textFormat: Text.PlainText; wrapMode: Text.Wrap; font.pixelSize: 11
+        color: backend.state.provider ? (backend.state.providerFallback ? Theme.caution : Theme.subtext) : Theme.faint
+        TapHandler { onTapped: wordWindow.blurEditor() }
+        HoverHandler { id: serviceHover }
+        ServiceTip {
+            objectName: "provider-tip"
+            anchorItem: serviceLabel; hovered: serviceHover.hovered
+            text: backend.state.providerNote || ""
         }
     }
     Text {
         x: 14; anchors.bottom: parent.bottom; anchors.bottomMargin: 9; width: parent.width - 28
-        text: wordWindow.editing ? (backend.state.chinese ? "原文已修改 · Enter 翻译 · Shift+Enter 换行" : "Source changed · Enter to translate · Shift+Enter for a new line")
+        text: wordWindow.editing ? (backend.state.chinese ? "移开焦点自动翻译 · Enter 立即翻译" : "Leave source to translate · Enter to translate now")
             : backend.state.pinned ? (backend.state.chinese ? "已固定 · 选中新文字自动更新" : "Pinned · follows new selections")
-            : (backend.state.chinese ? "原文可直接编辑 · Enter 重新翻译" : "Edit source directly · Enter to translate")
+            : (backend.state.chinese ? "原文可编辑 · 移开焦点自动翻译" : "Edit source · leave it to translate")
         font.pixelSize: 10; color: Theme.faint; elide: Text.ElideRight
     }
 }

@@ -215,10 +215,15 @@ def main():
                 "probeRuntime":str(Path(sys.argv[sys.argv.index("--runtime")+1]).resolve()) if "--runtime" in sys.argv else str(build.resolve()/"runtime"),
                 "locale":"zh", "appearance":{"theme":"light","renderer":"d3d11" if "--gpu" in sys.argv else "software","locale":"zh"},
                 "settings":{"provider":"zvo","fallbackEnabled":False}, "capabilities":{"hostHotkeys":True},
-                "probePointerFixtures":pointer_fixtures
+                "probePointerFixtures":pointer_fixtures,
+                "probeMemory":"--memory" in sys.argv
             }, "--gpu" in sys.argv)
             report=json.loads((out/"report.json").read_text(encoding="utf-8"))
             assert report["passed"], report
+            if "--memory" in sys.argv:
+                print(json.dumps({k:v for k,v in report.items() if k.endswith("Memory") or k.endswith("Ms") or k in ("passed","idleWordEngineRetained")},ensure_ascii=True))
+                server.shutdown()
+                return
             if pointer_fixtures:assert report["wordLocalPixelOcr"],report
             messages=[json.loads(line) for line in (out/"stdout.jsonl").read_text(encoding="utf-8").splitlines()]
             responses={row["id"]:row["result"] for row in messages if "id" in row and "result" in row}
@@ -227,14 +232,16 @@ def main():
             assert keys==[["Alt+Shift+T","Alt+Shift+C","Alt+Shift+W","Alt+Shift+O"]],keys
             for flag in ("wordRealEditSelection","wordClipboard","wordPinnedSelection","wordCancellation","wordMouseOcr","wordMousePhraseOcr","wordMouseSpacingOcr","wordOutsideDismiss",
                          "wordDefaultEditable","wordEditableClipboard","wordEditableSelection","wordEditableOcr","wordEditingPausesFollow","wordMouseMixedOcr","wordMouseWrappedOcr",
-                         "wordIsolatedSelection","wordSelectionTimeoutRecovery","wordSelectionReplacement","wordMoveRendering","wordRetryStable","wordRetryTarget"):
+                         "wordIsolatedSelection","wordSelectionTimeoutRecovery","wordSelectionReplacement","wordMoveRendering","wordRetryStable","wordRetryTarget",
+                         "actualProviderLabels","providerFallbackAppearance","wordAutoTranslateOnBlur"):
                 assert report[flag], report
             for request in (200,201,202):assert responses[request]["items"]==[],responses
             assert responses[203]["items"][0]["title"]=="你好 + 100%",responses[203]
             print(json.dumps({k:report[k] for k in ("passed","qtVersion","pythonLoaded","uiRenderer","hostRenderer",
                 "selectorShowMs","outsideDismissMs","closeWhileBlockedMs","hotkeyProtocol","nativeHotkeyFallback","queryProtocol",
                 "wordClipboard","wordPinnedSelection","wordMouseOcr","wordMousePhraseOcr","wordMouseSpacingOcr",
-                "wordDefaultEditable","wordEditableClipboard","wordEditableSelection","wordEditableOcr","wordEditingPausesFollow","wordMouseMixedOcr","wordCloseWhileBlockedMs","closedMemory")},ensure_ascii=True))
+                "wordDefaultEditable","wordEditableClipboard","wordEditableSelection","wordEditableOcr","wordEditingPausesFollow","wordMouseMixedOcr","wordCloseWhileBlockedMs",
+                "actualProviderLabels","providerFallbackAppearance","wordAutoTranslateOnBlur","closedMemory")},ensure_ascii=True))
     server.shutdown()
 if __name__ == "__main__":
     main()

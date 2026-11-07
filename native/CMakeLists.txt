@@ -22,7 +22,7 @@ target_link_options(ScreenshotTranslateApp PRIVATE /DEBUG /MAP)
 target_link_libraries(ScreenshotTranslateApp PRIVATE Qt6::Gui Qt6::Quick Qt6::Qml Qt6::Network
     windowsapp ole32 oleaut32 user32 gdi32 imm32 crypt32 dwmapi shell32 winhttp psapi)
 set(shared_qml)
-foreach(name Theme FlatButton InputBox ChoiceTabs ToolButton ServiceRow LanguageMenu)
+foreach(name Theme FlatButton InputBox ChoiceTabs ToolButton ServiceRow LanguageMenu ServiceTip)
     configure_file("${CMAKE_CURRENT_SOURCE_DIR}/../qml/WinShun/${name}.qml" "${CMAKE_CURRENT_BINARY_DIR}/shared/${name}.qml" COPYONLY)
     set(file "${CMAKE_CURRENT_BINARY_DIR}/shared/${name}.qml")
     set_source_files_properties("${file}" PROPERTIES QT_RESOURCE_ALIAS "${name}.qml")
