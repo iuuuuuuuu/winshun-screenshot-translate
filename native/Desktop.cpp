@@ -688,6 +688,37 @@ HWND selectionTarget()
     if(GetGUIThreadInfo(GetWindowThreadProcessId(foreground,nullptr),&info)&&info.hwndFocus)return info.hwndFocus;
     return foreground;
 }
+namespace {
+const char* elevatedSelectionMessage="目标程序以管理员权限运行，当前插件权限不足。请用普通权限启动该程序，或使用鼠标 OCR。";
+const char* restrictedSelectionMessage="目标程序限制了选区访问。若它以管理员权限运行，请用普通权限重新启动，或使用鼠标 OCR。";
+DWORD integrityOf(HANDLE token)
+{
+    alignas(TOKEN_MANDATORY_LABEL) BYTE bytes[256]{};DWORD size=0;
+    if(!GetTokenInformation(token,TokenIntegrityLevel,bytes,sizeof bytes,&size))return 0;
+    auto sid=reinterpret_cast<TOKEN_MANDATORY_LABEL*>(bytes)->Label.Sid;
+    if(!IsValidSid(sid))return 0;
+    auto count=*GetSidSubAuthorityCount(sid);
+    return count?*GetSidSubAuthority(sid,count-1):0;
+}
+QString selectionAccessProblem(HWND target)
+{
+    DWORD pid=0;GetWindowThreadProcessId(target,&pid);
+    HANDLE process=OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION,FALSE,pid);
+    if(!process)return GetLastError()==ERROR_ACCESS_DENIED?"target-access-denied":"";
+    HANDLE other=nullptr,own=nullptr;
+    QString problem;
+    if(!OpenProcessToken(process,TOKEN_QUERY,&other)){
+        if(GetLastError()==ERROR_ACCESS_DENIED)problem="target-access-denied";
+    }else if(OpenProcessToken(GetCurrentProcess(),TOKEN_QUERY,&own)){
+        DWORD uiAccess=0,size=0;
+        GetTokenInformation(own,TokenUIAccess,&uiAccess,sizeof uiAccess,&size);
+        DWORD source=integrityOf(other),reader=integrityOf(own);
+        if(source&&reader&&source>reader&&!uiAccess)problem="target-elevated";
+    }
+    if(own)CloseHandle(own);if(other)CloseHandle(other);CloseHandle(process);
+    return problem;
+}
+}
 Selection isolatedSelection(POINT point,HWND target,Cancel cancel,int timeoutMs)
 {
     if(!target||!IsWindow(target)||cancel->load())return {};
@@ -714,6 +745,8 @@ Selection isolatedSelection(POINT point,HWND target,Cancel cancel,int timeoutMs)
     }
     if(cancel->load())return {};
     QJsonParseError parse{};auto response=QJsonDocument::fromJson(worker.readAllStandardOutput(),&parse).object();
+    if(response.value("error").toString()=="target-elevated")throw std::runtime_error(elevatedSelectionMessage);
+    if(response.value("error").toString()=="target-access-denied")throw std::runtime_error(restrictedSelectionMessage);
     if(worker.exitStatus()!=QProcess::NormalExit||worker.exitCode()!=0||parse.error!=QJsonParseError::NoError||
         !response.contains("text")||!response.value("error").toString().isEmpty())throw std::runtime_error("无法读取选区，请重试或使用鼠标 OCR");
     auto box=response.value("area").toArray();
@@ -728,7 +761,11 @@ int selectionWorker()
     QJsonObject response;
     try{
         auto result=selectionAt(POINT{request.value("x").toInt(),request.value("y").toInt()},target);
-        response={{"text",result.text},{"area",QJsonArray{result.area.x(),result.area.y(),result.area.width(),result.area.height()}}};
+        // Some providers expose read-only text even across integrity levels.
+        // Try the actual read first; report access restrictions only on failure.
+        auto problem=result.text.isEmpty()?selectionAccessProblem(target):QString();
+        if(!problem.isEmpty())response={{"error",problem}};
+        else response={{"text",result.text},{"area",QJsonArray{result.area.x(),result.area.y(),result.area.width(),result.area.height()}}};
     }catch(...){response={{"error","read failed"}};}
     auto data=QJsonDocument(response).toJson(QJsonDocument::Compact);
     std::fwrite(data.constData(),1,size_t(data.size()),stdout);std::fflush(stdout);

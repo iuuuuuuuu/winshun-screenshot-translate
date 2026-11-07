@@ -454,15 +454,19 @@ void App::pinAction(const QString& name,const QVariant& value)
         }
     }catch(const std::exception& e){status(failure(e),false);m_busy=false;}
 }
-void App::textFlow(const QString& command)
+void App::textFlow(const QString& command,bool retry)
 {
     // A selector must keep a clean frozen desktop. Ordinary word requests and
     // screenshot translation otherwise have independent cancellation/state.
     if(m_selector)return;
-    auto point=m_mouse();
+    // A retry belongs to the original request. The pointer and foreground now
+    // often belong to the popup's Retry button, not the source application.
+    auto point=retry?m_wordRequestPoint:m_mouse();
+    m_wordPlacementFrozen=retry;
+    if(!retry)m_wordRequestPoint=point;
     // Snapshot the source HWND before creating or showing the popup. Browser
     // focus and hit-testing may otherwise refer to our own editable window.
-    if(command=="jsel")m_selectionTarget=selectionTarget();
+    if(command=="jsel"&&!retry)m_selectionTarget=selectionTarget();
     if(command=="ocr"&&m_word.window)m_word.window->hide();
     if(command!="ocr")openWord(command,point);
     if(command=="clip"){translateWord(m_readClipboard());return;}
@@ -510,7 +514,7 @@ void App::openWord(QString mode,QPoint anchor,QRect selection)
     editWord(false);
     if(m_wordCancel)m_wordCancel->store(true);m_wordCancel=token();++m_wordEpoch;
     m_wordMode=mode;
-    if(!m_wordPinned){m_wordAnchor=anchor;m_wordSelection=selection;}
+    if(!m_wordPinned&&!m_wordPlacementFrozen){m_wordAnchor=anchor;m_wordSelection=selection;}
     m_wordSource.clear();m_lastSelection.clear();m_wordOpened=GetTickCount();
     m_followBaseline=m_wordPinned&&mode!="jsel";
     m_wordBackend.update({{"mode",mode},{"sourceText",""},{"translatedText",""},{"provider",""},{"loading",true},
@@ -524,7 +528,7 @@ void App::openWord(QString mode,QPoint anchor,QRect selection)
 }
 void App::placeWord()
 {
-    if(!m_word.window||m_wordPinned)return;
+    if(!m_word.window||m_wordPinned||m_wordPlacementFrozen)return;
     auto point=m_wordSelection.isEmpty()?m_wordAnchor:m_wordSelection.bottomLeft();
     auto s=screenAt(point);m_word.window->setScreen(s);auto work=s->availableGeometry();
     auto at=logical(point,s)+QPoint(10,10);
@@ -543,7 +547,7 @@ void App::closeWord()
     if(m_word.window)m_word.window->hide();
     editWord(false);
     if(m_wordCancel)m_wordCancel->store(true);++m_wordEpoch;
-    m_wordPinned=false;m_followSelection.stop();m_wordSource.clear();m_lastSelection.clear();
+    m_wordPinned=false;m_wordPlacementFrozen=false;m_followSelection.stop();m_wordSource.clear();m_lastSelection.clear();
     m_wordBackend.update({{"pinned",false},{"loading",false}});
     if(!m_pin)m_raw.reset();
 }
@@ -572,7 +576,7 @@ void App::wordAction(const QString& name,const QVariant& value)
         }else m_followSelection.stop();
         m_wordOpened=GetTickCount();
     }else if(name=="retry"){
-        if(m_wordSource.isEmpty())textFlow(m_wordMode);else translateWord(m_wordSource);
+        if(m_wordSource.isEmpty())textFlow(m_wordMode,true);else translateWord(m_wordSource);
     }else if(name=="copy"){
         auto text=m_wordBackend.values.value("translatedText").toString();
         if(!text.isEmpty())m_protocol.tool("clipboard_copy",{{"text",text}});
@@ -591,7 +595,8 @@ void App::readSelection(bool follow)
         return;
     }
     auto target=follow?selectionTarget():m_selectionTarget;
-    m_selectionReading=true;auto epoch=m_wordEpoch;auto reader=m_readSelection;auto point=m_mouse();auto cancel=m_wordCancel;
+    m_selectionReading=true;auto epoch=m_wordEpoch;auto reader=m_readSelection;
+    auto point=follow?m_mouse():m_wordRequestPoint;auto cancel=m_wordCancel;
     m_selectionCancel=token();auto selectionCancel=m_selectionCancel;
     background([reader,point,target,selectionCancel]{return reader(POINT{point.x(),point.y()},target,selectionCancel);},
         [this,follow,epoch,cancel,selectionCancel](Selection selection,QString error){

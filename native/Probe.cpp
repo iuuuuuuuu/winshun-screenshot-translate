@@ -420,6 +420,34 @@ void Probe::run(App& app,const QJsonObject& params)
         PostMessageW(app.m_raw->m_hwnd,WM_INPUT,0,1);
         check(until([&]{return !app.m_word.window->isVisible();},300),"unpinned word outside close");
         report["wordOutsideDismiss"]=true;
+        auto retryReads=std::make_shared<std::atomic_int>(0);
+        auto retryTargets=std::make_shared<std::atomic_bool>(true);
+        auto originalTarget=HWND(quintptr(0x1234)); // used only by the injected reader
+        app.m_readSelection=[retryReads,retryTargets,originalTarget](POINT point,HWND target,Cancel){
+            int attempt=retryReads->fetch_add(1);
+            if(attempt>0&&(target!=originalTarget||point.x!=400||point.y!=180))retryTargets->store(false);
+            return attempt<4?Selection{}:Selection{"Settings",QRect(540,220,100,30)};
+        };
+        app.textFlow("jsel");
+        check(until([&]{return !app.m_wordBackend.values["loading"].toBool();}),"empty selection displays retry");
+        app.m_selectionTarget=originalTarget;
+        auto retryPosition=app.m_word.window->position();
+        auto retryAnchor=app.m_wordAnchor;
+        for(int i=0;i<4;++i){
+            // The mouse is over Retry now; it must not become the next source.
+            auto onButton=app.m_word.window->position()+QPoint(36,140);
+            app.m_mouse=[onButton]{return onButton;};
+            auto button=app.m_word.window->findChild<QQuickItem*>("word-retry");
+            check(button&&button->isVisible(),"retry button is available");
+            click(app.m_word.window,button);
+            check(app.m_word.window->position()==retryPosition,"retry loading does not move popup");
+            check(until([&]{return !app.m_wordBackend.values["loading"].toBool();}),"retry completes");
+            check(app.m_word.window->position()==retryPosition&&app.m_wordAnchor==retryAnchor,"repeated retry preserves original position and anchor");
+        }
+        check(retryReads->load()==5&&retryTargets->load()&&app.m_wordSource=="Settings","retry keeps original HWND and pointer until selection becomes available");
+        app.m_word.window->grabWindow().save(out+"/word-retry-stable.png");
+        report["wordRetryStable"]=true;report["wordRetryTarget"]=true;
+        app.closeWord();app.m_mouse=[] {return QPoint(400,180);};
         auto readAttempts=std::make_shared<std::atomic_int>(0);
         auto readCancelled=std::make_shared<std::atomic_bool>(false);
         app.m_readSelection=[readAttempts,readCancelled](POINT,HWND,Cancel cancel){

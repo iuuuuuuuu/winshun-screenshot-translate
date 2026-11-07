@@ -178,6 +178,7 @@ Window {
                 }
             }
             FlatButton {
+                objectName: "word-retry"
                 visible: !wordWindow.editing && !backend.state.loading && !!backend.state.status
                 text: backend.state.chinese ? "重试" : "Retry"
                 height: 28

@@ -49,7 +49,7 @@ private:
     void render();
     void place();
     void pinAction(const QString& name,const QVariant& value);
-    void textFlow(const QString& command);
+    void textFlow(const QString& command,bool retry=false);
     void openWord(QString mode,QPoint anchor,QRect selection={});
     void closeWord();
     void wordAction(const QString& name,const QVariant& value);
@@ -75,9 +75,9 @@ private:
     QTimer m_followSelection;
     Cancel m_wordCancel,m_selectionCancel;
     quint64 m_wordEpoch=0,m_selectionPendingEpoch=0;
-    bool m_wordPinned=false,m_wordEditing=false,m_selectionReading=false,m_followBaseline=false;
+    bool m_wordPinned=false,m_wordEditing=false,m_selectionReading=false,m_followBaseline=false,m_wordPlacementFrozen=false;
     DWORD m_wordOpened=0;
-    QPoint m_wordAnchor;
+    QPoint m_wordAnchor,m_wordRequestPoint;
     QRect m_wordSelection;
     QString m_wordMode,m_wordSource,m_lastSelection;
     HWND m_selectionTarget=nullptr;
