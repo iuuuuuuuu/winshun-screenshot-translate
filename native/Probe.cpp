@@ -8,6 +8,10 @@
 #include <QPainter>
 #include <QQuickItem>
 #include <QMouseEvent>
+#include <QKeyEvent>
+#include <QFocusEvent>
+#include <QInputMethodEvent>
+#include <QFontMetricsF>
 #include <QQmlProperty>
 #include <QTimer>
 #include <QThread>
@@ -62,6 +66,28 @@ void click(QQuickWindow* w,QQuickItem* item)
     QMouseEvent press(QEvent::MouseButtonPress,p,w->mapToGlobal(p.toPoint()),Qt::LeftButton,Qt::LeftButton,Qt::NoModifier);
     QMouseEvent release(QEvent::MouseButtonRelease,p,w->mapToGlobal(p.toPoint()),Qt::LeftButton,Qt::NoButton,Qt::NoModifier);
     QCoreApplication::sendEvent(w,&press);QCoreApplication::sendEvent(w,&release);pump(20);
+}
+void typeDraft(QQuickWindow* window,const QString& text)
+{
+    auto editor=window->findChild<QQuickItem*>("word-editor");check(editor,"source editor exists");
+    // Deliver focus and IME commits only to the probe window on its private
+    // desktop. This does not send input to the Owner's foreground application.
+    QFocusEvent focus(QEvent::FocusIn,Qt::MouseFocusReason);QCoreApplication::sendEvent(window,&focus);
+    editor->forceActiveFocus(Qt::MouseFocusReason);
+    check(window->activeFocusItem()==editor,"editor receives window keyboard focus");
+    check(!editor->property("readOnly").toBool(),"source editor accepts changes");
+    QMetaObject::invokeMethod(editor,"selectAll");
+    if(text.isEmpty()){
+        QKeyEvent remove(QEvent::KeyPress,Qt::Key_Backspace,Qt::NoModifier);QCoreApplication::sendEvent(window,&remove);
+    }else{
+        QInputMethodEvent input;input.setCommitString(text);QCoreApplication::sendEvent(window,&input);
+    }pump(10);
+    check(editor->property("text").toString()==text,"IME commit changes source draft");
+}
+void key(QQuickWindow* window,int code,Qt::KeyboardModifiers modifiers=Qt::NoModifier)
+{
+    QKeyEvent press(QEvent::KeyPress,code,modifiers),release(QEvent::KeyRelease,code,modifiers);
+    QCoreApplication::sendEvent(window,&press);QCoreApplication::sendEvent(window,&release);pump(20);
 }
 }
 bool Probe::privateDesktop()
@@ -322,6 +348,30 @@ void Probe::run(App& app,const QJsonObject& params)
         check(app.m_word.window->width()<=340&&app.m_word.window->height()<220,"word popup is compact");
         app.m_word.window->grabWindow().save(out+"/word-clipboard.png");
         report["wordClipboard"]=true;
+        click(app.m_word.window,app.m_word.window->findChild<QQuickItem*>("word-edit"));
+        check(app.m_wordEditing&&!app.m_word.window->flags().testFlag(Qt::WindowDoesNotAcceptFocus),"editing explicitly enables keyboard focus");
+        typeDraft(app.m_word.window,"History");key(app.m_word.window,Qt::Key_Escape);
+        check(!app.m_wordEditing&&app.m_wordSource=="Hello + 100%","cancel discards draft without replacing source");
+        click(app.m_word.window,app.m_word.window->findChild<QQuickItem*>("word-edit"));
+        typeDraft(app.m_word.window,QString("Long editable source line\n").repeated(24));pump(30);
+        auto editor=app.m_word.window->findChild<QQuickItem*>("word-editor");
+        auto scroller=app.m_word.window->findChild<QQuickItem*>("word-scroll");
+        auto caretBottom=editor->mapToScene(editor->property("cursorRectangle").toRectF().bottomLeft());
+        auto top=scroller->mapToScene(QPointF()).y();
+        check(caretBottom.y()>=top&&caretBottom.y()<=top+scroller->height()+2,"long source editing keeps caret visible");
+        typeDraft(app.m_word.window,"Settings");
+        key(app.m_word.window,Qt::Key_Return,Qt::ShiftModifier);
+        check(app.m_wordEditing&&app.m_word.window->findChild<QQuickItem*>("word-editor")->property("text").toString()=="Settings\n","Shift Enter inserts a line without translating");
+        typeDraft(app.m_word.window,"Settings");
+        QInputMethodEvent composing("设",{});QCoreApplication::sendEvent(app.m_word.window,&composing);pump(10);
+        check(app.m_word.window->findChild<QQuickItem*>("word-editor")->property("inputMethodComposing").toBool()&&
+            !app.m_word.window->findChild<QQuickItem*>("word-submit-edit")->isEnabled(),"IME composition cannot submit partial text");
+        QInputMethodEvent stopComposing;QCoreApplication::sendEvent(app.m_word.window,&stopComposing);
+        app.m_word.window->grabWindow().save(out+"/word-edit.png");
+        click(app.m_word.window,app.m_word.window->findChild<QQuickItem*>("word-submit-edit"));
+        check(until([&]{return app.m_wordBackend.values["translatedText"].toString()=="设置";}),"edited clipboard source is translated");
+        check(!app.m_wordEditing&&app.m_wordSource=="Settings"&&app.m_word.window->flags().testFlag(Qt::WindowDoesNotAcceptFocus),"submit restores passive popup");
+        report["wordEditableClipboard"]=true;
         check(until([&]{return app.m_raw&&app.m_raw->m_hwnd.load();}),"word raw input");
         app.m_raw->m_read=&readRaw;app.m_raw->m_cursor=&cursor;app.m_wordOpened=GetTickCount()-500;
         rawPoint={-30000,-30000};rawFlags=RI_MOUSE_LEFT_BUTTON_DOWN;
@@ -355,13 +405,23 @@ void Probe::run(App& app,const QJsonObject& params)
         check(app.m_word.window->position()==fixedPosition,"pinned popup stays in position");
         app.m_word.window->grabWindow().save(out+"/word-pinned.png");
         report["wordPinnedSelection"]=true;
+        click(app.m_word.window,app.m_word.window->findChild<QQuickItem*>("word-edit"));
+        typeDraft(app.m_word.window,"草稿");selectedIndex->store(0);app.readSelection(true);pump(500);
+        check(!app.m_followSelection.isActive()&&app.m_wordSource=="Settings"&&
+            app.m_word.window->findChild<QQuickItem*>("word-editor")->property("text").toString()=="草稿","pinned following pauses while editing");
+        click(app.m_word.window,app.m_word.window->findChild<QQuickItem*>("word-cancel-edit"));
+        check(app.m_followSelection.isActive(),"pinned following resumes after editing");
+        check(until([&]{return app.m_wordSource=="Hello + 100%";}),"new selection is translated after editing");
+        report["wordEditingPausesFollow"]=true;
         app.closeWord();check(!app.m_followSelection.isActive(),"closing stops follow polling");
         app.m_settings["selectionHotkey"]="";
         app.m_settings["provider"]="mymemory";app.textFlow("clip");pump(70);
         check(app.m_wordBackend.values["loading"].toBool(),"blocked word request loading");
         app.m_word.window->grabWindow().save(out+"/word-loading.png");
         auto oldWordCancel=app.m_wordCancel;
-        app.m_settings["provider"]="google";app.translateWord("Settings");
+        click(app.m_word.window,app.m_word.window->findChild<QQuickItem*>("word-edit"));
+        typeDraft(app.m_word.window,"Settings");app.m_settings["provider"]="google";
+        key(app.m_word.window,Qt::Key_Return);
         check(oldWordCancel->load(),"new word cancels old request");
         check(until([&]{return app.m_wordBackend.values["translatedText"].toString()=="设置";}),"latest word result wins");
         pump(100);check(app.m_wordSource=="Settings","stale result cannot overwrite current word");
@@ -436,6 +496,48 @@ void Probe::run(App& app,const QJsonObject& params)
             app.closeWord();
         }
         report["wordMouseSpacingOcr"]=true;
+        QJsonArray mixedAttempts;
+        for(bool chineseMajority:{true,false}){
+            QString prefix=chineseMajority?"这是中文说明，":"Please translate the ";
+            QString minority=chineseMajority?"hello world":"中文";
+            QString suffix=chineseMajority?" 是要翻译的英文。":" words in this sentence.";
+            QImage mixedText(650,60,QImage::Format_RGB32);mixedText.fill(Qt::white);
+            QPainter draw(&mixedText);QFont mixedFont("Microsoft YaHei UI");mixedFont.setPixelSize(18);
+            draw.setFont(mixedFont);draw.setPen(QColor("#1B1B1B"));draw.drawText(16,32,prefix+minority+suffix);draw.end();
+            mixedText.save(out+(chineseMajority?"/word-mixed-chinese-source.png":"/word-mixed-english-source.png"));
+            app.m_capture=[mixedText,out](const QRect& area){
+                QImage image(area.size(),QImage::Format_RGB32);image.fill(Qt::white);QPainter p(&image);
+                p.drawImage(QPoint(100,100)-area.topLeft(),mixedText);p.end();
+                image.save(out+"/word-mixed-capture.png");return image;
+            };
+            for(bool onMinority:{true,false}){
+                int x=122+(onMinority?qRound(QFontMetricsF(mixedFont).horizontalAdvance(prefix)):0);
+                app.m_mouse=[x] {return QPoint(x,125);};
+                app.dispatch({},"hotkey",{{"key","Alt+Shift+O"}});
+                check(until([&]{return app.m_word.window->isVisible()&&!app.m_wordBackend.values["loading"].toBool();},10000),"mixed-language OCR complete");
+                mixedAttempts.append(QJsonObject{{"chineseMajority",chineseMajority},{"onMinority",onMinority},{"source",app.m_wordSource}});
+                report["syntheticMixedAttempts"]=mixedAttempts;
+                if(onMinority)check(app.m_wordSource==minority,"minority pointer excludes surrounding language");
+                else check(app.m_wordSource.startsWith(prefix)&&app.m_wordSource.contains(minority)&&
+                    app.m_wordSource.contains(suffix.trimmed().chopped(1)),"majority pointer includes complete mixed sentence");
+                if(chineseMajority&&onMinority){
+                    app.m_word.window->grabWindow().save(out+"/word-ocr-minority.png");
+                    click(app.m_word.window,app.m_word.window->findChild<QQuickItem*>("word-edit"));
+                    typeDraft(app.m_word.window,"");
+                    check(!app.m_word.window->findChild<QQuickItem*>("word-submit-edit")->isEnabled(),"empty edit cannot submit");
+                    typeDraft(app.m_word.window,"History");key(app.m_word.window,Qt::Key_Return);
+                    check(until([&]{return app.m_wordBackend.values["translatedText"].toString()=="历史";}),"edited OCR source is translated");
+                    check(app.m_wordSource=="History"&&!app.m_wordEditing,"Enter submits OCR correction");
+                    app.m_word.window->grabWindow().save(out+"/word-ocr-edited.png");
+                    report["wordEditableOcr"]=true;
+                    click(app.m_word.window,app.m_word.window->findChild<QQuickItem*>("word-edit"));
+                    click(app.m_word.window,app.m_word.window->findChild<QQuickItem*>("word-close"));
+                    check(!app.m_word.window->isVisible()&&!app.m_wordEditing&&!app.m_followSelection.isActive(),"close while editing leaves no focus or follow state");
+                }
+                app.closeWord();
+            }
+        }
+        report["wordMouseMixedOcr"]=true;
         app.m_readClipboard=[] {return QString();};app.textFlow("clip");
         check(!app.m_wordBackend.values["loading"].toBool()&&!app.m_wordBackend.values["status"].toString().isEmpty(),"empty clipboard has visible error");app.closeWord();
         // Hotkey uniqueness can span desktops in the window station. Use

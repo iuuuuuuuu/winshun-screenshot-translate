@@ -53,6 +53,7 @@ private:
     void openWord(QString mode,QPoint anchor,QRect selection={});
     void closeWord();
     void wordAction(const QString& name,const QVariant& value);
+    void editWord(bool editing);
     void translateWord(QString text);
     void readSelection(bool follow=false);
     void placeWord();
@@ -74,7 +75,7 @@ private:
     QTimer m_followSelection;
     Cancel m_wordCancel;
     quint64 m_wordEpoch=0;
-    bool m_wordPinned=false,m_selectionReading=false,m_followBaseline=false;
+    bool m_wordPinned=false,m_wordEditing=false,m_selectionReading=false,m_followBaseline=false;
     DWORD m_wordOpened=0;
     QPoint m_wordAnchor;
     QRect m_wordSelection;

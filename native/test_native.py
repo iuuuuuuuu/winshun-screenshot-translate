@@ -127,14 +127,22 @@ def launch(program, args, data, output, initial=None, gpu=False):
     try:
         with (output / "stderr.log").open("wb") as diagnostics:
             process = NativeProcess([str(program),*args],env,name,diagnostics)
+            # Diagnostic OCR can exceed the pipe buffer. Drain while waiting,
+            # otherwise a successful child blocks before it can exit.
+            chunks=[]
+            reader=threading.Thread(target=lambda:chunks.append(process.stdout.read()),daemon=True)
+            reader.start()
             if initial:
                 process.stdin.write(json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": initial}).encode()+b"\n")
                 process.stdin.flush()
             try:
                 code = process.wait(timeout=75)
             except subprocess.TimeoutExpired:
-                process.kill();process.wait();raise RuntimeError("Native private probe timed out")
-            stdout = process.stdout.read()
+                process.kill();process.wait();reader.join(5);process.close()
+                raise RuntimeError("Native private probe timed out")
+            reader.join(5)
+            assert not reader.is_alive(), "Native output pipe did not close"
+            stdout = b"".join(chunks)
             (output / "stdout.jsonl").write_bytes(stdout)
             process.close()
             assert code == 0, (code, (output/"stderr.log").read_text(encoding="utf-8",errors="replace"), (output/"report.json").read_text(encoding="utf-8") if (output/"report.json").exists() else "")
@@ -185,13 +193,15 @@ def main():
             keys=[row["params"]["arguments"]["keys"] for row in messages if row.get("method")=="winshun/tool"
                   and row["params"]["name"]=="register_hotkeys"]
             assert keys==[["Alt+Shift+T","Alt+Shift+C","Alt+Shift+W","Alt+Shift+O"]],keys
-            for flag in ("wordRealEditSelection","wordClipboard","wordPinnedSelection","wordCancellation","wordMouseOcr","wordMousePhraseOcr","wordMouseSpacingOcr","wordOutsideDismiss"):
+            for flag in ("wordRealEditSelection","wordClipboard","wordPinnedSelection","wordCancellation","wordMouseOcr","wordMousePhraseOcr","wordMouseSpacingOcr","wordOutsideDismiss",
+                         "wordEditableClipboard","wordEditableOcr","wordEditingPausesFollow","wordMouseMixedOcr"):
                 assert report[flag], report
             for request in (200,201,202):assert responses[request]["items"]==[],responses
             assert responses[203]["items"][0]["title"]=="你好 + 100%",responses[203]
             print(json.dumps({k:report[k] for k in ("passed","qtVersion","pythonLoaded","uiRenderer","hostRenderer",
                 "selectorShowMs","outsideDismissMs","closeWhileBlockedMs","hotkeyProtocol","nativeHotkeyFallback","queryProtocol",
-                "wordClipboard","wordPinnedSelection","wordMouseOcr","wordMousePhraseOcr","wordMouseSpacingOcr","wordCloseWhileBlockedMs","closedMemory")},ensure_ascii=True))
+                "wordClipboard","wordPinnedSelection","wordMouseOcr","wordMousePhraseOcr","wordMouseSpacingOcr",
+                "wordEditableClipboard","wordEditableOcr","wordEditingPausesFollow","wordMouseMixedOcr","wordCloseWhileBlockedMs","closedMemory")},ensure_ascii=True))
     server.shutdown()
 if __name__ == "__main__":
     main()

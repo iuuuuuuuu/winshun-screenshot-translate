@@ -18,6 +18,7 @@
 #include <QAbstractTextDocumentLayout>
 #include <QtMath>
 #include <QTimer>
+#include <QMap>
 #include <windowsx.h>
 #include <algorithm>
 #include <cmath>
@@ -28,6 +29,46 @@ namespace st {
 namespace {
 QString from(const winrt::hstring& s) { return QString::fromWCharArray(s.c_str(),s.size()); }
 bool cjk(QChar c) { auto n=c.unicode();return (n>=0x2e80&&n<=0x9fff)||(n>=0xf900&&n<=0xfaff); }
+int letterScript(QChar c)
+{
+    if(!c.isLetter())return 0;
+    auto script=c.script();
+    // Han and kana belong to one Japanese text run, not separate languages.
+    if(script==QChar::Script_Hiragana||script==QChar::Script_Katakana)script=QChar::Script_Han;
+    return int(script)+1;
+}
+int wordScript(const Block& word)
+{
+    for(auto c:word.text)if(auto script=letterScript(c))return script;
+    return 0;
+}
+double letterWidth(QChar c)
+{
+    return cjk(c)||c.script()==QChar::Script_Hangul?2.:c.isLetterOrNumber()?1.:.6;
+}
+QList<Block> scriptWords(const QList<Block>& words)
+{
+    QList<Block> result;
+    for(auto word:words){
+        QList<int> starts{0};int previous=0;
+        for(int i=0;i<word.text.size();++i)if(auto script=letterScript(word.text[i])){
+            if(previous&&previous!=script)starts<<i;
+            previous=script;
+        }
+        if(starts.size()==1){result<<word;continue;}
+        // OcrWord exposes a word rectangle, not character rectangles. Estimate
+        // run positions only for the uncommon mixed-script word; keep native
+        // boxes untouched for ordinary OCR words and split Latin fragments.
+        double total=0,offset=0;for(auto c:word.text)total+=letterWidth(c);
+        starts<<word.text.size();
+        for(int i=0;i+1<starts.size();++i){
+            auto text=word.text.mid(starts[i],starts[i+1]-starts[i]);double width=0;
+            for(auto c:text)width+=letterWidth(c);
+            result.append({text,{word.box.x()+word.box.width()*offset/total,word.box.y(),word.box.width()*width/total,word.box.height()},word.glyphHeight});
+            offset+=width;
+        }
+    }return result;
+}
 bool numeric(const QString& s) { return QRegularExpression("^\\d+(?:[.,]\\d+)*(?:[%+])?$").match(s.trimmed()).hasMatch(); }
 BITMAPINFO bitmapInfo(int width,int height)
 {
@@ -120,10 +161,11 @@ Block wordAt(const QList<Block>& words,QPointF point)
 }
 Block phraseAt(const QList<Block>& words,QPointF point)
 {
-    const auto seed=wordAt(words,point);
+    const auto parts=scriptWords(words);
+    const auto seed=wordAt(parts,point);
     if(seed.text.isEmpty())return {};
     QList<Block> line;
-    for(auto word:words){
+    for(auto word:parts){
         if(word.text.trimmed().isEmpty()||word.box.isEmpty())continue;
         auto a=seed.box,b=word.box;
         auto overlap=std::min(a.bottom(),b.bottom())-std::max(a.top(),b.top());
@@ -146,13 +188,42 @@ Block phraseAt(const QList<Block>& words,QPointF point)
     };
     auto connected=[&](int left,int right){
         auto a=line[left].box,b=line[right].box;
-        return b.left()-a.right()<=std::max(12.,std::min(a.height(),b.height())*1.4);
+        // Commas can be only a few pixels high. Their height must not turn
+        // an ordinary following word space into a spurious column boundary.
+        auto height=wordScript(line[left])&&wordScript(line[right])?
+            std::min(a.height(),b.height()):std::max(a.height(),b.height());
+        return b.left()-a.right()<=std::max(12.,height*1.4);
     };
     // Keep only the sentence on the pointed line. Large gaps separate columns
     // and menu labels; terminal punctuation separates neighbouring sentences.
     int first=at,last=at;
     while(first>0&&connected(first-1,first)&&!ends(line[first-1].text))--first;
     while(last+1<line.size()&&connected(last,last+1)&&!ends(line[last].text))++last;
+    QMap<int,double> weights;double total=0;
+    for(int i=first;i<=last;++i)for(auto c:line[i].text)if(auto script=letterScript(c)){
+        // Compare text extent: one full-width CJK character is approximately
+        // two Latin letters. Punctuation and numbers do not vote for a language.
+        auto width=letterWidth(c);weights[script]+=width;total+=width;
+    }
+    int dominant=0;for(auto it=weights.cbegin();it!=weights.cend();++it)
+        if(it.value()>total*.5)dominant=it.key();
+    int pointed=wordScript(seed);
+    if(!pointed){
+        int l=at-1,r=at+1;
+        while(l>=first&&!wordScript(line[l]))--l;
+        while(r<=last&&!wordScript(line[r]))++r;
+        if(l>=first&&r<=last&&wordScript(line[l])==wordScript(line[r]))pointed=wordScript(line[l]);
+    }
+    bool minority=pointed&&dominant&&pointed!=dominant;
+    if(minority){
+        auto belongs=[&](int i){auto script=wordScript(line[i]);return !script||script==pointed;};
+        int l=at,r=at;
+        while(l>first&&belongs(l-1))--l;
+        while(r<last&&belongs(r+1))++r;
+        while(l<at&&!wordScript(line[l]))++l;
+        while(r>at&&!wordScript(line[r]))--r;
+        first=l;last=r;
+    }
     // A dense line without punctuation stays a small local phrase. Grow around
     // the pointer so the selected word is never lost to a prefix truncation.
     int left=at,right=at,characters=seed.text.size();
@@ -177,6 +248,11 @@ Block phraseAt(const QList<Block>& words,QPointF point)
         if(!punctuation&&!opening&&!eastAsian&&
             word.box.left()-line[i-1].box.right()>std::max(1.,std::min(word.box.height(),line[i-1].box.height())*.16))phrase.text+=' ';
         phrase.text+=text;phrase.box=phrase.box.united(word.box);
+    }
+    if(minority){
+        const QString separators=",;:，。！？：；、()[]{}（）【】《》「」『』“”‘’\"";
+        while(!phrase.text.isEmpty()&&(phrase.text.front().isSpace()||separators.contains(phrase.text.front())))phrase.text.remove(0,1);
+        while(!phrase.text.isEmpty()&&(phrase.text.back().isSpace()||separators.contains(phrase.text.back())))phrase.text.chop(1);
     }
     return phrase;
 }

@@ -68,7 +68,7 @@ App::App(ws::captureplugin::Protocol& protocol,QString appDir,QJsonObject initia
     QObject::connect(&m_position,&QTimer::timeout,this,&App::place);m_position.setInterval(50);
     m_readClipboard=[] {return QGuiApplication::clipboard()->text().trimmed();};
     m_mouse=[] {POINT p{};GetPhysicalCursorPos(&p);return QPoint(p.x,p.y);};
-    m_wordBackend.update({{"chinese",m_chinese},{"dark",m_dark},{"pinned",false},{"loading",false},
+    m_wordBackend.update({{"chinese",m_chinese},{"dark",m_dark},{"pinned",false},{"editing",false},{"loading",false},
         {"sourceText",""},{"translatedText",""},{"status",""},{"provider",""},{"mode","clip"}});
     QObject::connect(&m_wordBackend,&Backend::invoked,this,&App::wordAction);
     m_followSelection.setInterval(450);
@@ -502,6 +502,7 @@ void App::textFlow(const QString& command)
 }
 void App::openWord(QString mode,QPoint anchor,QRect selection)
 {
+    editWord(false);
     if(m_wordCancel)m_wordCancel->store(true);m_wordCancel=token();++m_wordEpoch;
     m_wordMode=mode;
     if(!m_wordPinned){m_wordAnchor=anchor;m_wordSelection=selection;}
@@ -532,19 +533,35 @@ void App::placeWord()
 void App::closeWord()
 {
     if(m_word.window)m_word.window->hide();
+    editWord(false);
     if(m_wordCancel)m_wordCancel->store(true);++m_wordEpoch;
     m_wordPinned=false;m_followSelection.stop();m_wordSource.clear();m_lastSelection.clear();
     m_wordBackend.update({{"pinned",false},{"loading",false}});
     if(!m_pin)m_raw.reset();
 }
-void App::wordAction(const QString& name,const QVariant&)
+void App::editWord(bool editing)
+{
+    if(m_wordEditing==editing)return;
+    m_wordEditing=editing;m_wordBackend.update({{"editing",editing}});
+    if(editing){
+        m_followSelection.stop();m_wordOpened=GetTickCount();
+        if(m_word.window)QMetaObject::invokeMethod(m_word.window,"beginEditing");
+    }else if(m_wordPinned&&m_word.window&&m_word.window->isVisible())m_followSelection.start();
+}
+void App::wordAction(const QString& name,const QVariant& value)
 {
     if(name=="close")closeWord();
+    else if(name=="edit"&&!m_wordSource.isEmpty())editWord(true);
+    else if(name=="cancelEdit")editWord(false);
+    else if(name=="submitEdit"&&m_wordEditing){
+        auto text=value.toString().trimmed();if(text.isEmpty())return;
+        editWord(false);translateWord(text);
+    }
     else if(name=="pin"){
         m_wordPinned=!m_wordPinned;m_wordBackend.update({{"pinned",m_wordPinned}});
         if(m_wordPinned){
             m_followBaseline=m_lastSelection.isEmpty();
-            m_followSelection.start();readSelection(true);
+            if(!m_wordEditing){m_followSelection.start();readSelection(true);}
         }else m_followSelection.stop();
         m_wordOpened=GetTickCount();
     }else if(name=="retry"){
@@ -556,7 +573,7 @@ void App::wordAction(const QString& name,const QVariant&)
 }
 void App::readSelection(bool follow)
 {
-    if(!m_word.window||!m_word.window->isVisible()||(follow&&!m_wordPinned))return;
+    if(!m_word.window||!m_word.window->isVisible()||m_wordEditing||(follow&&!m_wordPinned))return;
     if(m_selectionReading){
         if(!follow)m_wordBackend.update({{"loading",false},{"status","上一次选区读取尚未结束，请稍后重试；也可用鼠标 OCR"}});
         return;
@@ -565,7 +582,7 @@ void App::readSelection(bool follow)
     background([reader,point]{return reader(POINT{point.x(),point.y()});},
         [this,follow,epoch,cancel](Selection selection,QString error){
             m_selectionReading=false;
-            if(epoch!=m_wordEpoch||(!follow&&cancel->load())||!m_word.window->isVisible())return;
+            if(epoch!=m_wordEpoch||(!follow&&cancel->load())||m_wordEditing||!m_word.window->isVisible())return;
             auto text=selection.text.trimmed();
             if(follow){
                 if(m_followBaseline){m_followBaseline=false;m_lastSelection=text;return;}

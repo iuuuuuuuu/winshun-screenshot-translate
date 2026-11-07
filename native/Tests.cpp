@@ -35,6 +35,36 @@ void checkPhrases()
     QList<st::Block> baseline{{"Read",{10,10,42,20},20},{"this",{58,10,36,20},20},
         {".",{96,30,3,3},3},{"Next",{106,10,42,20},20}};
     check(st::phraseAt(baseline,{70,20}).text=="Read this.","small baseline period keeps sentence boundary");
+    QList<st::Block> comma{{"这是中文说明",{0,0,120,20},20},{"，",{122,15,4,5},5},
+        {"hello",{141,2,45,17},17},{"world",{192,2,45,17},17},{"保留中文整句",{243,0,120,20},20}};
+    check(st::phraseAt(comma,{30,10}).text=="这是中文说明， hello world 保留中文整句","tiny comma does not cut majority sentence before English");
+    check(st::phraseAt(comma,{160,10}).text=="hello world","tiny comma still bounds minority content");
+    QList<st::Block> mixed{{"这是一句中文说明，",{0,0,180,20},20},{"hello",{186,0,48,20},20},
+        {"world",{240,0,48,20},20},{"还包括另一段英文",{294,0,160,20},20},
+        {"ba",{460,0,20,20},20},{"by",{486,0,20,20},20},{"请保留完整原句。",{512,0,160,20},20}};
+    for(auto point:{QPointF(205,10),QPointF(265,10)}){
+        auto phrase=st::phraseAt(mixed,point);
+        check(phrase.text=="hello world","minority language selects only pointed contiguous phrase");
+        check(phrase.box==QRectF(186,0,102,20),"minority bounds exclude surrounding majority text");
+    }
+    check(st::phraseAt(mixed,{470,10}).text=="ba by","separate minority islands never join through Chinese");
+    for(auto point:{QPointF(30,10),QPointF(350,10),QPointF(600,10)})
+        check(st::phraseAt(mixed,point).text=="这是一句中文说明， hello world 还包括另一段英文 ba by 请保留完整原句。","majority language keeps complete mixed sentence");
+    QList<st::Block> english{{"Please translate the",{0,0,170,20},20},{"中文",{176,0,40,20},20},
+        {"words in this sentence.",{222,0,220,20},20}};
+    check(st::phraseAt(english,{190,10}).text=="中文","Chinese minority in English is isolated");
+    check(st::phraseAt(english,{40,10}).text=="Please translate the 中文 words in this sentence.","English majority retains embedded Chinese");
+    QList<st::Block> merged{{"中文内容baby中文说明",{0,0,200,20},20}};
+    check(st::phraseAt(merged,{100,10}).text=="baby","mixed-script OCR word is separated at pointer");
+    check(st::phraseAt(merged,{20,10}).text=="中文内容baby中文说明","majority pointer in mixed OCR word keeps original");
+    QList<st::Block> neutral{{"这是一段中文说明",{0,0,160,20},20},{"version",{166,0,60,20},20},
+        {"2",{232,0,10,20},20},{"beta",{248,0,40,20},20},{"继续中文说明",{294,0,120,20},20}};
+    check(st::phraseAt(neutral,{190,10}).text=="version 2 beta","numbers stay inside minority phrase");
+    check(st::phraseAt(neutral,{237,10}).text=="version 2 beta","neutral seed between same-script words uses that script");
+    check(st::phraseAt({{"漢字かなカナ",{0,0,120,20},20}},{20,10}).text=="漢字かなカナ","Japanese kana and Han remain together");
+    check(st::phraseAt({{"English text has a",{0,0,160,20},20},{"привет",{166,0,60,20},20},
+        {"word inside.",{232,0,110,20},20}},{190,10}).text=="привет","minority Cyrillic run also isolates");
+    check(st::phraseAt({{"中文",{0,0,40,20},20},{"test",{46,0,40,20},20}},{60,10}).text=="中文 test","no strict majority preserves sentence");
     // Boxes from Windows OCR on small screen text: the two fragments of
     // "baby" have a 1.5px letter gap; actual word spaces are 4-5px wide.
     QList<st::Block> splitWord{{"hi,i",{9,10.5,16.5,11.5},11.5},{"ma",{30.5,13.5,18.5,8},8},
