@@ -470,21 +470,28 @@ void App::textFlow(const QString& command)
     QTimer::singleShot(35,this,[this,point,cancel,epoch]() mutable {
         if(epoch!=m_wordEpoch||cancel->load())return;
         POINT p{point.x(),point.y()};auto screen=screenAt(point);
-        int width=qRound(560*screen->devicePixelRatio()),height=qRound(180*screen->devicePixelRatio());
-        QRect crop(point-QPoint(width/2,height/2),QSize(width,height));crop=crop.intersected(monitorRect(p));
+        auto monitor=monitorRect(p);int height=qRound(180*screen->devicePixelRatio());
+        // A narrow monitor-wide strip retains both ends of a short sentence,
+        // including when the pointer rests on its first or last word.
+        QRect crop(monitor.left(),point.y()-height/2,monitor.width(),height);crop=crop.intersected(monitor);
         QImage image;
         try{image=m_capture(crop);}catch(const std::exception& e){
             openWord("ocr",point);m_wordBackend.update({{"loading",false},{"status",failure(e)}});return;
         }
         openWord("ocr",point);cancel=m_wordCancel;auto activeEpoch=m_wordEpoch;
-        background([image,cancel,at=point-crop.topLeft()]{return wordAt(recognize(image,cancel,false),at);},
-            [this,cancel,activeEpoch,crop](Block word,QString error){
+        background([image,cancel,at=point-crop.topLeft()]{return phraseAt(recognize(image,cancel,false),at);},
+            [this,cancel,activeEpoch,crop,point](Block word,QString error){
                 if(activeEpoch!=m_wordEpoch||cancel->load())return;
                 if(!error.isEmpty()||word.text.isEmpty()){
                     m_wordBackend.update({{"loading",false},{"status",error.isEmpty()?
-                        QString("鼠标处没有识别到单词，请把鼠标停在文字上再试"):error}});return;
+                        QString("鼠标处没有识别到文字，请把鼠标停在短句上再试"):error}});return;
                 }
-                if(!m_wordPinned){m_wordSelection=word.box.toAlignedRect().translated(crop.topLeft());placeWord();}
+                if(!m_wordPinned){
+                    m_wordSelection=word.box.toAlignedRect().translated(crop.topLeft());
+                    // Anchor below the pointed word, even for a long sentence.
+                    int x=std::clamp(point.x(),m_wordSelection.left(),m_wordSelection.right());
+                    m_wordSelection.setLeft(x);m_wordSelection.setWidth(1);placeWord();
+                }
                 translateWord(word.text);
             });
         QTimer::singleShot(8000,this,[this,cancel,activeEpoch]{
@@ -501,7 +508,7 @@ void App::openWord(QString mode,QPoint anchor,QRect selection)
     m_wordSource.clear();m_lastSelection.clear();m_wordOpened=GetTickCount();
     m_followBaseline=m_wordPinned&&mode!="jsel";
     m_wordBackend.update({{"mode",mode},{"sourceText",""},{"translatedText",""},{"provider",""},{"loading",true},
-        {"status",mode=="jsel"?"正在读取选中文字…":mode=="ocr"?"正在识别鼠标处的单词…":"正在翻译…"}});
+        {"status",mode=="jsel"?"正在读取选中文字…":mode=="ocr"?"正在识别鼠标处的短句…":"正在翻译…"}});
     if(!m_word.window){
         m_word=view("qrc:/ui/qml/Word.qml",&m_wordBackend);
         QObject::connect(m_word.window,&QWindow::heightChanged,this,[this]{placeWord();});

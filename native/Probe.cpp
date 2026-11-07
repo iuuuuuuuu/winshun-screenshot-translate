@@ -391,6 +391,30 @@ void Probe::run(App& app,const QJsonObject& params)
         check(app.m_wordSource=="Settings"&&app.m_wordBackend.values["translatedText"].toString()=="设置","mouse OCR translates just pointed word");
         app.m_word.window->grabWindow().save(out+"/word-ocr.png");
         report["wordMouseOcr"]=true;app.closeWord();
+        Block sentenceStart,sentenceEnd;
+        for(auto w:words){
+            if(w.text=="Native")sentenceStart=w;
+            if(w.text.startsWith("place"))sentenceEnd=w;
+        }
+        check(!sentenceStart.text.isEmpty()&&!sentenceEnd.text.isEmpty(),"OCR sentence fixture endpoints");
+        QJsonArray sentenceAttempts;
+        for(auto endpoint:{sentenceStart,sentenceEnd}){
+            auto sentencePoint=endpoint.box.center().toPoint()+QPoint(100,100);
+            app.m_mouse=[sentencePoint]{return sentencePoint;};
+            app.dispatch({},"hotkey",{{"key","Alt+Shift+O"}});
+            check(until([&]{return app.m_word.window->isVisible()&&!app.m_wordBackend.values["loading"].toBool();},10000),"pointer sentence OCR complete");
+            sentenceAttempts.append(QJsonObject{{"endpoint",endpoint.text},{"source",app.m_wordSource},{"status",app.m_wordBackend.values["status"].toString()}});
+            report["syntheticSentenceAttempts"]=sentenceAttempts;
+            app.m_word.window->grabWindow().save(out+"/word-ocr-sentence.png");
+            // The real recognizer may omit the tiny terminal dot at a different
+            // crop offset. Require every sentence word, without extra content.
+            auto sentence=app.m_wordSource;if(sentence.endsWith('.'))sentence.chop(1);
+            check(sentence=="Native windows keep the capture in place","mouse OCR includes sentence from first or last word");
+            check(app.m_wordBackend.values["translatedText"].toString()=="原生窗口保持截图的位置与尺寸。","mouse OCR translates sentence");
+            check(app.m_wordSelection.left()==sentencePoint.x(),"phrase popup remains by pointer");
+            app.closeWord();
+        }
+        report["wordMousePhraseOcr"]=true;
         app.m_readClipboard=[] {return QString();};app.textFlow("clip");
         check(!app.m_wordBackend.values["loading"].toBool()&&!app.m_wordBackend.values["status"].toString().isEmpty(),"empty clipboard has visible error");app.closeWord();
         // Hotkey uniqueness can span desktops in the window station. Use

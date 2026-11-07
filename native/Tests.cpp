@@ -10,10 +10,42 @@
 #include <thread>
 #include <cstdio>
 #include <stdexcept>
+namespace {
+void checkPhrases()
+{
+    auto check=[](bool yes,const char* message){if(!yes)throw std::runtime_error(message);};
+    QList<st::Block> words{{"Read",{10,10,42,20},20},{"this",{58,10,36,20},20},
+        {"sentence.",{100,10,86,20},20},{"Next",{194,10,42,20},20},{"one!",{242,10,36,20},20},
+        {"Other column",{400,10,120,20},20},{"Other row",{10,45,100,20},20}};
+    for(auto at:{QPointF(20,20),QPointF(72,20),QPointF(160,20)}){
+        auto phrase=st::phraseAt(words,at);
+        check(phrase.text=="Read this sentence.","pointer phrase keeps complete sentence at either end");
+        check(phrase.box==QRectF(10,10,176,20),"phrase bounds contain only pointed sentence");
+    }
+    check(st::phraseAt(words,{210,20}).text=="Next one!","terminal punctuation separates adjacent sentences");
+    check(st::phraseAt(words,{450,20}).text=="Other column","large gap separates columns");
+    check(st::phraseAt(words,{40,55}).text=="Other row","pointer phrase does not cross rows");
+    check(st::phraseAt(words,{340,20}).text.isEmpty(),"blank space does not select remote text");
+    check(st::phraseAt({{"Settings",{10,10,80,20},20}},{40,20}).text=="Settings","standalone word unchanged");
+    QList<st::Block> chinese{{"请",{0,0,20,20},20},{"稍",{21,0,20,20},20},{"等",{42,0,20,20},20},
+        {"，",{63,0,20,20},20},{"再试",{84,0,40,20},20},{"。",{125,0,20,20},20},
+        {"下一句",{146,0,60,20},20},{"！",{207,0,20,20},20}};
+    check(st::phraseAt(chinese,{34,10}).text=="请稍等，再试。","Chinese phrase punctuation and spacing");
+    check(st::phraseAt(chinese,{170,10}).text=="下一句！","Chinese sentence boundary");
+    QList<st::Block> baseline{{"Read",{10,10,42,20},20},{"this",{58,10,36,20},20},
+        {".",{96,30,3,3},3},{"Next",{106,10,42,20},20}};
+    check(st::phraseAt(baseline,{70,20}).text=="Read this.","small baseline period keeps sentence boundary");
+    QList<st::Block> longLine;
+    for(int i=0;i<100;++i)longLine.append({QString("word%1").arg(i),QRectF(i*65,0,60,20),20});
+    auto local=st::phraseAt(longLine,{50*65+20,10});
+    check(local.text.contains("word50")&&local.text.size()<=240&&!local.text.contains("word0 "),"long line stays local and bounded");
+}
+}
 int main(int argc,char** argv)
 {
     QGuiApplication app(argc,argv);
     try{
+        checkPhrases();
         if(st::detect("你好世界")!="zh"||st::targetFor("Hello","auto")!="zh")throw std::runtime_error("language");
         QTemporaryDir dir;st::Services services(dir.path());
         auto sharedDir=qEnvironmentVariable("WS_DATA_DIR");
@@ -70,7 +102,7 @@ int main(int argc,char** argv)
             auto primary=recovered.translate(settings,{"Hello + 100%"},"en","zh",fresh());
             if(primary.fallback||primary.provider!="mymemory")throw std::runtime_error("config reset health");
             std::puts(QJsonDocument(QJsonObject{{"passed",true},{"fixtureRoutes",QJsonArray::fromStringList(routes)},
-                {"dpapi",true},{"persistentFallback",true},{"recovery",true},{"cancel",true},{"httpProxy",true}}).toJson(QJsonDocument::Compact).constData());
+                {"dpapi",true},{"persistentFallback",true},{"recovery",true},{"cancel",true},{"httpProxy",true},{"pointerPhrases",true}}).toJson(QJsonDocument::Compact).constData());
         }else if(args.contains("--live")){
             QJsonArray routes;
             for(auto p:QStringList{"google","edge","zvo","mymemory"}){

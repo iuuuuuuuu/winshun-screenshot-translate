@@ -25,7 +25,7 @@ for setting in manifest["settings"]:
             "en":"Show a popup by the selection; pin to follow new selections. Use pointer OCR in unsupported apps"}
 manifest["settings"].append({"key":"wordOcrHotkey","type":"hotkey",
     "title":{"zh":"鼠标指词 OCR 热键","en":"Pointer word OCR hotkey"},
-    "hint":{"zh":"鼠标停在单词上直接按热键，不用选中；清空关闭","en":"Point at a word and press the shortcut; no selection needed; clear to disable"},
+    "hint":{"zh":"鼠标停在文字上按热键，识别所在行的短句；无需选中，清空关闭","en":"Point at text to translate the nearby sentence on its line; no selection needed; clear to disable"},
     "default":"Alt+Shift+O"})
 files={"plugin.json":json.dumps(manifest,ensure_ascii=False,indent=2).encode("utf-8")+b"\n",
     "ScreenshotTranslate.exe":(build/"ScreenshotTranslate.exe").read_bytes(),

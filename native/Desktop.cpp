@@ -118,6 +118,65 @@ Block wordAt(const QList<Block>& words,QPointF point)
         }
     }return result;
 }
+Block phraseAt(const QList<Block>& words,QPointF point)
+{
+    const auto seed=wordAt(words,point);
+    if(seed.text.isEmpty())return {};
+    QList<Block> line;
+    for(auto word:words){
+        if(word.text.trimmed().isEmpty()||word.box.isEmpty())continue;
+        auto a=seed.box,b=word.box;
+        auto overlap=std::min(a.bottom(),b.bottom())-std::max(a.top(),b.top());
+        // OCR sometimes emits a period as a tiny box just below the letters'
+        // baseline. Keep it so sentence boundaries survive seed-word changes.
+        bool punctuation=std::all_of(word.text.begin(),word.text.end(),[](QChar c){
+            return QString(",.!?:;，。！？：；、\"'()[]{}（）【】《》「」『』“”‘’").contains(c);
+        });
+        bool nearBaseline=punctuation&&b.top()>=a.top()-a.height()*.25&&b.bottom()<=a.bottom()+a.height()*.25;
+        if(nearBaseline||(overlap>=std::min(a.height(),b.height())*.5&&
+            std::abs(a.center().y()-b.center().y())<=std::max(a.height(),b.height())*.6))
+            line<<word;
+    }
+    std::sort(line.begin(),line.end(),[](const auto& a,const auto& b){return a.box.left()<b.box.left();});
+    int at=0;for(int i=0;i<line.size();++i)if(line[i].box==seed.box&&line[i].text==seed.text){at=i;break;}
+    auto ends=[](QString text){
+        text=text.trimmed();
+        while(!text.isEmpty()&&QString("\"'”’）)]》」』").contains(text.back()))text.chop(1);
+        return !text.isEmpty()&&QString(".!?。！？;；").contains(text.back());
+    };
+    auto connected=[&](int left,int right){
+        auto a=line[left].box,b=line[right].box;
+        return b.left()-a.right()<=std::max(12.,std::min(a.height(),b.height())*1.4);
+    };
+    // Keep only the sentence on the pointed line. Large gaps separate columns
+    // and menu labels; terminal punctuation separates neighbouring sentences.
+    int first=at,last=at;
+    while(first>0&&connected(first-1,first)&&!ends(line[first-1].text))--first;
+    while(last+1<line.size()&&connected(last,last+1)&&!ends(line[last].text))++last;
+    // A dense line without punctuation stays a small local phrase. Grow around
+    // the pointer so the selected word is never lost to a prefix truncation.
+    int left=at,right=at,characters=seed.text.size();
+    while(left>first||right<last){
+        bool takeLeft=left>first&&(right==last||
+            point.x()-line[left-1].box.right()<=line[right+1].box.left()-point.x());
+        int next=takeLeft?left-1:right+1;
+        if(right-left+1>=48||characters+line[next].text.size()+1>240)break;
+        characters+=line[next].text.size()+1;
+        if(takeLeft)--left;else ++right;
+    }
+    Block phrase;
+    for(int i=left;i<=right;++i){
+        auto word=line[i];auto text=word.text.trimmed();
+        if(phrase.text.isEmpty()){phrase=word;phrase.text=text;continue;}
+        bool punctuation=QString(",.!?:;，。！？：；、)]}）】》」』”’").contains(text.front());
+        bool opening=QString("([{（【《「『“‘").contains(phrase.text.back());
+        bool eastAsian=(cjk(phrase.text.back())||QString("，。！？：；、）】》」』”’").contains(phrase.text.back()))&&cjk(text.front());
+        if(!punctuation&&!opening&&!eastAsian&&
+            word.box.left()-line[i-1].box.right()>std::max(1.,std::min(word.box.height(),line[i-1].box.height())*.08))phrase.text+=' ';
+        phrase.text+=text;phrase.box=phrase.box.united(word.box);
+    }
+    return phrase;
+}
 QList<Block> recognize(const QImage& source,Cancel cancel,bool grouped)
 {
     using namespace winrt::Windows::Media::Ocr;
