@@ -479,7 +479,7 @@ void App::textFlow(const QString& command)
             openWord("ocr",point);m_wordBackend.update({{"loading",false},{"status",failure(e)}});return;
         }
         openWord("ocr",point);cancel=m_wordCancel;auto activeEpoch=m_wordEpoch;
-        background([image,cancel,at=point-crop.topLeft()]{return phraseAt(recognize(image,cancel,false),at);},
+        background([image,cancel,at=point-crop.topLeft()]{return recognizeAt(image,cancel,at);},
             [this,cancel,activeEpoch,crop,point](Block word,QString error){
                 if(activeEpoch!=m_wordEpoch||cancel->load())return;
                 if(!error.isEmpty()||word.text.isEmpty()){

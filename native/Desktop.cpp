@@ -70,6 +70,19 @@ QList<Block> scriptWords(const QList<Block>& words)
     }return result;
 }
 bool numeric(const QString& s) { return QRegularExpression("^\\d+(?:[.,]\\d+)*(?:[%+])?$").match(s.trimmed()).hasMatch(); }
+bool inkBridges(const QImage& image,QRectF a,QRectF b)
+{
+    double h=std::max(a.height(),b.height());
+    if(b.left()-a.right()>h*6)return false;
+    int top=std::max(0,int(std::floor(std::min(a.top(),b.top())-h*.15)));
+    int bottom=std::min(image.height(),int(std::ceil(std::max(a.bottom(),b.bottom())+h*.15)));
+    int blank=0,ink=0,limit=std::max(12,qRound(std::min(a.height(),b.height())*1.4));
+    for(int x=std::max(0,int(std::ceil(a.right())));x<std::min(image.width(),int(std::floor(b.left())));++x){
+        int low=255,high=0;
+        for(int y=top;y<bottom;++y){auto value=qGray(image.pixel(x,y));low=std::min(low,value);high=std::max(high,value);}
+        if(high-low>=48){++ink;blank=0;}else if(++blank>limit)return false;
+    }return ink>=2;
+}
 BITMAPINFO bitmapInfo(int width,int height)
 {
     BITMAPINFO bi{};bi.bmiHeader.biSize=sizeof(BITMAPINFOHEADER);bi.bmiHeader.biWidth=width;
@@ -159,7 +172,7 @@ Block wordAt(const QList<Block>& words,QPointF point)
         }
     }return result;
 }
-Block phraseAt(const QList<Block>& words,QPointF point)
+Block phraseAt(const QList<Block>& words,QPointF point,const QImage* image)
 {
     const auto parts=scriptWords(words);
     const auto seed=wordAt(parts,point);
@@ -192,7 +205,7 @@ Block phraseAt(const QList<Block>& words,QPointF point)
         // an ordinary following word space into a spurious column boundary.
         auto height=wordScript(line[left])&&wordScript(line[right])?
             std::min(a.height(),b.height()):std::max(a.height(),b.height());
-        return b.left()-a.right()<=std::max(12.,height*1.4);
+        return b.left()-a.right()<=std::max(12.,height*1.4)||(image&&inkBridges(*image,a,b));
     };
     // Keep only the sentence on the pointed line. Large gaps separate columns
     // and menu labels; terminal punctuation separates neighbouring sentences.
@@ -256,7 +269,7 @@ Block phraseAt(const QList<Block>& words,QPointF point)
     }
     return phrase;
 }
-QList<Block> recognize(const QImage& source,Cancel cancel,bool grouped)
+QList<Block> recognize(const QImage& source,Cancel cancel,bool grouped,double maxScale)
 {
     using namespace winrt::Windows::Media::Ocr;
     using namespace winrt::Windows::Graphics::Imaging;
@@ -273,7 +286,7 @@ QList<Block> recognize(const QImage& source,Cancel cancel,bool grouped)
         if(!engine)engine=OcrEngine::TryCreateFromUserProfileLanguages();
         if(!engine&&available.Size())engine=OcrEngine::TryCreateFromLanguage(available.GetAt(0));
         if(!engine)throw std::runtime_error("Windows 未安装 OCR 语言包；请在 Windows 语言设置中安装");
-        int maxSide=int(OcrEngine::MaxImageDimension());double scale=std::min(2.0,double(maxSide)/std::max(source.width(),source.height()));
+        int maxSide=int(OcrEngine::MaxImageDimension());double scale=std::min(maxScale,double(maxSide)/std::max(source.width(),source.height()));
         QImage image=source.scaled(qRound(source.width()*scale),qRound(source.height()*scale),Qt::IgnoreAspectRatio,Qt::SmoothTransformation).convertToFormat(QImage::Format_ARGB32);
         for(int y=0;y<image.height();++y){auto px=reinterpret_cast<QRgb*>(image.scanLine(y));for(int x=0;x<image.width();++x)px[x]|=0xff000000;}
         auto size=uint32_t(image.sizeInBytes());winrt::Windows::Storage::Streams::Buffer buffer(size);
@@ -286,6 +299,118 @@ QList<Block> recognize(const QImage& source,Cancel cancel,bool grouped)
             auto r=word.BoundingRect();words.append({from(word.Text()),QRectF(r.X/scale,r.Y/scale,r.Width/scale,r.Height/scale),r.Height/scale});
         }return cancel->load()?QList<Block>():grouped?groupWords(words):words;
     }catch(const winrt::hresult_error&){throw std::runtime_error("Windows OCR 识别失败；请检查语言包");}
+}
+Block recognizeAt(const QImage& image,Cancel cancel,QPointF point)
+{
+    auto words=recognize(image,cancel,false);
+    if(cancel->load())return {};
+    auto parts=scriptWords(words);auto seed=wordAt(parts,point);
+    const int latin=int(QChar::Script_Latin)+1;
+    if(seed.text.isEmpty()){
+        // A dropped letter has no OCR box. Use nearby ink to seed a retry,
+        // but still require the refined result to cover the original pointer.
+        double nearest=1e9;
+        for(auto w:parts){
+            auto b=w.box;double gap=std::max(b.left()-point.x(),point.x()-b.right());
+            if(wordScript(w)!=latin||gap<0||gap>b.height()*6||gap>=nearest||
+                point.y()<b.top()-b.height()*.2||point.y()>b.bottom()+b.height()*.2)continue;
+            QRectF target(point.x()-3,b.top(),6,b.height());
+            int ink=0;
+            for(int x=std::max(0,int(target.left()));x<std::min(image.width(),int(target.right()));++x){
+                int low=255,high=0;
+                for(int y=std::max(0,int(b.top())-2);y<std::min(image.height(),int(b.bottom())+2);++y){
+                    int value=qGray(image.pixel(x,y));low=std::min(low,value);high=std::max(high,value);
+                }ink+=high-low>=48;
+            }
+            if(ink<2)continue;
+            if(gap<=b.height()*1.4||(point.x()<b.left()?inkBridges(image,target,b):inkBridges(image,b,target))){seed=w;nearest=gap;}
+        }
+    }
+    if(!seed.text.isEmpty()&&!wordScript(seed)){
+        Block before,after;
+        for(auto w:parts){
+            if(!wordScript(w)||std::abs(w.box.center().y()-seed.box.center().y())>w.box.height()*.6)continue;
+            if(w.box.right()<=seed.box.left()&&(before.text.isEmpty()||w.box.right()>before.box.right()))before=w;
+            if(w.box.left()>=seed.box.right()&&(after.text.isEmpty()||w.box.left()<after.box.left()))after=w;
+        }
+        if(wordScript(before)==latin&&wordScript(after)==latin&&
+            seed.box.left()-before.box.right()<before.box.height()*1.4&&
+            after.box.left()-seed.box.right()<after.box.height()*1.4)seed=before;
+        else if(wordScript(after)==latin&&after.box.left()-seed.box.right()<after.box.height()*1.4)seed=after;
+        else if(wordScript(before)==latin&&seed.box.left()-before.box.right()<before.box.height()*1.4)seed=before;
+    }
+    auto original=[&]{return phraseAt(words,point,&image);};
+    if(wordScript(seed)!=latin||seed.box.height()>36)return original();
+    // Small Latin letters are easily dropped or read as punctuation by the
+    // system's CJK recognizer. Locate their ink before applying text/sentence
+    // boundaries, then read just this local run at a useful glyph resolution.
+    double h=seed.box.height(),left=std::max(0.,seed.box.left()-600.),right=std::min(double(image.width()),seed.box.right()+600.);
+    for(auto word:parts){
+        auto a=seed.box,b=word.box;
+        if(std::min(a.bottom(),b.bottom())-std::max(a.top(),b.top())<std::min(a.height(),b.height())*.5||
+            std::abs(a.center().y()-b.center().y())>std::max(a.height(),b.height())*.6)continue;
+        int script=wordScript(word);
+        if(script&&script!=latin){
+            if(b.right()<=a.left())left=std::max(left,b.right()+1);
+            if(b.left()>=a.right())right=std::min(right,b.left()-1);
+        }
+        if(script==latin&&b.height()<=seed.box.height()*1.8)h=std::max(h,b.height());
+    }
+    int top=std::max(0,int(std::floor(seed.box.center().y()-h*.8)));
+    int bottom=std::min(image.height(),int(std::ceil(seed.box.center().y()+h*.8)));
+    auto pixels=image.convertToFormat(QImage::Format_RGB32);
+    auto ink=[&](int x){
+        int low=255,high=0;
+        for(int y=top;y<bottom;++y){auto value=qGray(reinterpret_cast<const QRgb*>(pixels.constScanLine(y))[x]);low=std::min(low,value);high=std::max(high,value);}
+        return high-low>=48;
+    };
+    auto extent=[&](int start,int direction){
+        int last=start,blank=0,limit=std::max(12,qRound(h*1.4));
+        for(int x=start;x>=int(std::ceil(left))&&x<int(std::floor(right));x+=direction){
+            if(ink(x)){last=x;blank=0;}else if(++blank>limit)break;
+        }return last;
+    };
+    int x1=extent(std::clamp(int(seed.box.left()),0,image.width()-1),-1);
+    int x2=extent(std::clamp(int(seed.box.right()),0,image.width()-1),1);
+    int pad=std::max(3,qRound(h*.4));
+    x1=std::max(int(std::ceil(left)),x1-pad);x2=std::min(int(std::floor(right)),x2+pad+1);
+    QRect area(x1,top,x2-x1,bottom-top);
+    if(area.isEmpty())return original();
+    QList<Block> refined;
+    try{refined=recognize(image.copy(area),cancel,false,std::clamp(std::ceil(96./h),2.,8.));}
+    catch(const std::exception&){return cancel->load()?Block():original();}
+    if(cancel->load())return {};
+    int oldLetters=0,newLetters=0;QRectF oldBounds,newBounds;
+    auto letters=[](const QString& text){int n=0;for(auto c:text)n+=c.isLetterOrNumber();return n;};
+    for(auto w:parts)if(area.contains(w.box.center().toPoint())&&letters(w.text)){oldLetters+=letters(w.text);oldBounds=oldBounds.united(w.box);}
+    for(auto& w:refined){
+        w.box.translate(area.topLeft());
+        // A Latin-only crop must not introduce new CJK/script boundaries.
+        for(auto c:w.text)if(auto script=letterScript(c);script&&script!=latin)return original();
+    }
+    // Refinement fills lost letters and punctuation-shaped words. It must not
+    // erase a readable word or change its spelling/case just because a larger
+    // rendering confused the OCR model. Keep coarse words whose physical span
+    // did not grow; genuinely recovered/merged words retain the refined text.
+    for(auto original:parts){
+        if(wordScript(original)!=latin||letters(original.text)<2||!area.contains(original.box.center().toPoint()))continue;
+        QList<int> matches;QRectF bounds;
+        for(int i=0;i<refined.size();++i){auto b=refined[i].box;
+            if(b.intersected(original.box).width()>=std::min(b.width(),original.box.width())*.5){matches<<i;bounds=bounds.united(b);}
+        }
+        if(matches.isEmpty()||bounds.left()<original.box.left()-h*.3||bounds.right()>original.box.right()+h*.3)continue;
+        for(auto it=matches.crbegin();it!=matches.crend();++it)refined.removeAt(*it);
+        refined<<original;
+    }
+    for(auto w:refined){newLetters+=letters(w.text);if(letters(w.text))newBounds=newBounds.united(w.box);}
+    if(refined.isEmpty()||newLetters<oldLetters||
+        newBounds.left()>oldBounds.left()+h*.4||newBounds.right()<oldBounds.right()-h*.4)
+        return original();
+    QList<Block> merged;
+    for(auto w:parts)if(!area.contains(w.box.center().toPoint()))merged<<w;
+    merged.append(refined);
+    auto phrase=phraseAt(merged,point,&image);
+    return phrase.text.isEmpty()?original():phrase;
 }
 Selection selectionAt(POINT point,HWND target)
 {

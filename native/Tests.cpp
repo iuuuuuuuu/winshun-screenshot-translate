@@ -7,6 +7,8 @@
 #include <QFile>
 #include <QTimer>
 #include <QThread>
+#include <QElapsedTimer>
+#include <QPainter>
 #include <thread>
 #include <cstdio>
 #include <stdexcept>
@@ -26,6 +28,11 @@ void checkPhrases()
     check(st::phraseAt(words,{450,20}).text=="Other column","large gap separates columns");
     check(st::phraseAt(words,{40,55}).text=="Other row","pointer phrase does not cross rows");
     check(st::phraseAt(words,{340,20}).text.isEmpty(),"blank space does not select remote text");
+    QImage missingInk(180,50,QImage::Format_RGB32);missingInk.fill(Qt::white);
+    QList<st::Block> missingWords{{"prefix",{5,10,40,20},20},{"tail",{100,10,40,20},20}};
+    check(st::phraseAt(missingWords,{20,20},&missingInk).text=="prefix","blank column gap is not bridged");
+    QPainter ink(&missingInk);ink.setPen(Qt::black);QFont inkFont("Segoe UI");inkFont.setPixelSize(20);ink.setFont(inkFont);ink.drawText(53,28,"lost");ink.end();
+    check(st::phraseAt(missingWords,{20,20},&missingInk).text=="prefix tail","unrecognized ink does not end the sentence at a false column");
     check(st::phraseAt({{"Settings",{10,10,80,20},20}},{40,20}).text=="Settings","standalone word unchanged");
     QList<st::Block> chinese{{"请",{0,0,20,20},20},{"稍",{21,0,20,20},20},{"等",{42,0,20,20},20},
         {"，",{63,0,20,20},20},{"再试",{84,0,40,20},20},{"。",{125,0,20,20},20},
@@ -95,14 +102,26 @@ int main(int argc,char** argv)
             if(image.isNull())throw std::runtime_error("OCR diagnostic image unavailable");
             QList<st::Block> words;std::exception_ptr error;
             std::thread worker([&]{
-                try{words=st::recognize(image,std::make_shared<std::atomic_bool>(false),false);}
+                try{words=st::recognize(image,std::make_shared<std::atomic_bool>(false),false,
+                    args.contains("--ocr-scale")?args.value(args.indexOf("--ocr-scale")+1).toDouble():2.);}
                 catch(...){error=std::current_exception();}
             });worker.join();if(error)std::rethrow_exception(error);
             QJsonArray found;
             for(auto word:words)found.append(QJsonObject{{"text",word.text},
                 {"box",QJsonArray{word.box.x(),word.box.y(),word.box.width(),word.box.height()}},
                 {"phrase",st::phraseAt(words,word.box.center()).text}});
-            std::puts(QJsonDocument(QJsonObject{{"words",found}}).toJson(QJsonDocument::Compact).constData());return 0;
+            QJsonArray pointed;
+            if(args.contains("--ocr-points")){
+                std::thread reader([&]{try{
+                    for(auto pair:args.value(args.indexOf("--ocr-points")+1).split(';')){
+                        auto xy=pair.split(',');QPointF at(xy.value(0).toDouble(),xy.value(1).toDouble());QElapsedTimer elapsed;elapsed.start();
+                        auto phrase=st::recognizeAt(image,std::make_shared<std::atomic_bool>(false),at);
+                        pointed.append(QJsonObject{{"point",QJsonArray{at.x(),at.y()}},{"text",phrase.text},{"ms",double(elapsed.elapsed())},
+                            {"box",QJsonArray{phrase.box.x(),phrase.box.y(),phrase.box.width(),phrase.box.height()}}});
+                    }
+                }catch(...){error=std::current_exception();}});reader.join();if(error)std::rethrow_exception(error);
+            }
+            std::puts(QJsonDocument(QJsonObject{{"words",found},{"pointed",pointed}}).toJson(QJsonDocument::Compact).constData());return 0;
         }
         checkPhrases();
         if(st::detect("你好世界")!="zh"||st::targetFor("Hello","auto")!="zh")throw std::runtime_error("language");

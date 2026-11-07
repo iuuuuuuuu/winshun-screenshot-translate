@@ -166,7 +166,10 @@ def main():
         if "--output" in sys.argv:out=Path(sys.argv[sys.argv.index("--output")+1])
         if "--ocr-image" in sys.argv:
             source=Path(sys.argv[sys.argv.index("--ocr-image")+1]).resolve()
-            launch(build/"native_tests.exe",["--ocr-image",str(source)],data,out)
+            options=[]
+            for key in ("--ocr-scale","--ocr-points"):
+                if key in sys.argv:options.extend([key,sys.argv[sys.argv.index(key)+1]])
+            launch(build/"native_tests.exe",["--ocr-image",str(source),*options],data,out)
             print((out/"stdout.jsonl").read_text(encoding="utf-8"))
         elif "--live" in sys.argv:
             (data/"services.json").write_text('{"version":2,"profiles":{}}')
@@ -181,13 +184,18 @@ def main():
             assert counts.get("/fail") == 2, counts  # memory skips, elapsed recovery retries
             print((out/"stdout.jsonl").read_text(encoding="utf-8"))
         else:
+            pointer_fixtures=[]
+            if "--pointer-fixture" in sys.argv:
+                pointer_fixtures=json.loads(Path(sys.argv[sys.argv.index("--pointer-fixture")+1]).read_text(encoding="utf-8"))
             launch(build/"ScreenshotTranslate.exe",["--probe"],data,out,{
                 "dataDir":str(data), "probeOutput":str(out), "probeBlockedEndpoint":base+"/blocked",
                 "locale":"zh", "appearance":{"theme":"light","renderer":"d3d11" if "--gpu" in sys.argv else "software","locale":"zh"},
-                "settings":{"provider":"zvo","fallbackEnabled":False}, "capabilities":{"hostHotkeys":True}
+                "settings":{"provider":"zvo","fallbackEnabled":False}, "capabilities":{"hostHotkeys":True},
+                "probePointerFixtures":pointer_fixtures
             }, "--gpu" in sys.argv)
             report=json.loads((out/"report.json").read_text(encoding="utf-8"))
             assert report["passed"], report
+            if pointer_fixtures:assert report["wordLocalPixelOcr"],report
             messages=[json.loads(line) for line in (out/"stdout.jsonl").read_text(encoding="utf-8").splitlines()]
             responses={row["id"]:row["result"] for row in messages if "id" in row and "result" in row}
             keys=[row["params"]["arguments"]["keys"] for row in messages if row.get("method")=="winshun/tool"

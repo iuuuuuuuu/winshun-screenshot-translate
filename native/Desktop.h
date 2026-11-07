@@ -10,9 +10,11 @@
 namespace st {
 struct Block { QString text; QRectF box; double glyphHeight=16; };
 QList<Block> groupWords(QList<Block> words);
-QList<Block> recognize(const QImage& image, Cancel cancel, bool grouped=true);
+QList<Block> recognize(const QImage& image, Cancel cancel, bool grouped=true,
+    double maxScale=2.);
+Block recognizeAt(const QImage& image, Cancel cancel, QPointF point);
 Block wordAt(const QList<Block>& words,QPointF point);
-Block phraseAt(const QList<Block>& words,QPointF point);
+Block phraseAt(const QList<Block>& words,QPointF point,const QImage* image=nullptr);
 QImage capture(const QRect& area);
 QRect virtualScreen();
 QRect monitorRect(POINT point, bool work = false);

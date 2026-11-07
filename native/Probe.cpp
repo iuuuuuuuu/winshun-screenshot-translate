@@ -538,6 +538,37 @@ void Probe::run(App& app,const QJsonObject& params)
             }
         }
         report["wordMouseMixedOcr"]=true;
+        // Optional local screenshot fixtures exercise the complete hotkey ->
+        // real Windows OCR -> local service -> popup path. Images stay local
+        // and all capture/input hooks remain on this private desktop.
+        QJsonArray localAttempts;int fixtureIndex=0;
+        for(auto fixtureValue:params.value("probePointerFixtures").toArray()){
+            auto test=fixtureValue.toObject();QImage source(test.value("image").toString());
+            check(!source.isNull(),"local pointer fixture unavailable");
+            app.m_capture=[source](const QRect& area){
+                QImage image(area.size(),QImage::Format_RGB32);image.fill(Qt::white);QPainter p(&image);
+                p.drawImage(QPoint(100,100)-area.topLeft(),source);return image;
+            };
+            int pointIndex=0;
+            for(auto pointValue:test.value("points").toArray()){
+                auto testPoint=pointValue.toObject();QPoint at(testPoint.value("x").toInt()+100,testPoint.value("y").toInt()+100);
+                app.m_mouse=[at]{return at;};QElapsedTimer elapsed;elapsed.start();
+                app.dispatch({},"hotkey",{{"key","Alt+Shift+O"}});
+                check(until([&]{return app.m_word.window->isVisible()&&!app.m_wordBackend.values["loading"].toBool();},10000),"local screenshot pointer OCR complete");
+                auto expected=testPoint.value("expected").toString();
+                localAttempts.append(QJsonObject{{"fixture",fixtureIndex},{"point",pointIndex},{"source",app.m_wordSource},
+                    {"expected",expected},{"translated",app.m_wordBackend.values["translatedText"].toString()},
+                    {"ms",double(elapsed.elapsed())},{"status",app.m_wordBackend.values["status"].toString()}});
+                report["localPointerAttempts"]=localAttempts;
+                auto name=QString("/word-local-%1-%2.png").arg(fixtureIndex).arg(pointIndex);
+                app.m_word.window->grabWindow().save(out+name);
+                check(app.m_wordSource==expected,"local screenshot retains the complete pointed phrase");
+                if(!expected.isEmpty())check(app.m_wordBackend.values["translatedText"].toString()=="翻译："+expected,"complete local screenshot phrase reaches service and popup");
+                else check(!app.m_wordBackend.values["status"].toString().isEmpty(),"blank local screenshot reports no text");
+                app.closeWord();++pointIndex;
+            }++fixtureIndex;
+        }
+        if(fixtureIndex)report["wordLocalPixelOcr"]=true;
         app.m_readClipboard=[] {return QString();};app.textFlow("clip");
         check(!app.m_wordBackend.values["loading"].toBool()&&!app.m_wordBackend.values["status"].toString().isEmpty(),"empty clipboard has visible error");app.closeWord();
         // Hotkey uniqueness can span desktops in the window station. Use
