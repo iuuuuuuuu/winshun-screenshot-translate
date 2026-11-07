@@ -49,7 +49,7 @@ def main():
     (stage/'native').mkdir()
     shutil.copy2(root/'native/README.md', stage/'native/README.md')
     (stage/'.screenshots').mkdir()
-    for name in ('word-0.4.2.png', 'settings-0.4.2.png', 'toolbar-0.4.2.png'):
+    for name in ('word-0.4.3.png', 'settings-0.4.3.png', 'toolbar-0.4.3.png'):
         shutil.copy2(root/'.screenshots'/name, stage/'.screenshots'/name)
     (runtime/'fonts').mkdir()
     shutil.copy2(root/'native/assets/AlibabaPuHuiTi-3-55-Regular.ttf', runtime/'fonts/AlibabaPuHuiTi-3-55-Regular.ttf')
@@ -74,6 +74,8 @@ def main():
         'buildWorkflow': '原生构建与打包', 'runtime': 'Windows x64 / MSVC / Qt 6.10.0',
     }, ensure_ascii=False, indent=2)+'\n', encoding='utf-8')
     files = {p.relative_to(stage).as_posix(): p for p in stage.rglob('*') if p.is_file()}
+    oversized = [name for name, path in files.items() if path.stat().st_size > 64*1024*1024]
+    assert not oversized, '超过插件库单文件大小限制：' + ', '.join(oversized)
     total = sum(p.stat().st_size for p in files.values())
     assert total <= 256*1024*1024, '超过插件库解压大小限制'
     package = out/f'{plugin_id}-{version}.wsplugin'

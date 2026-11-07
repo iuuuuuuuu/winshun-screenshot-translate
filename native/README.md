@@ -1,4 +1,4 @@
-# 截图翻译 0.4.2：原生版构建与验证
+# 截图翻译 0.4.3：原生版构建与验证
 
 原生 C++ / Qt Quick 版本，运行时不需要 Python、PySide6、PowerShell OCR 脚本或另装 Qt。
 小型启动器只从本插件的 `runtime/` 加载随包 Qt，系统 Windows OCR 在后台线程识别图片。
@@ -12,7 +12,7 @@
 ## 安装和回退
 
 在 WinShun 设置 → 插件 → 从压缩包安装，选择
-`iuuuuuuuu.screenshot-translate-0.4.2.wsplugin`。运行时不检查或启动 Python。
+`iuuuuuuuu.screenshot-translate-0.4.3.wsplugin`。运行时不检查或启动 Python。
 包内包括启动器、应用 DLL、Qt/Visual C++ 运行库、许可和文档；DLL 内包含 QML 控件与授权图标字体。
 现有渠道、热键、代理、偏好和 DPAPI 密钥格式保持兼容，不迁移或删除用户的数据目录。
 

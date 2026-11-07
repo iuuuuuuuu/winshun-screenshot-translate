@@ -10,6 +10,7 @@ import urllib.request
 ROOT = Path(__file__).resolve().parents[1]
 REVISION = '39cfb9672c0906b63569e0453c2e6abfb9ab182a'
 SOURCE_SHA256 = 'd1ecbdf9ee2b920afb6f430ca6b6bb9f559588cf0dff86e04bd255f9390843cc'
+GENERATOR_VERSION = 2
 URL = f'https://raw.githubusercontent.com/skywind3000/ECDICT/{REVISION}/ecdict.csv'
 
 
@@ -18,7 +19,8 @@ def main():
     metadata = dest.with_suffix('.json')
     if dest.exists() and metadata.exists():
         info = json.loads(metadata.read_text('utf-8'))
-        if info.get('sourceSha256') == SOURCE_SHA256 and hashlib.sha256(dest.read_bytes()).hexdigest() == info.get('sha256'):
+        if (info.get('sourceSha256') == SOURCE_SHA256 and info.get('generatorVersion') == GENERATOR_VERSION
+                and hashlib.sha256(dest.read_bytes()).hexdigest() == info.get('sha256')):
             print(f'ECDICT: {info["entries"]} entries verified')
             return
     cached = ROOT/'.test-output/dictionary-research/ecdict-data.txt'
@@ -31,6 +33,11 @@ def main():
         if not key or not (row['translation'] or row['definition']):
             continue
         value = [row.get(k, '').replace('\\n', '\n') for k in ('phonetic', 'translation', 'definition', 'exchange')]
+        # The reader uses the English definition only when translation is empty.
+        # Preserve that fallback while omitting unused duplicate definitions, so
+        # the full dictionary fits the registry's 64 MiB per-file limit.
+        if value[1]:
+            value[2] = ''
         entries[key] = json.dumps(value, ensure_ascii=False, separators=(',', ':')).encode('utf-8')
     dest.parent.mkdir(exist_ok=True)
     temporary = dest.with_suffix('.tmp')
@@ -42,9 +49,12 @@ def main():
             offset += len(key) + len(value)
         for key, value in sorted(entries.items()):
             out.write(key + value)
+    if temporary.stat().st_size > 64*1024*1024:
+        raise RuntimeError('ECDICT 索引超过插件库单文件大小限制')
     temporary.replace(dest)
     info = dict(source=URL, revision=REVISION, sourceSha256=SOURCE_SHA256, license='MIT',
-                entries=len(entries), size=dest.stat().st_size, sha256=hashlib.sha256(dest.read_bytes()).hexdigest())
+                generatorVersion=GENERATOR_VERSION, entries=len(entries), size=dest.stat().st_size,
+                sha256=hashlib.sha256(dest.read_bytes()).hexdigest())
     metadata.write_text(json.dumps(info, ensure_ascii=False, indent=2)+'\n', encoding='utf-8', newline='\n')
     print(json.dumps(info))
 
