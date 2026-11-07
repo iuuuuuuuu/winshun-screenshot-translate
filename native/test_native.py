@@ -202,7 +202,7 @@ def main():
                   and row["params"]["name"]=="register_hotkeys"]
             assert keys==[["Alt+Shift+T","Alt+Shift+C","Alt+Shift+W","Alt+Shift+O"]],keys
             for flag in ("wordRealEditSelection","wordClipboard","wordPinnedSelection","wordCancellation","wordMouseOcr","wordMousePhraseOcr","wordMouseSpacingOcr","wordOutsideDismiss",
-                         "wordEditableClipboard","wordEditableOcr","wordEditingPausesFollow","wordMouseMixedOcr"):
+                         "wordEditableClipboard","wordEditableOcr","wordEditingPausesFollow","wordMouseMixedOcr","wordMouseWrappedOcr"):
                 assert report[flag], report
             for request in (200,201,202):assert responses[request]["items"]==[],responses
             assert responses[203]["items"][0]["title"]=="你好 + 100%",responses[203]

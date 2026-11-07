@@ -91,6 +91,41 @@ void checkPhrases()
     auto local=st::phraseAt(longLine,{50*65+20,10});
     check(local.text.contains("word50")&&local.text.size()<=240&&!local.text.contains("word0 "),"long line stays local and bounded");
 }
+void checkWrappedPhrases()
+{
+    auto check=[](bool yes,const char* message){if(!yes)throw std::runtime_error(message);};
+    QList<st::Block> mixed{{"这里是一段中文说明，",{10,10,220,20},20},{"hi,i",{236,12,35,18},18},{"ma",{277,16,24,12},12},
+        {"you",{10,46,30,16},16},{"baby",{46,42,40,20},20},{"，后面仍然是中文说明。",{92,42,220,20},20}};
+    for(double scale:{.8,1.,1.25,1.5,2.}){
+        auto scaled=mixed;for(auto& w:scaled){auto b=w.box;w.box={b.x()*scale,b.y()*scale,b.width()*scale,b.height()*scale};w.glyphHeight*=scale;}
+        for(int i:{1,2,3,4}){
+            auto result=st::wrappedPhraseAt(scaled,scaled[i].box.center());
+            check(result.text=="hi,i ma you baby","mixed minority phrase continues from either wrapped line");
+            check(result.box.contains(scaled[i].box.center())&&result.box.bottom()>=scaled[4].box.bottom(),"wrapped bounds map back to physical rows");
+        }
+        auto majority=st::wrappedPhraseAt(scaled,scaled[0].box.center()).text;
+        check(majority.contains("hi,i ma you baby")&&majority.endsWith("中文说明。"),"majority sentence crosses the same wrap");
+    }
+    QList<st::Block> english{{"Please",{10,10,60,20},20},{"translate",{76,10,80,20},20},{"this",{162,10,40,20},20},
+        {"whole",{10,42,50,20},20},{"sentence",{66,42,80,20},20},{"across",{152,42,60,20},20},
+        {"three",{10,74,50,20},20},{"lines.",{66,74,50,20},20}};
+    for(auto w:english)check(st::wrappedPhraseAt(english,w.box.center()).text=="Please translate this whole sentence across three lines.","three-line English sentence from every word");
+    auto stopped=english;stopped[2].text="this.";
+    check(st::wrappedPhraseAt(stopped,stopped[0].box.center()).text=="Please translate this.","terminal punctuation prevents paragraph merge");
+    auto list=english;list[3].text="1. whole";
+    check(st::wrappedPhraseAt(list,list[0].box.center()).text=="Please translate this","numbered list starts a new item");
+    list[3].text="• whole";
+    check(st::wrappedPhraseAt(list,list[0].box.center()).text=="Please translate this","bullet list starts a new item");
+    auto spaced=english;for(int i=3;i<spaced.size();++i)spaced[i].box.translate(0,35);
+    check(st::wrappedPhraseAt(spaced,spaced[0].box.center()).text=="Please translate this","blank line prevents paragraph merge");
+    auto indented=english;for(int i=3;i<indented.size();++i)indented[i].box.translate(80,0);
+    check(st::wrappedPhraseAt(indented,indented[0].box.center()).text=="Please translate this","different column alignment does not wrap");
+    auto columns=english;for(auto w:english){w.box.translate(400,0);w.text="Other";columns<<w;}
+    check(st::wrappedPhraseAt(columns,english[4].box.center()).text=="Please translate this whole sentence across three lines.","adjacent column never enters the sentence");
+    QList<st::Block> labels{{"Settings",{10,10,75,20},20},{"History",{10,42,65,20},20}};
+    check(st::wrappedPhraseAt(labels,{30,20}).text=="Settings","stacked short UI labels stay separate");
+    check(st::wrappedPhraseAt(spaced,{150,48}).text.isEmpty(),"blank between paragraphs does not select a phrase");
+}
 }
 int main(int argc,char** argv)
 {
@@ -124,6 +159,7 @@ int main(int argc,char** argv)
             std::puts(QJsonDocument(QJsonObject{{"words",found},{"pointed",pointed}}).toJson(QJsonDocument::Compact).constData());return 0;
         }
         checkPhrases();
+        checkWrappedPhrases();
         if(st::detect("你好世界")!="zh"||st::targetFor("Hello","auto")!="zh")throw std::runtime_error("language");
         QTemporaryDir dir;st::Services services(dir.path());
         auto sharedDir=qEnvironmentVariable("WS_DATA_DIR");

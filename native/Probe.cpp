@@ -538,6 +538,28 @@ void Probe::run(App& app,const QJsonObject& params)
             }
         }
         report["wordMouseMixedOcr"]=true;
+        QJsonArray wrapAttempts;
+        for(bool chinese:{false,true}){
+            QStringList lines=chinese?QStringList{"这是一段需要翻译的","连续换行中文内容。"}:
+                QStringList{"Please translate this","whole sentence across","three lines."};
+            QString expected=lines.join(chinese?QString():QString(" "));
+            QImage wrapped(300,118,QImage::Format_RGB32);wrapped.fill(Qt::white);
+            QPainter draw(&wrapped);QFont font(chinese?"Microsoft YaHei UI":"Segoe UI");font.setPixelSize(18);draw.setFont(font);draw.setPen(QColor("#1B1B1B"));
+            for(int i=0;i<lines.size();++i)draw.drawText(16,32+i*27,lines[i]);draw.end();
+            app.m_capture=[wrapped](const QRect& area){
+                QImage image(area.size(),QImage::Format_RGB32);image.fill(Qt::white);QPainter p(&image);
+                p.drawImage(QPoint(100,100)-area.topLeft(),wrapped);return image;
+            };
+            for(int i=0;i<lines.size();++i){
+                app.m_mouse=[i]{return QPoint(124,125+i*27);};app.dispatch({},"hotkey",{{"key","Alt+Shift+O"}});
+                check(until([&]{return app.m_word.window->isVisible()&&!app.m_wordBackend.values["loading"].toBool();},10000),"wrapped sentence OCR complete");
+                wrapAttempts.append(QJsonObject{{"chinese",chinese},{"line",i},{"source",app.m_wordSource},{"expected",expected}});report["syntheticWrapAttempts"]=wrapAttempts;
+                app.m_word.window->grabWindow().save(out+QString("/word-wrapped-%1-%2.png").arg(chinese).arg(i));
+                check(app.m_wordSource==expected,"pointer OCR includes the complete wrapped sentence from each line");
+                check(app.m_wordBackend.values["translatedText"].toString()=="翻译："+expected,"wrapped sentence reaches translation service");app.closeWord();
+            }
+        }
+        report["wordMouseWrappedOcr"]=true;
         // Optional local screenshot fixtures exercise the complete hotkey ->
         // real Windows OCR -> local service -> popup path. Images stay local
         // and all capture/input hooks remain on this private desktop.

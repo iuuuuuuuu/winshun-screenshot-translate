@@ -300,9 +300,133 @@ QList<Block> recognize(const QImage& source,Cancel cancel,bool grouped,double ma
         }return cancel->load()?QList<Block>():grouped?groupWords(words):words;
     }catch(const winrt::hresult_error&){throw std::runtime_error("Windows OCR 识别失败；请检查语言包");}
 }
-Block recognizeAt(const QImage& image,Cancel cancel,QPointF point)
+namespace {
+struct PointerRow {
+    QList<Block> words;
+    QRectF box;
+    double height=0,baseline=0;
+    void add(Block word){words<<word;box=box.united(word.box);}
+    void measure(){
+        QList<double> heights,bottoms;
+        for(auto w:words)if(wordScript(w)){heights<<w.box.height();bottoms<<w.box.bottom();}
+        if(heights.isEmpty()){height=box.height();baseline=box.bottom();return;}
+        std::sort(heights.begin(),heights.end());std::sort(bottoms.begin(),bottoms.end());
+        height=heights[heights.size()/2];baseline=bottoms[bottoms.size()/2];
+    }
+};
+struct PointerLayout {
+    QList<Block> words;
+    QImage image;
+    QPointF point;
+    QList<QRectF> strips;
+    QList<QPointF> offsets;
+    Block restore(Block result) const {
+        if(strips.isEmpty()||result.text.isEmpty())return result;
+        QRectF physical;
+        for(int i=0;i<strips.size();++i){auto part=result.box.intersected(strips[i]);
+            if(!part.isEmpty())physical=physical.united(part.translated(-offsets[i]));
+        }
+        result.box=physical;return result;
+    }
+};
+PointerLayout pointerLayout(const QList<Block>& words,QPointF point,const QImage* image)
 {
-    auto words=recognize(image,cancel,false);
+    PointerLayout layout{words,image?*image:QImage(),point};
+    auto parts=scriptWords(words);
+    // Place letters before tiny baseline punctuation so a comma cannot seed
+    // an extra row. Split large horizontal gaps before deciding paragraph flow.
+    std::stable_sort(parts.begin(),parts.end(),[](auto a,auto b){return a.box.height()>b.box.height();});
+    QList<PointerRow> bands;
+    for(auto word:parts){
+        if(word.text.trimmed().isEmpty()||word.box.isEmpty())continue;
+        int at=-1;double nearest=1e9;
+        for(int i=0;i<bands.size();++i){auto a=bands[i].box,b=word.box;
+            double overlap=std::min(a.bottom(),b.bottom())-std::max(a.top(),b.top()),distance=std::abs(a.center().y()-b.center().y());
+            bool baseline=!wordScript(word)&&b.top()>=a.top()-a.height()*.2&&b.bottom()<=a.bottom()+a.height()*.2;
+            if((baseline||(overlap>=std::min(a.height(),b.height())*.5&&distance<=std::max(a.height(),b.height())*.6))&&distance<nearest){at=i;nearest=distance;}
+        }
+        if(at<0){bands.append(PointerRow{});at=int(bands.size())-1;}bands[at].add(word);
+    }
+    QList<PointerRow> rows;
+    for(auto band:bands){
+        std::sort(band.words.begin(),band.words.end(),[](auto a,auto b){return a.box.left()<b.box.left();});
+        PointerRow row;
+        for(auto word:band.words){
+            if(!row.words.isEmpty()){
+                auto previous=row.words.back();auto a=previous.box,b=word.box;
+                double h=wordScript(previous)&&wordScript(word)?std::min(a.height(),b.height()):std::max(a.height(),b.height());
+                if(b.left()-a.right()>std::max(12.,h*1.4)&&!(image&&inkBridges(*image,a,b))){row.measure();rows<<row;row={};}
+            }row.add(word);
+        }
+        if(!row.words.isEmpty()){row.measure();rows<<row;}
+    }
+    std::sort(rows.begin(),rows.end(),[](auto a,auto b){return a.box.top()==b.box.top()?a.box.left()<b.box.left():a.box.top()<b.box.top();});
+    int at=-1;double nearest=1e9;
+    auto seed=wordAt(parts,point);
+    for(int i=0;i<rows.size();++i){
+        auto b=rows[i].box;
+        if(!seed.text.isEmpty()){
+            for(auto w:rows[i].words)if(w.box==seed.box&&w.text==seed.text){at=i;break;}
+            if(at>=0)break;
+        }else if(b.adjusted(-rows[i].height*2,-3,rows[i].height*2,3).contains(point)){
+            double distance=std::abs(point.y()-b.center().y());if(distance<nearest){at=i;nearest=distance;}
+        }
+    }
+    if(at<0)return layout;
+    auto wraps=[&](int upper,int lower){
+        const auto& a=rows[upper];const auto& b=rows[lower];double h=std::min(a.height,b.height);
+        double gap=b.box.top()-a.box.bottom();
+        if(h<=0||std::max(a.height,b.height)>h*1.5||gap<0||gap>h*1.25||
+            std::abs(a.box.left()-b.box.left())>std::max(8.,h*.8)||a.box.width()<h*6||
+            b.box.right()>a.box.right()+h*2)return false;
+        auto end=a.words.back().text.trimmed();
+        while(!end.isEmpty()&&QString("\"'”’）)]》」』").contains(end.back()))end.chop(1);
+        if(!end.isEmpty()&&QString(".!?。！？;；:：").contains(end.back()))return false;
+        QString start;for(auto w:b.words){start+=w.text+' ';if(start.size()>16)break;}
+        if(QRegularExpression("^\\s*(?:[-*•●▪]|\\d+[.)、]|[（(]\\d+[)）])").match(start).hasMatch())return false;
+        // Never jump over a visible intervening row in this text column.
+        for(int i=0;i<rows.size();++i)if(i!=upper&&i!=lower){auto r=rows[i].box;
+            if(r.center().y()>a.box.center().y()+h*.4&&r.center().y()<b.box.center().y()-h*.4&&
+                std::min(r.right(),a.box.right())>std::max(r.left(),a.box.left()))return false;
+        }return true;
+    };
+    QList<int> chain{at};
+    for(int pass=0;pass<3;++pass){
+        bool added=false;
+        for(bool before:{true,false}){
+            if(chain.size()>=4)break;
+            int endpoint=before?chain.front():chain.back(),candidate=-1;double distance=1e9;
+            for(int i=0;i<rows.size();++i)if(!chain.contains(i)&&(before?wraps(i,endpoint):wraps(endpoint,i))){
+                double d=std::abs(rows[i].baseline-rows[endpoint].baseline);if(d<distance){candidate=i;distance=d;}
+            }
+            if(candidate>=0){if(before)chain.prepend(candidate);else chain.append(candidate);added=true;}
+        }if(!added)break;
+    }
+    if(chain.size()==1)return layout;
+    double height=0;for(int i:chain)height=std::max(height,rows[i].height);
+    double x=4,baseline=std::ceil(height*1.5)+4;
+    layout.words.clear();
+    for(int i:chain){
+        const auto& row=rows[i];QPointF offset(qRound(x-row.box.left()),qRound(baseline-row.baseline));
+        auto strip=row.box.adjusted(-2,-2,2,2).toAlignedRect();
+        layout.strips<<QRectF(strip).translated(offset);layout.offsets<<offset;
+        for(auto word:row.words){word.box.translate(offset);layout.words<<word;}
+        if(i==at)layout.point=point+offset;
+        x=row.box.right()+offset.x()+std::max(5.,height*.5);
+    }
+    if(image){
+        layout.image=QImage(qCeil(x+4),qCeil(height*3+8),QImage::Format_RGB32);
+        auto sample=rows[chain.front()].box.topLeft().toPoint()-QPoint(2,2);
+        sample.setX(std::clamp(sample.x(),0,image->width()-1));sample.setY(std::clamp(sample.y(),0,image->height()-1));
+        layout.image.fill(image->pixelColor(sample));QPainter painter(&layout.image);
+        for(int i=0;i<chain.size();++i){auto strip=layout.strips[i].translated(-layout.offsets[i]).toAlignedRect().intersected(image->rect());
+            painter.drawImage(QPointF(strip.topLeft())+layout.offsets[i],*image,strip);
+        }
+    }
+    return layout;
+}
+Block recognizeLineAt(const QImage& image,const QList<Block>& words,Cancel cancel,QPointF point)
+{
     if(cancel->load())return {};
     auto parts=scriptWords(words);auto seed=wordAt(parts,point);
     const int latin=int(QChar::Script_Latin)+1;
@@ -411,6 +535,19 @@ Block recognizeAt(const QImage& image,Cancel cancel,QPointF point)
     merged.append(refined);
     auto phrase=phraseAt(merged,point,&image);
     return phrase.text.isEmpty()?original():phrase;
+}
+}
+Block wrappedPhraseAt(const QList<Block>& words,QPointF point,const QImage* image)
+{
+    auto layout=pointerLayout(words,point,image);
+    return layout.restore(phraseAt(layout.words,layout.point,image?&layout.image:nullptr));
+}
+Block recognizeAt(const QImage& image,Cancel cancel,QPointF point)
+{
+    auto words=recognize(image,cancel,false);
+    if(cancel->load())return {};
+    auto layout=pointerLayout(words,point,&image);
+    return layout.restore(recognizeLineAt(layout.image,layout.words,cancel,layout.point));
 }
 Selection selectionAt(POINT point,HWND target)
 {
