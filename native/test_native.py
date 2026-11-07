@@ -72,7 +72,9 @@ class Server(http.server.BaseHTTPRequestHandler):
         counts[path] = counts.get(path, 0) + 1
         if path.startswith('/dictionary'):
             if path == '/dictionary-redirect':
-                self.send_response(302);self.send_header('Location','/dictionary');self.end_headers();return
+                self.send_response(302)
+                self.send_header('Location','/dictionary?response-content-disposition=attachment%3B%20filename%3Decdict.bin')
+                self.end_headers();return
             if path == '/dictionary-truncated':
                 self.send_response(200);self.end_headers();self.wfile.write(b'bad');return
             self.send_response(200);self.end_headers()
@@ -151,6 +153,8 @@ def launch(program, args, data, output, initial=None, gpu=False):
                WS_APP_DIR=str(host), WS_DATA_DIR=str(data), QT_PLUGIN_PATH=str(host), QML_IMPORT_PATH=str(host / "qml"),
                QT_QPA_PLATFORM="windows")
     for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "OPENAPI_TRANSLATE_PROXY", "PYTHONPATH", "PYTHONHOME", "QT_SCALE_FACTOR"):
+        if "--dictionary-download" in args and key.endswith("PROXY"):
+            continue  # Public GitHub validation follows the user's existing network route.
         env.pop(key, None)
     if gpu:
         env.pop("QT_QUICK_BACKEND", None);env["QSG_RHI_BACKEND"] = "d3d11"

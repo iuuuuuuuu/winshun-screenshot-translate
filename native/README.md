@@ -1,4 +1,4 @@
-# 截图翻译 0.4.4：原生版构建与验证
+# 截图翻译 0.4.5：原生版构建与验证
 
 原生 C++ / Qt Quick 版本，运行时不需要 Python、PySide6、PowerShell OCR 脚本或另装 Qt。
 小型启动器只从本插件的 `runtime/` 加载随包 Qt，系统 Windows OCR 在后台线程识别图片。
@@ -12,7 +12,7 @@
 ## 安装和回退
 
 在 WinShun 设置 → 插件 → 从压缩包安装，选择
-`iuuuuuuuu.screenshot-translate-0.4.4.wsplugin`。运行时不检查或启动 Python。
+`iuuuuuuuu.screenshot-translate-0.4.5.wsplugin`。运行时不检查或启动 Python。
 包内包括启动器、应用 DLL、Qt/Visual C++ 运行库、许可和文档；DLL 内包含 QML 控件与授权图标字体。
 现有渠道、热键、代理、偏好和 DPAPI 密钥格式保持兼容，不迁移或删除用户的数据目录。
 
@@ -181,4 +181,4 @@ Qt/WinShun 和 Phosphor 的许可见 THIRD_PARTY_NOTICES.md 和 native/vendor/LI
 
 ### 可选 ECDICT 词库
 
-公开 `.wsplugin` 仅含词库元数据与许可。`native/package.py` 另生成 `ecdict-39cfb967-v2.bin` 和校验值，随插件 Release 上传。客户端固定下载 v0.4.4 的这一数据版本；后续更新插件不需要重复下载相同词库。下载以 64 KiB 分块写入 QSaveFile、增量校验 SHA-256，限制大小和跳转域名；完成前不替换已有数据。下载存入 WS_DATA_DIR/dictionaries/ecdict.bin，禁止将数据作为代码加载。未下载时的队列和批量测试显示待下载并跳过，不降低渠道权重。
+公开 `.wsplugin` 仅含词库元数据与许可。`native/package.py` 另生成 `ecdict-39cfb967-v2.bin` 和校验值，随插件 Release 上传。客户端固定下载 v0.4.5 的这一数据版本；后续更新插件不需要重复下载相同词库。下载以 64 KiB 分块写入 QSaveFile、增量校验 SHA-256，限制大小和跳转域名；完成前不替换已有数据。下载存入 WS_DATA_DIR/dictionaries/ecdict.bin，禁止将数据作为代码加载。未下载时的队列和批量测试显示待下载并跳过，不降低渠道权重。

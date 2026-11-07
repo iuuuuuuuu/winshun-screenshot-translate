@@ -1,4 +1,4 @@
-# 截图翻译 0.4.4
+# 截图翻译 0.4.5
 
 WinShun 原生翻译插件，支持截图翻译、剪贴板翻译、划词翻译和鼠标指词 OCR。**不需要安装 Python、PySide6 或 Qt。**
 
@@ -8,9 +8,9 @@ WinShun 原生翻译插件，支持截图翻译、剪贴板翻译、划词翻译
 
 需要 **Windows 10/11 x64、WinShun 0.22.0 或更新版本**，以及系统已安装的 OCR 语言包。
 
-1. 从 [0.4.4 发布页](https://github.com/iuuuuuuuu/winshun-screenshot-translate/releases/tag/v0.4.4) 下载 `iuuuuuuuu.screenshot-translate-0.4.4.wsplugin`。
+1. 从 [0.4.5 发布页](https://github.com/iuuuuuuuu/winshun-screenshot-translate/releases/tag/v0.4.5) 下载 `iuuuuuuuu.screenshot-translate-0.4.5.wsplugin`。
 2. 打开 WinShun 设置 → 插件 → 从压缩包安装，选择这个文件，查看并允许所需权限。
-3. 更新后检查插件卡片版本为 **0.4.4**。官方插件库收录状态以对应更新 PR 的合并结果为准。
+3. 更新后检查插件卡片版本为 **0.4.5**。官方插件库收录状态以对应更新 PR 的合并结果为准。
 
 从 0.3.3 / 0.4.0 升级继续使用原有渠道、密钥、代理、热键及偏好；不需要重新安装 Python 依赖。原先明确清空或自定义的热键优先于新版默认值，请在插件设置中检查。不要同时启用早期本地 `winshun.screenshot-translate` 与当前社区版。
 
@@ -47,7 +47,7 @@ WinShun 原生翻译插件，支持截图翻译、剪贴板翻译、划词翻译
 - “重试”保留原来的目标窗口与位置，不会越点越往下移动。
 - 关闭小窗或触发新的翻译会取消旧请求；未固定时点击外部自动关闭，取消固定后恢复该行为。“点击其他区域关闭贴图”设置只影响截图贴图。
 
-<img src=".screenshots/word-0.4.4.png" alt="0.4.4 剪贴板翻译小窗" width="324">
+<img src=".screenshots/word-0.4.5.png" alt="0.4.5 剪贴板翻译小窗" width="324">
 
 ### 截图与 OCR
 
@@ -60,9 +60,9 @@ WinShun 原生翻译插件，支持截图翻译、剪贴板翻译、划词翻译
 - 鼠标 OCR 可识别短句和同一段落内的相邻换行；改进小字号英文漏字和词内错误空格。
 - 中英文混排时，指向少数语言通常只取所在片段；指向主要语言时保留整句。原文始终可以手动修正。
 
-<img src=".screenshots/settings-0.4.4.png" alt="0.4.4 渠道配置" width="650">
+<img src=".screenshots/settings-0.4.5.png" alt="0.4.5 渠道配置" width="650">
 
-<img src=".screenshots/toolbar-0.4.4.png" alt="0.4.4 紧凑截图工具栏，保留全部功能" width="437">
+<img src=".screenshots/toolbar-0.4.5.png" alt="0.4.5 紧凑截图工具栏，保留全部功能" width="437">
 
 以上图片来自独立测试桌面和合成文本，展示新版小窗、渠道首页与紧凑工具栏。
 
@@ -101,7 +101,7 @@ AI 只保留一个配置页，自动迁移原选中的 AI 服务；旧服务的�
 
 有道免密钥入口和 ECDICT 是词典，不能翻译任意长句。开启自动降级后，长句或未收录词继续交给其他可用服务；这种情况不会将词典标记为故障。ECDICT 通过文件索引按需读取，不会在启动时将整个词库载入内存。
 
-<img src=".screenshots/ecdict-0.4.4.png" alt="ECDICT 一键下载词库" width="650">
+<img src=".screenshots/ecdict-0.4.5.png" alt="ECDICT 一键下载词库" width="650">
 
 在设置 → ECDICT 点击“一键下载”，从本仓库 GitHub Release 获取约 55 MiB 词库，可查看进度、取消和失败重试。下载使用共用代理或系统代理，校验固定大小与 SHA-256 后才启用；中断不会覆盖已有词库。词库保存到插件数据目录的 `dictionaries/ecdict.bin`，升级保留，普通与管理员模式共用。关闭设置窗口后下载继续；不需要下载词库也可以使用其他渠道，自动降级会跳过尚未下载的 ECDICT。
 
@@ -134,6 +134,6 @@ OCR 仍受清晰度、字体、背景和系统语言包影响。很小文字经�
 
 [中文更新记录](CHANGELOG.md) · [构建与验证说明](native/README.md) · [第三方许可](THIRD_PARTY_NOTICES.md)
 
-公开发布使用标签 `v0.4.4` 对应源码；安装包内 `BUILD-INFO.json` 记录确切提交与 Qt 版本。GitHub Actions“原生构建与打包”从标签构建并保留日志、安装包与校验值。
+公开发布使用标签 `v0.4.5` 对应源码；安装包内 `BUILD-INFO.json` 记录确切提交与 Qt 版本。GitHub Actions“原生构建与打包”从标签构建并保留日志、安装包与校验值。
 
 插件自己的代码采用 MIT。Qt 6.10.0 动态库按 LGPL v3 分发，原始许可、依赖清单及来源随包提供；Visual C++ 运行库、阿里巴巴普惠体和 Phosphor 图标分别遵循各自许可。允许按 Qt 的许可替换兼容动态库及调试修改；经 WinShun 管理员授权的副本修改后需重新确认。

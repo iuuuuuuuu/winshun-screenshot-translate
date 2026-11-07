@@ -55,7 +55,7 @@ def main():
     (stage/'native').mkdir()
     shutil.copy2(root/'native/README.md', stage/'native/README.md')
     (stage/'.screenshots').mkdir()
-    for name in ('word-0.4.4.png', 'settings-0.4.4.png', 'toolbar-0.4.4.png', 'ecdict-0.4.4.png'):
+    for name in ('word-0.4.5.png', 'settings-0.4.5.png', 'toolbar-0.4.5.png', 'ecdict-0.4.5.png'):
         shutil.copy2(root/'.screenshots'/name, stage/'.screenshots'/name)
     (runtime/'fonts').mkdir()
     shutil.copy2(root/'native/assets/AlibabaPuHuiTi-3-55-Regular.ttf', runtime/'fonts/AlibabaPuHuiTi-3-55-Regular.ttf')

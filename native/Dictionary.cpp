@@ -36,7 +36,7 @@ QString installedDictionary(const QString& directory)
 }
 DictionarySource dictionarySource()
 {
-    return {"https://github.com/iuuuuuuuu/winshun-screenshot-translate/releases/download/v0.4.4/ecdict-39cfb967-v2.bin",
+    return {"https://github.com/iuuuuuuuu/winshun-screenshot-translate/releases/download/v0.4.5/ecdict-39cfb967-v2.bin",
         "f125d9edf0c096a5df8956d91c89c4ae36ed48405fac6b2fd38004f4a99ca5d9",57823903,770611};
 }
 QString dictionaryPath(const QString& directory){return directory+"/dictionaries/ecdict.bin";}
@@ -77,7 +77,7 @@ void downloadDictionary(const QString& directory,const QString& proxy,Cancel can
         if(response.error)fail(QString("词库下载失败（网络或写入错误 %1），请检查网络或共用代理后重试").arg(response.error));
         if(response.status>=300&&response.status<400){
             if(response.location.isEmpty())fail("词库下载跳转无效");
-            url=address.resolved(QUrl(response.location)).toString();continue;
+            url=address.resolved(QUrl(response.location)).toString(QUrl::FullyEncoded);continue;
         }
         if(response.status!=200)fail(QString("词库下载失败（HTTP %1），请稍后重试").arg(response.status));
         if(received!=source.size||hash.result().toHex()!=source.sha256.toLatin1()||header.size()!=12||
