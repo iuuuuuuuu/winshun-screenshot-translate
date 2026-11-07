@@ -156,7 +156,11 @@ def main():
         (data/"services.json").write_text(json.dumps({"version":2,"profiles":profiles}),encoding="utf-8")
         out = ROOT/".test-output"/("native-gpu" if "--gpu" in sys.argv else "native-software")
         if "--output" in sys.argv:out=Path(sys.argv[sys.argv.index("--output")+1])
-        if "--live" in sys.argv:
+        if "--ocr-image" in sys.argv:
+            source=Path(sys.argv[sys.argv.index("--ocr-image")+1]).resolve()
+            launch(build/"native_tests.exe",["--ocr-image",str(source)],data,out)
+            print((out/"stdout.jsonl").read_text(encoding="utf-8"))
+        elif "--live" in sys.argv:
             (data/"services.json").write_text('{"version":2,"profiles":{}}')
             launch(build/"native_tests.exe",["--live","--proxy","http://127.0.0.1:7890"],data,ROOT/".test-output/native-live")
             print(json.dumps(json.loads((ROOT/".test-output/native-live/stdout.jsonl").read_text(encoding="utf-8")),ensure_ascii=True))
@@ -181,13 +185,13 @@ def main():
             keys=[row["params"]["arguments"]["keys"] for row in messages if row.get("method")=="winshun/tool"
                   and row["params"]["name"]=="register_hotkeys"]
             assert keys==[["Alt+Shift+T","Alt+Shift+C","Alt+Shift+W","Alt+Shift+O"]],keys
-            for flag in ("wordRealEditSelection","wordClipboard","wordPinnedSelection","wordCancellation","wordMouseOcr","wordMousePhraseOcr","wordOutsideDismiss"):
+            for flag in ("wordRealEditSelection","wordClipboard","wordPinnedSelection","wordCancellation","wordMouseOcr","wordMousePhraseOcr","wordMouseSpacingOcr","wordOutsideDismiss"):
                 assert report[flag], report
             for request in (200,201,202):assert responses[request]["items"]==[],responses
             assert responses[203]["items"][0]["title"]=="你好 + 100%",responses[203]
             print(json.dumps({k:report[k] for k in ("passed","qtVersion","pythonLoaded","uiRenderer","hostRenderer",
                 "selectorShowMs","outsideDismissMs","closeWhileBlockedMs","hotkeyProtocol","nativeHotkeyFallback","queryProtocol",
-                "wordClipboard","wordPinnedSelection","wordMouseOcr","wordMousePhraseOcr","wordCloseWhileBlockedMs","closedMemory")},ensure_ascii=True))
+                "wordClipboard","wordPinnedSelection","wordMouseOcr","wordMousePhraseOcr","wordMouseSpacingOcr","wordCloseWhileBlockedMs","closedMemory")},ensure_ascii=True))
     server.shutdown()
 if __name__ == "__main__":
     main()

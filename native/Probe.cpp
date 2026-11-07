@@ -415,6 +415,27 @@ void Probe::run(App& app,const QJsonObject& params)
             app.closeWord();
         }
         report["wordMousePhraseOcr"]=true;
+        QJsonArray spacingAttempts;
+        for(auto expected:{QString("hi,i ma you baby"),QString("hi,i ma you ba by")}){
+            QImage smallText(240,50,QImage::Format_RGB32);smallText.fill(Qt::white);
+            QPainter draw(&smallText);QFont smallFont("Segoe UI");smallFont.setPixelSize(13);
+            draw.setFont(smallFont);draw.setPen(QColor("#1B1B1B"));draw.drawText(16,30,expected);draw.end();
+            app.m_capture=[smallText](const QRect& area){
+                QImage image(area.size(),QImage::Format_RGB32);image.fill(Qt::white);QPainter p(&image);
+                p.drawImage(QPoint(100,100)-area.topLeft(),smallText);return image;
+            };
+            app.m_mouse=[] {return QPoint(120,124);};
+            app.dispatch({},"hotkey",{{"key","Alt+Shift+O"}});
+            check(until([&]{return app.m_word.window->isVisible()&&!app.m_wordBackend.values["loading"].toBool();},10000),"small-text pointer OCR complete");
+            spacingAttempts.append(QJsonObject{{"expected",expected},{"source",app.m_wordSource},{"status",app.m_wordBackend.values["status"].toString()}});
+            report["syntheticSpacingAttempts"]=spacingAttempts;
+            auto name=expected.endsWith("ba by")?"word-ocr-spaces":"word-ocr-baby";
+            smallText.save(out+"/"+name+"-source.png");app.m_word.window->grabWindow().save(out+"/"+name+".png");
+            check(app.m_wordSource==expected,"pointer OCR joins letters and preserves real word spaces");
+            check(app.m_wordBackend.values["translatedText"].toString()=="翻译："+expected,"correct word spacing reaches translation service");
+            app.closeWord();
+        }
+        report["wordMouseSpacingOcr"]=true;
         app.m_readClipboard=[] {return QString();};app.textFlow("clip");
         check(!app.m_wordBackend.values["loading"].toBool()&&!app.m_wordBackend.values["status"].toString().isEmpty(),"empty clipboard has visible error");app.closeWord();
         // Hotkey uniqueness can span desktops in the window station. Use

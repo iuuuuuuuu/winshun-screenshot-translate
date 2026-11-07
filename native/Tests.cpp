@@ -35,6 +35,20 @@ void checkPhrases()
     QList<st::Block> baseline{{"Read",{10,10,42,20},20},{"this",{58,10,36,20},20},
         {".",{96,30,3,3},3},{"Next",{106,10,42,20},20}};
     check(st::phraseAt(baseline,{70,20}).text=="Read this.","small baseline period keeps sentence boundary");
+    // Boxes from Windows OCR on small screen text: the two fragments of
+    // "baby" have a 1.5px letter gap; actual word spaces are 4-5px wide.
+    QList<st::Block> splitWord{{"hi,i",{9,10.5,16.5,11.5},11.5},{"ma",{30.5,13.5,18.5,8},8},
+        {"you",{53,13.5,22.5,11},11},{"ba",{80.5,11,14,10.5},10.5},{"by",{96,11,14.5,13.5},13.5}};
+    for(double scale:{.8,1.,1.25,1.5,2.}){
+        auto scaled=splitWord;
+        for(auto& word:scaled){auto b=word.box;word.box={b.x()*scale,b.y()*scale,b.width()*scale,b.height()*scale};word.glyphHeight*=scale;}
+        for(auto word:scaled)
+            check(st::phraseAt(scaled,word.box.center()).text=="hi,i ma you baby","split Latin word rejoins at every pointer and scale");
+        check(st::groupWords(scaled).front().text=="hi,i ma you baby","pointer and screenshot spacing agree");
+        scaled.back().box.translate(3.5*scale,0);
+        for(auto word:scaled)
+            check(st::phraseAt(scaled,word.box.center()).text=="hi,i ma you ba by","actual spaces between short words survive");
+    }
     QList<st::Block> longLine;
     for(int i=0;i<100;++i)longLine.append({QString("word%1").arg(i),QRectF(i*65,0,60,20),20});
     auto local=st::phraseAt(longLine,{50*65+20,10});
@@ -45,6 +59,21 @@ int main(int argc,char** argv)
 {
     QGuiApplication app(argc,argv);
     try{
+        auto args=app.arguments();
+        if(args.contains("--ocr-image")){
+            QImage image(args.value(args.indexOf("--ocr-image")+1));
+            if(image.isNull())throw std::runtime_error("OCR diagnostic image unavailable");
+            QList<st::Block> words;std::exception_ptr error;
+            std::thread worker([&]{
+                try{words=st::recognize(image,std::make_shared<std::atomic_bool>(false),false);}
+                catch(...){error=std::current_exception();}
+            });worker.join();if(error)std::rethrow_exception(error);
+            QJsonArray found;
+            for(auto word:words)found.append(QJsonObject{{"text",word.text},
+                {"box",QJsonArray{word.box.x(),word.box.y(),word.box.width(),word.box.height()}},
+                {"phrase",st::phraseAt(words,word.box.center()).text}});
+            std::puts(QJsonDocument(QJsonObject{{"words",found}}).toJson(QJsonDocument::Compact).constData());return 0;
+        }
         checkPhrases();
         if(st::detect("你好世界")!="zh"||st::targetFor("Hello","auto")!="zh")throw std::runtime_error("language");
         QTemporaryDir dir;st::Services services(dir.path());
@@ -57,7 +86,6 @@ int main(int argc,char** argv)
         services.save({{"openai",QJsonObject{{"apiKey","native-test-密钥"},{"endpoint","https://example.com"},{"model","test"}}}});
         st::Services reopened(dir.path());
         if(reopened.profile("openai").value("apiKey").toString()!="native-test-密钥")throw std::runtime_error("DPAPI");
-        auto args=app.arguments();
         if(args.contains("--endpoint")){
             auto base=args.value(args.indexOf("--endpoint")+1);
             QStringList routes;

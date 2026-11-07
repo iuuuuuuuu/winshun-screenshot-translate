@@ -171,8 +171,11 @@ Block phraseAt(const QList<Block>& words,QPointF point)
         bool punctuation=QString(",.!?:;，。！？：；、)]}）】》」』”’").contains(text.front());
         bool opening=QString("([{（【《「『“‘").contains(phrase.text.back());
         bool eastAsian=(cjk(phrase.text.back())||QString("，。！？：；、）】》」』”’").contains(phrase.text.back()))&&cjk(text.front());
+        // Windows OCR can split a Latin word into adjacent blocks. Use the
+        // same letter-gap tolerance as screenshot OCR; a block boundary alone
+        // is not a word space (especially with small text and CJK recognizers).
         if(!punctuation&&!opening&&!eastAsian&&
-            word.box.left()-line[i-1].box.right()>std::max(1.,std::min(word.box.height(),line[i-1].box.height())*.08))phrase.text+=' ';
+            word.box.left()-line[i-1].box.right()>std::max(1.,std::min(word.box.height(),line[i-1].box.height())*.16))phrase.text+=' ';
         phrase.text+=text;phrase.box=phrase.box.united(word.box);
     }
     return phrase;
