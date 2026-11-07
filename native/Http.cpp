@@ -70,7 +70,7 @@ HINTERNET session(const QString& proxy)
     static std::mutex mutex;static std::map<QString,HINTERNET> sessions;
     std::lock_guard lock(mutex);
     if(auto found=sessions.find(proxy);found!=sessions.end())return found->second;
-    auto handle=WinHttpOpen(L"WinShun-screenshot-translate/0.4.1",
+    auto handle=WinHttpOpen(L"WinShun-screenshot-translate/0.4.2",
         proxy.isEmpty()?WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY:WINHTTP_ACCESS_TYPE_NO_PROXY,
         WINHTTP_NO_PROXY_NAME,WINHTTP_NO_PROXY_BYPASS,WINHTTP_FLAG_ASYNC);
     if(handle)sessions.emplace(proxy,handle);

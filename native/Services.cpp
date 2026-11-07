@@ -94,7 +94,7 @@ public:
         int remaining = m_budget - int(m_clock.elapsed());
         if (cap > 0) remaining = std::min(remaining, cap);
         if (remaining <= 0) fail("翻译超时");
-        if(!headers.contains("User-Agent"))headers["User-Agent"]="WinShun-screenshot-translate/0.4.1";
+        if(!headers.contains("User-Agent"))headers["User-Agent"]="WinShun-screenshot-translate/0.4.2";
         if(!headers.contains("Accept"))headers["Accept"]="application/json,text/plain,*/*";
         QByteArray bytes;
         if (!body.isUndefined() && !body.isNull()) {

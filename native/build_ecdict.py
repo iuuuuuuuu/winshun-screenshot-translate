@@ -45,7 +45,7 @@ def main():
     temporary.replace(dest)
     info = dict(source=URL, revision=REVISION, sourceSha256=SOURCE_SHA256, license='MIT',
                 entries=len(entries), size=dest.stat().st_size, sha256=hashlib.sha256(dest.read_bytes()).hexdigest())
-    metadata.write_text(json.dumps(info, ensure_ascii=False, indent=2)+'\n', encoding='utf-8')
+    metadata.write_text(json.dumps(info, ensure_ascii=False, indent=2)+'\n', encoding='utf-8', newline='\n')
     print(json.dumps(info))
 
 

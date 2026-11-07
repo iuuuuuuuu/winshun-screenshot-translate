@@ -27,9 +27,10 @@ def main():
     assert manifest['runtime']['program'] == 'ScreenshotTranslate.exe'
     assert manifest['runtime'].get('qt') != 'host', '管理员插件必须自带运行库'
     assert 'elevated' in manifest['permissions']
-    dirty = bool(subprocess.check_output(['git', 'status', '--porcelain'], cwd=root).strip())
+    status = subprocess.check_output(['git', 'status', '--porcelain'], cwd=root, text=True).strip()
+    dirty = bool(status)
     if dirty and not args.allow_dirty:
-        parser.error('发布前请提交源码；本地验证可加 --allow-dirty')
+        parser.error('发布前请提交源码；本地验证可加 --allow-dirty\n' + status)
     commit = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=root, text=True).strip()
     out = (args.out or root/f'dist/release-{version}').resolve()
     out.mkdir(parents=True, exist_ok=True)
@@ -48,7 +49,7 @@ def main():
     (stage/'native').mkdir()
     shutil.copy2(root/'native/README.md', stage/'native/README.md')
     (stage/'.screenshots').mkdir()
-    for name in ('word-0.4.1.png', 'settings-0.4.1.png', 'toolbar-0.4.1.png'):
+    for name in ('word-0.4.2.png', 'settings-0.4.2.png', 'toolbar-0.4.2.png'):
         shutil.copy2(root/'.screenshots'/name, stage/'.screenshots'/name)
     (runtime/'fonts').mkdir()
     shutil.copy2(root/'native/assets/AlibabaPuHuiTi-3-55-Regular.ttf', runtime/'fonts/AlibabaPuHuiTi-3-55-Regular.ttf')
