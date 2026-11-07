@@ -100,18 +100,16 @@ Window {
         Column {
             id: body
             width: scroll.width; spacing: 10
-            Rectangle {
-                width: parent.width; height: Math.max(42, editor.contentHeight + 20)
-                radius: Theme.controlRadius; color: editor.activeFocus ? Theme.inputFocused : Theme.card
-                border.width: 1; border.color: Theme.controlBorder
+            Item {
+                width: parent.width; height: editor.height + 10
                 TextEdit {
                     id: editor; objectName: "word-editor"
-                    x: 10; y: 9; width: parent.width - 20; height: Math.max(22, contentHeight)
+                    width: parent.width; height: Math.max(22, contentHeight)
                     readOnly: false
                     enabled: !!wordWindow.sourceText || !backend.state.loading
                     textFormat: TextEdit.PlainText; wrapMode: TextEdit.Wrap
                     selectByMouse: true; selectByKeyboard: true
-                    font.family: "Segoe UI"; font.pixelSize: 15; color: Theme.text
+                    font.family: "Segoe UI"; font.pixelSize: 17; font.weight: Font.DemiBold; color: Theme.text
                     selectionColor: Theme.textSelection; selectedTextColor: Theme.text
                     onTextChanged: wordWindow.updateDraftState()
                     onInputMethodComposingChanged: wordWindow.updateDraftState()
@@ -138,14 +136,17 @@ Window {
                     }
                 }
                 Text {
-                    x: 10; y: 9; width: parent.width - 20
+                    width: parent.width
                     visible: !editor.text && !editor.activeFocus
                     text: backend.state.chinese ? "原文 · 可直接编辑" : "Source · edit directly"
-                    font.pixelSize: 15; color: Theme.faint
+                    font.family: "Segoe UI"; font.pixelSize: 17; color: Theme.faint
                 }
-                Rectangle { x: 1; y: parent.height - 2; width: parent.width - 2; height: 2; radius: 1; color: Theme.accent; visible: editor.activeFocus }
+                Rectangle {
+                    anchors.bottom: parent.bottom; width: parent.width
+                    height: editor.activeFocus ? 2 : 1
+                    color: editor.activeFocus ? Theme.accent : Theme.controlBorder
+                }
             }
-            Rectangle { width: parent.width; height: 1; color: Theme.divider; visible: !!backend.state.sourceText }
             TextEdit {
                 objectName: "word-meaning"
                 width: parent.width; height: visible ? contentHeight : 0
