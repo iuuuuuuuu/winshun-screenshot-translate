@@ -56,6 +56,8 @@ App::App(ws::captureplugin::Protocol& protocol,QString appDir,QJsonObject initia
     QString dir=qEnvironmentVariable("WS_DATA_DIR",initial.value("dataDir").toString());
     if(dir.isEmpty())dir=qEnvironmentVariable("LOCALAPPDATA")+"/WinShun/plugins/iuuuuuuuu.screenshot-translate.data";
     m_services=std::make_shared<Services>(dir);
+    m_services->migrateAi(m_settings);
+    m_settings["provider"]=canonicalProvider(m_settings.value("provider").toString());
     m_pinBackend.update({{"comparison",false},{"fullText",false},{"ready",false},{"loading",false},{"status",""},
         {"translatedText",""},{"sourceText",""},{"source","auto"},{"target","zh"},
         {"codes",QStringList{"auto","zh","en","ja","ko","fr","de","es","ru"}}});
@@ -81,6 +83,7 @@ void App::defaults(const QJsonObject& settings)
         {"comparisonOrder","translation-first"},{"closeOnOutsideClick",true},{"shotMode","multi"},{"shotHotkey","Alt+Shift+T"},{"clipHotkey","Alt+Shift+C"},{"selectionHotkey","Alt+Shift+W"},
         {"wordOcrHotkey","Alt+Shift+O"}};
     for(auto it=settings.begin();it!=settings.end();++it)m_settings[it.key()]=it.value();
+    if(m_services){m_services->migrateAi(m_settings);m_settings["provider"]=canonicalProvider(m_settings.value("provider").toString());}
 }
 void App::appearance(const QJsonObject& params)
 {
@@ -89,7 +92,8 @@ void App::appearance(const QJsonObject& params)
     QStringList labels=m_chinese?QStringList{"自动","中文","英文","日文","韩文","法文","德文","西班牙文","俄文"}:
         QStringList{"Automatic","Chinese","English","Japanese","Korean","French","German","Spanish","Russian"};
     m_pinBackend.update({{"chinese",m_chinese},{"dark",m_dark},{"sourceLabels",labels}});
-    auto serviceNames=names;if(m_chinese){serviceNames[4]="微软";serviceNames[8]="豆包";serviceNames[9]="混元";}
+    auto serviceNames=names;if(m_chinese)serviceNames[providers.indexOf("microsoft")]="微软";
+    else{serviceNames[4]="Sogou";serviceNames[5]="Youdao";serviceNames[9]="AI translation";}
     m_configBackend.update({{"chinese",m_chinese},{"dark",m_dark},{"names",serviceNames}});
     m_wordBackend.update({{"chinese",m_chinese},{"dark",m_dark}});
     if(m_pin)render();
@@ -654,7 +658,8 @@ void App::configSelect(const QString& p)
     if(!m_drafts.contains(p))m_drafts[p]=m_services->profile(p);
     auto draft=m_drafts.value(p).toObject();QVariantMap state=draft.toVariantMap();
     state["current"]=providers.indexOf(p);state["endpointHint"]=endpoints[providers.indexOf(p)];
-    state["modelHint"]=p=="deepseek"?"deepseek-flash":p=="hunyuan"?"hunyuan-turbos-latest":p=="doubao"?"模型 / 接入点 ID":"gpt-4o-mini";
+    state["modelHint"]="填写服务商提供的模型名 / 接入点 ID";
+    if(p=="youdao"&&!draft.value("appId").toString().isEmpty())state["endpointHint"]="https://openapi.youdao.com/api";
     state["today"]=QString("%1 / 5,000").arg(m_services->today());state["showTestResults"]=false;state["message"]=m_tests[p].value("detail","");
     m_configBackend.update(state);
 }
@@ -662,8 +667,9 @@ void App::configAction(const QString& name,const QVariant& value)
 {
     try{
         if(name=="select")configSelect(providers.value(value.toInt()));
-        else if(QStringList{"apiKey","endpoint","model","region"}.contains(name)){
+        else if(QStringList{"apiKey","endpoint","model","region","appId"}.contains(name)){
             auto draft=m_drafts.value(m_configProvider).toObject();draft[name]=QJsonValue::fromVariant(value);m_drafts[m_configProvider]=draft;
+            if(name=="appId")m_configBackend.update({{"endpointHint",value.toString().trimmed().isEmpty()?"https://dict.youdao.com/jsonapi":"https://openapi.youdao.com/api"}});
         }else if(name=="save"){m_services->save(m_drafts);configAction("close",{});}
         else if(name=="test"||name=="testAll")testServices(name=="testAll");
         else if(name=="showTests")m_configBackend.update({{"showTestResults",true}});
@@ -687,13 +693,13 @@ void App::pumpTests()
 {
     while(m_testRunning<3&&!m_testQueue.isEmpty()){
         auto p=m_testQueue.takeFirst();auto draft=m_drafts.value(p).toObject();
-        if((providers.indexOf(p)>=4&&draft.value("apiKey").toString().trimmed().isEmpty())||
-            (p=="doubao"&&draft.value("model").toString().trimmed().isEmpty())){
-            m_tests[p]={{"status","skipped"},{"detail","未配置密钥 / 模型，已跳过"}};continue;
+        auto problem=configurationError(draft);
+        if(!problem.isEmpty()){
+            m_tests[p]={{"status","skipped"},{"detail",problem+"，已跳过"}};continue;
         }
         ++m_testRunning;m_tests[p]={{"status","running"},{"detail","测试中…"}};
         auto services=m_services;auto settings=m_settings;auto cancel=token();m_testCancels.push_back(cancel);auto epoch=m_configEpoch;
-        background([services,settings,draft,cancel]{return services->translate(settings,{"Hello world"},"en","zh",cancel,draft);},
+        background([services,settings,draft,cancel]{return services->translate(settings,{"hello"},"en","zh",cancel,draft);},
             [this,p,cancel,epoch](Translation data,QString error){
                 if(epoch!=m_configEpoch||cancel->load())return;--m_testRunning;
                 m_tests[p]={{"status",error.isEmpty()?"success":"failed"},{"detail",error.isEmpty()?"连接成功："+data.segments.join('\n'):error}};pumpTests();

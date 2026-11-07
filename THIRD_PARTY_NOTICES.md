@@ -1,5 +1,12 @@
 # Shared UI licenses
 
+## ECDICT 离线词库
+
+来源：skywind3000/ECDICT，固定提交 `39cfb9672c0906b63569e0453c2e6abfb9ab182a`，采用 MIT 许可。
+原始数据为该提交的 `ecdict.csv`；`native/build_ecdict.py` 校验 SHA-256 后生成按词排序的本地索引。
+数据来源、原文件及索引的校验值和词条数量记录在 `data/ecdict.json`；完整许可随包保存在 `licenses/ECDICT-LICENSE.txt`。
+索引保留词库释义，未添加在线查询依赖；不含用户文本。
+
 ## 0.4.0 原生包的运行库与字体
 
 插件代码采用 MIT。包内 `runtime/` 中的 Qt 6.10.0 动态库采用 LGPL v3；Qt 的著作权属于

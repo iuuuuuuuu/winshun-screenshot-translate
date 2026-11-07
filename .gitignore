@@ -17,3 +17,5 @@ __pycache__/
 .host/build-repair/
 .host/downloads/
 *.7z
+
+data/ecdict.bin

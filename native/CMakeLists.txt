@@ -11,7 +11,7 @@ add_compile_options(/utf-8 /EHsc)
 add_executable(ScreenshotTranslate Launcher.cpp)
 set_target_properties(ScreenshotTranslate PROPERTIES AUTOMOC OFF MSVC_RUNTIME_LIBRARY MultiThreaded)
 qt_add_library(ScreenshotTranslateApp SHARED
-    Main.cpp App.cpp App.h Services.cpp Services.h Http.cpp Http.h Desktop.cpp Desktop.h Probe.cpp Probe.h
+    Main.cpp App.cpp App.h Services.cpp Services.h Dictionary.cpp Dictionary.h Http.cpp Http.h Desktop.cpp Desktop.h Probe.cpp Probe.h
     vendor/protocol/Protocol.cpp vendor/protocol/Protocol.h
     vendor/capture/PinWindow.cpp vendor/capture/PinTools.cpp vendor/capture/Geometry.cpp
     vendor/capture/SmartRedact.cpp
@@ -50,8 +50,12 @@ qt_add_resources(ScreenshotTranslateApp "fonts" PREFIX "/fonts" BASE "${CMAKE_CU
     FILES ../assets/Phosphor.ttf)
 option(BUILD_NATIVE_TESTS "Build native integration test driver" ON)
 if(BUILD_NATIVE_TESTS)
-    qt_add_executable(native_tests Tests.cpp Services.cpp Http.cpp Desktop.cpp
+    qt_add_executable(native_tests Tests.cpp Services.cpp Dictionary.cpp Http.cpp Desktop.cpp
         vendor/capture/PinWindow.cpp vendor/capture/PinTools.cpp vendor/capture/Geometry.cpp vendor/capture/SmartRedact.cpp)
     target_include_directories(native_tests PRIVATE vendor/capture)
     target_link_libraries(native_tests PRIVATE Qt6::Gui Qt6::Network windowsapp ole32 oleaut32 user32 gdi32 imm32 crypt32 winhttp)
+endif()
+
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../data/ecdict.bin")
+    file(COPY "${CMAKE_CURRENT_SOURCE_DIR}/../data" DESTINATION "${CMAKE_CURRENT_BINARY_DIR}")
 endif()

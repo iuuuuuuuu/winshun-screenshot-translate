@@ -84,7 +84,7 @@ Window {
                     id: rows
                     width: parent.width
                     ServiceRow {
-                        visible: window.provider === "mymemory" || window.provider === "google" || window.provider === "edge"
+                        visible: ["mymemory", "google", "edge", "sogou", "ecdict"].indexOf(window.provider) >= 0
                         title: window.t("API 密钥", "API key")
                         Text { text: window.t("无需密钥", "Not required"); color: Theme.subtext; font.pixelSize: 14 }
                     }
@@ -95,8 +95,8 @@ Window {
                         Text { text: backend.state.today; color: Theme.text; font.pixelSize: 14 }
                     }
                     ServiceRow {
-                        visible: ["mymemory", "google", "edge"].indexOf(window.provider) < 0
-                        title: window.provider === "zvo" ? window.t("API 密钥（可选）", "API key (optional)") : window.t("API 密钥", "API key")
+                        visible: ["mymemory", "google", "edge", "sogou", "ecdict"].indexOf(window.provider) < 0
+                        title: ["zvo", "youdao"].indexOf(window.provider) >= 0 ? window.t("API 密钥（可选）", "API key (optional)") : window.t("API 密钥", "API key")
                         description: window.t("由 Windows 为当前用户加密保存", "Encrypted for the current Windows user")
                         InputBox {
                             id: key
@@ -104,7 +104,7 @@ Window {
                             width: Math.max(180, scroll.width * .48 - 42)
                             text: backend.state.apiKey
                             echoMode: reveal.checked ? TextInput.Normal : TextInput.Password
-                            placeholder: window.provider === "zvo" ? window.t("可留空", "Optional") : window.t("输入 API 密钥", "Enter API key")
+                            placeholder: ["zvo", "youdao"].indexOf(window.provider) >= 0 ? window.t("可留空", "Optional") : window.t("输入 API 密钥", "Enter API key")
                             onEditingFinished: backend.action("apiKey", text)
                             onTextChanged: if (inputFocused) backend.action("apiKey", text)
                         }
@@ -114,9 +114,9 @@ Window {
                         }
                     }
                     ServiceRow {
-                        visible: window.provider !== "mymemory"
+                        visible: window.provider !== "mymemory" && window.provider !== "ecdict"
                         title: window.t("服务地址", "Endpoint")
-                        description: window.provider === "zvo" ? "translate.js / Zvo" : window.t("留空使用默认地址", "Empty uses the default endpoint")
+                        description: window.provider === "ai" ? window.t("兼容 OpenAI 的地址，支持完整 /chat/completions URL", "OpenAI-compatible base or full /chat/completions URL") : window.provider === "zvo" ? "translate.js / Zvo" : window.t("留空使用默认地址", "Empty uses the default endpoint")
                         InputBox {
                             objectName: "endpoint"
                             width: Math.max(220, scroll.width * .48)
@@ -126,9 +126,9 @@ Window {
                         }
                     }
                     ServiceRow {
-                        visible: ["openai", "deepseek", "doubao", "hunyuan"].indexOf(window.provider) >= 0
+                        visible: ["ai", "openai", "deepseek", "doubao", "hunyuan"].indexOf(window.provider) >= 0
                         title: window.provider === "doubao" ? window.t("模型 / 接入点 ID", "Model / Endpoint ID") : window.t("模型", "Model")
-                        description: window.provider === "doubao" ? window.t("填写已开通的模型或接入点", "Enter your model or inference endpoint") : window.t("留空使用默认模型", "Empty uses the default model")
+                        description: window.provider === "ai" || window.provider === "doubao" ? window.t("填写已开通的模型或接入点", "Enter your model or inference endpoint") : window.t("留空使用默认模型", "Empty uses the default model")
                         InputBox {
                             objectName: "model"
                             width: Math.max(220, scroll.width * .48)
@@ -148,6 +148,28 @@ Window {
                             onTextChanged: if (inputFocused) backend.action("region", text)
                             onEditingFinished: backend.action("region", text)
                         }
+                    }
+                    ServiceRow {
+                        visible: window.provider === "youdao"
+                        title: window.t("应用 ID（可选）", "App ID (optional)")
+                        description: window.t("留空免费英汉查词；配合密钥启用官方整句翻译", "Free English-Chinese lookup; add App ID and key for official translation")
+                        InputBox {
+                            objectName: "appId"
+                            width: Math.max(220, scroll.width * .48)
+                            text: backend.state.appId || ""; placeholder: "App ID"
+                            onTextChanged: if (inputFocused) backend.action("appId", text)
+                            onEditingFinished: backend.action("appId", text)
+                        }
+                    }
+                    ServiceRow {
+                        visible: window.provider === "ecdict"
+                        title: window.t("离线英汉词典", "Offline English-Chinese dictionary")
+                        description: window.t("内置 77 万词条。支持单词及收录短语；长句 / 未收录词可自动切换其他渠道。", "770,000 entries. Words and known phrases; automatic fallback for sentences or unknown words.")
+                    }
+                    ServiceRow {
+                        visible: window.provider === "sogou"
+                        title: window.t("搜狗翻译 / 词典", "Sogou translation / dictionary")
+                        description: window.t("使用公开网页结果；遇到限流或验证时自动切换其他渠道。", "Uses public web results; automatic fallback when verification or rate limits occur.")
                     }
                     ServiceRow {
                         visible: window.provider === "edge"

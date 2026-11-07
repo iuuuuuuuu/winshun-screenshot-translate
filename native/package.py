@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 import uuid
 import zipfile
@@ -20,6 +21,7 @@ def main():
     parser.add_argument('--out', type=Path)
     parser.add_argument('--allow-dirty', action='store_true', help='仅本地验证允许未提交源码')
     args = parser.parse_args()
+    subprocess.run([sys.executable, '-B', str(root/'native/build_ecdict.py')], check=True)
     manifest = json.loads((root/'plugin.json').read_text(encoding='utf-8'))
     version, plugin_id = manifest['version'], manifest['id']
     assert manifest['runtime']['program'] == 'ScreenshotTranslate.exe'
@@ -42,6 +44,7 @@ def main():
     for name in ('plugin.json', 'README.md', 'CHANGELOG.md', 'LICENSE', 'THIRD_PARTY_NOTICES.md'):
         shutil.copy2(root/name, stage/name)
     shutil.copytree(root/'native/licenses', stage/'licenses')
+    shutil.copytree(root/'data', stage/'data')
     (stage/'native').mkdir()
     shutil.copy2(root/'native/README.md', stage/'native/README.md')
     (stage/'.screenshots').mkdir()

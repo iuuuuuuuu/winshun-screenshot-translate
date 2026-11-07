@@ -84,13 +84,18 @@ WinShun 会创建受保护的插件副本并重新启动插件，名称旁出现
 
 ## 服务和数据
 
-保留 MyMemory、Google、Edge/Bing、translate.js、Microsoft、DeepL、OpenAI、DeepSeek、
-Doubao、Hunyuan。Google 保留浏览器请求头及多客户端重试；Edge 缓存七分钟凭据，取票
+渠道包括 MyMemory、Google、Edge/Bing、translate.js、搜狗、有道、ECDICT、Microsoft、DeepL、
+AI 翻译。OpenAI、DeepSeek、豆包、混元等兼容服务统一填写 URL、API 密钥和模型名；旧配置自动迁移。
+Google 保留浏览器请求头及多客户端重试；Edge 缓存七分钟凭据，取票
 失败后尝试 Bing。MyMemory 和 Google 的文字块最多并行四个；全部渠道测试最多并行三个，
 未配置密钥的付费渠道跳过，测试不自动降级或改变主渠道。
 
+搜狗使用公开网页的服务端结果，有道支持免费英汉查词与官方 v3 签名翻译。ECDICT 内置 770,611 个词条，
+按文件索引查找，无网络或 Python 依赖；未收录词和长句可降级，但不标记词典服务故障。
+
 自动降级默认开启。失败时间和配置指纹沿用 `service-health.json`，默认十分钟、
 可配置 1–1440 分钟；恢复间隔到后在下一次翻译重试，修改地址、代理或密钥立即重试。
+修改 AI 模型、有道应用 ID 或 Azure 区域也会立即重试。
 网络请求有总时限并每 25ms 检查取消；关闭窗口立即取消任务，不等待 HTTP 超时。
 使用官方翻译插件同类的 Windows WinHTTP 异步请求和系统 HTTPS，宿主不需要 Qt TLS 插件。
 划词在显示弹窗前记录原窗口，标准 Edit / RichEdit 控件读取公开选区消息；其他应用用
@@ -106,6 +111,10 @@ DPAPI 加密。日志不记录截图、OCR 文字、凭据或服务响应正文�
 长译文在原区域可能放不下；完整译文窗保留全部文字。复杂背景和不完整的 OCR 框可能留有残影。
 
 ## 构建和验证
+
+开发构建需要 Python 3。`build.ps1` 自动下载固定提交的 ECDICT 数据、校验 SHA-256 并生成 `data/ecdict.bin`。
+已有词库通过校验后复用，不会重复下载；`package.py` 会将索引、来源校验记录和 MIT 许可一起打包。
+用户安装后不需要 Python，也无需首次下载词库。完整 UI 测试应串行运行，避免测试热键互相冲突。
 
 ```powershell
 .\native\build.ps1 -QtRoot <Qt6.10.0-msvc2022_64> -VsRoot <VisualStudio> -Output <构建目录>

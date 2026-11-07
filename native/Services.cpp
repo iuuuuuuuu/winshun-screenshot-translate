@@ -1,5 +1,6 @@
 #include "Services.h"
 #include "Http.h"
+#include "Dictionary.h"
 #include <windows.h>
 #include <wincrypt.h>
 #include <winhttp.h>
@@ -18,6 +19,8 @@
 #include <QTextDocument>
 #include <QTextDocumentFragment>
 #include <QUrlQuery>
+#include <QUuid>
+#include <QStringDecoder>
 #include <algorithm>
 #include <stdexcept>
 #include <thread>
@@ -27,6 +30,7 @@
 namespace st {
 namespace {
 [[noreturn]] void fail(const QString& message) { throw std::runtime_error(message.toUtf8().constData()); }
+class Unsupported : public std::runtime_error { public: explicit Unsupported(const QString& text):std::runtime_error(text.toUtf8().constData()){} };
 QJsonObject readJson(const QString& file, bool strict = false)
 {
     QFile f(file);
@@ -46,9 +50,9 @@ QString endpoint(const QJsonObject& p)
 QString code(QString language, const QString& chinese) { return language == "zh" ? chinese : language; }
 QString fingerprint(const QJsonObject& p)
 {
-    // Match Python json.dumps([provider, endpoint, proxy, apiKey]) exactly.
+    // Configuration changes immediately retry a channel, including model and region.
     QStringList quoted;
-    for (auto k : {"provider","endpoint","proxy","apiKey"}) {
+    for (auto k : {"provider","endpoint","proxy","apiKey","model","region","appId"}) {
         auto raw = QJsonDocument(QJsonArray{p.value(k).toString()}).toJson(QJsonDocument::Compact);
         QString value = QString::fromUtf8(raw.mid(1,raw.size()-2)), ascii;
         for (QChar c : value) ascii += c.unicode() > 127 ? QString("\\u%1").arg(uint(c.unicode()),4,16,QChar('0')) : QString(c);
@@ -158,6 +162,37 @@ QString unescape(QString text)
         text.replace(it->capturedStart(),it->capturedLength(),QTextDocumentFragment::fromHtml(it->captured()).toPlainText());
     return text;
 }
+QJsonObject sogouPage(const QByteArray& bytes)
+{
+    QStringDecoder decoder(QStringDecoder::Utf8);QString text=decoder(bytes);
+    if(decoder.hasError()){
+        int size=MultiByteToWideChar(54936,MB_ERR_INVALID_CHARS,bytes.constData(),int(bytes.size()),nullptr,0);
+        if(size<=0)fail("搜狗页面编码不正确");
+        std::wstring wide(size,L'\0');MultiByteToWideChar(54936,MB_ERR_INVALID_CHARS,bytes.constData(),int(bytes.size()),wide.data(),size);
+        text=QString::fromStdWString(wide);
+    }
+    auto at=text.indexOf("window.__INITIAL_STATE__=");
+    if(at<0)fail("搜狗暂未返回结果，可能需要在网页验证后重试");
+    auto start=text.indexOf('{',at);int depth=0;bool quoted=false,escaped=false;
+    for(auto i=start;i>=0&&i<text.size();++i){
+        auto ch=text[i];
+        if(quoted){if(escaped)escaped=false;else if(ch=='\\')escaped=true;else if(ch=='\"')quoted=false;continue;}
+        if(ch=='\"')quoted=true;else if(ch=='{')++depth;else if(ch=='}'&&!--depth){
+            auto state=QJsonDocument::fromJson(text.mid(start,i-start+1).toUtf8()).object();
+            auto result=state.value("textTranslate").toObject().value("translateData").toObject();
+            if(result.isEmpty())fail("搜狗没有返回翻译结果");return result;
+        }
+    }fail("搜狗页面格式已变化");
+}
+}
+QString canonicalProvider(const QString& value){return legacyAi.contains(value)?"ai":providers.contains(value)?value:"mymemory";}
+QString configurationError(const QJsonObject& p)
+{
+    const auto id=field(p,"provider");
+    if((id=="microsoft"||id=="deepl"||id=="ai")&&field(p,"apiKey").isEmpty())return "未配置 API 密钥";
+    if(id=="ai"&&field(p,"model").isEmpty())return "请填写模型名";
+    if(id=="youdao"&&(field(p,"appId").isEmpty()!=field(p,"apiKey").isEmpty()))return "有道官方翻译需要同时填写应用 ID 和密钥";
+    return {};
 }
 bool validUrl(const QString& value)
 {
@@ -209,20 +244,36 @@ QJsonObject Services::profile(const QString& p)
     QMutexLocker lock(&m_lock);auto stored=m_stored.value(p).toObject();
     auto secret=stored.value("secret").toString();
     QJsonObject result{{"provider",p},{"apiKey",secret.isEmpty()?QString():QString::fromUtf8(crypt(QByteArray::fromBase64(secret.toLatin1()),true))}};
-    for(auto k:{"endpoint","model","region"})result[k]=stored.value(k).toString();
+    for(auto k:{"endpoint","model","region","appId"})result[k]=stored.value(k).toString();
     return result;
+}
+void Services::migrateAi(const QJsonObject& settings)
+{
+    QMutexLocker lock(&m_lock);if(m_stored.contains("ai"))return;
+    auto preferred=settings.value("provider").toString();if(preferred=="ai")preferred=settings.value("aiProvider").toString();
+    QStringList order=legacyAi;if(legacyAi.contains(preferred)){order.removeAll(preferred);order.prepend(preferred);}
+    for(auto old:order){
+        auto p=m_stored.value(old).toObject();if(p.isEmpty())continue;
+        if(p.value("secret").toString().isEmpty()&&p.value("endpoint").toString().isEmpty()&&p.value("model").toString().isEmpty())continue;
+        QStringList urls{"https://api.openai.com/v1","https://api.deepseek.com","https://ark.cn-beijing.volces.com/api/v3","https://api.hunyuan.cloud.tencent.com/v1"};
+        QStringList models{"gpt-4o-mini","deepseek-flash","","hunyuan-turbos-latest"};
+        if(p.value("endpoint").toString().isEmpty())p["endpoint"]=urls[legacyAi.indexOf(old)];
+        if(p.value("model").toString().isEmpty())p["model"]=models[legacyAi.indexOf(old)];
+        p["migratedFrom"]=old;auto next=m_stored;next["ai"]=p;
+        atomicJson(m_directory+"/services.json",{{"version",3},{"profiles",next}});m_stored=next;return;
+    }
 }
 void Services::save(const QJsonObject& drafts)
 {
     QMutexLocker lock(&m_lock);auto values=m_stored;
     for(auto it=drafts.begin();it!=drafts.end();++it){
-        if(!providers.contains(it.key()))fail("未知渠道");
+        if(!providers.contains(it.key())&&!legacyAi.contains(it.key()))fail("未知渠道");
         auto p=it.value().toObject();QString ep=field(p,"endpoint"),key=field(p,"apiKey");
         if(!ep.isEmpty()&&!validUrl(ep))fail("服务地址无效");
-        values[it.key()]=QJsonObject{{"endpoint",ep},{"model",field(p,"model")},{"region",field(p,"region")},
+        values[it.key()]=QJsonObject{{"endpoint",ep},{"model",field(p,"model")},{"region",field(p,"region")},{"appId",field(p,"appId")},
             {"secret",key.isEmpty()?QString():QString::fromLatin1(crypt(key.toUtf8()).toBase64())}};
     }
-    atomicJson(m_directory+"/services.json",{{"version",2},{"profiles",values}});m_stored=values;
+    atomicJson(m_directory+"/services.json",{{"version",3},{"profiles",values}});m_stored=values;
 }
 int Services::today()
 {
@@ -244,17 +295,16 @@ QJsonObject Translation::json(const QStringList& parts) const
 Translation Services::translate(const QJsonObject& settings,const QStringList& parts,const QString& source,
     const QString& target,Cancel cancel,QJsonObject draft)
 {
-    QString preferred=settings.value("provider").toString("mymemory");
-    if(preferred=="ai")preferred=settings.value("aiProvider").toString("openai");
-    if(!providers.contains(preferred))preferred="mymemory";
+    QString preferred=canonicalProvider(settings.value("provider").toString("mymemory"));
+    if(preferred=="ai")migrateAi(settings);
     bool fallback=draft.isEmpty()&&settings.value("fallbackEnabled").toBool(true);
     QList<QJsonObject> candidates;
     auto first=draft.isEmpty()?profile(preferred):draft;
     if(!draft.isEmpty())preferred=field(draft,"provider");
     candidates<<first;
-    if(fallback)for(const auto& p:QStringList{"zvo","mymemory","google","edge","microsoft","deepl","openai","deepseek","doubao","hunyuan"}){
+    if(fallback)for(const auto& p:QStringList{"ecdict","zvo","sogou","youdao","mymemory","google","edge","microsoft","deepl","ai"}){
         if(p==preferred)continue;auto config=profile(p);
-        if(providers.indexOf(p)<4||!field(config,"apiKey").isEmpty())candidates<<config;
+        if(configurationError(config).isEmpty())candidates<<config;
     }
     double recovery=std::clamp(settings.value("fallbackRecoveryMinutes").toDouble(10),1.0,1440.0)*60;
     QElapsedTimer total;total.start();QString last;int attempted=0;
@@ -275,6 +325,10 @@ Translation Services::translate(const QJsonObject& settings,const QStringList& p
             QMutexLocker lock(&m_lock);m_health.remove(id);
             try{atomicJson(m_directory+"/service-health.json",{{"version",1},{"services",m_health}});}catch(...){}
             return result;
+        }catch(const Unsupported& e){
+            // A missing dictionary entry is not an outage. Never quarantine the
+            // dictionary or prevent the next supported word from being looked up.
+            if(cancel->load())fail("cancelled");last=QString::fromUtf8(e.what());if(!fallback)throw;
         }catch(const std::exception& e){
             if(cancel->load())fail("cancelled");
             last=QString::fromUtf8(e.what());if(!fallback)throw;
@@ -291,12 +345,62 @@ Translation Services::route(const QJsonObject& p,const QStringList& parts,const 
 {
     QString provider=field(p,"provider"),key=field(p,"apiKey"),url=endpoint(p);
     if(!providers.contains(provider))fail("未知翻译渠道");
-    if(providers.indexOf(provider)>=4&&key.isEmpty())fail("未配置 API 密钥");
-    if(provider=="doubao"&&field(p,"model").isEmpty())fail("豆包需要模型 / 接入点 ID");
-    Http http(field(p,"proxy"),cancel,budget);
+    auto problem=configurationError(p);if(!problem.isEmpty())fail(problem);
     Translation result;result.source=source=="auto"?detect(parts.join('\n')):source;result.target=target;
     QString destination=code(target,"zh-CN"),origin=code(source,"zh-CN");
-    if(provider=="mymemory"||provider=="google"){
+    if(provider=="ecdict"){
+        if(target!="zh"||(source!="en"&&source!="auto"))throw Unsupported("ECDICT 支持英文单词和词库内短语的中文释义；可开启自动降级翻译句子");
+        for(auto part:parts){
+            if(cancel->load())fail("cancelled");
+            if(!dictionaryText(part))throw Unsupported("ECDICT 不支持这段长句；可开启自动降级");
+            auto text=dictionaryEntry(part);if(text.isEmpty())throw Unsupported("ECDICT 未收录该词；可开启自动降级");
+            result.segments<<text;
+        }
+        return result;
+    }
+    Http http(field(p,"proxy"),cancel,budget);
+    if(provider=="sogou"){
+        for(auto part:parts){
+            auto headers=browser();headers["Referer"]="https://fanyi.sogou.com/";
+            auto data=sogouPage(http.request(query(url,{{"keyword",part},{"transfrom",code(source,"zh-CHS")},{"transto",code(target,"zh-CHS")}}),{},headers));
+            auto trans=data.value("translate").toObject();
+            if(trans.value("errorCode").toString("0")!="0")fail("搜狗暂不可用或需要网页验证");
+            QString text=trans.value("dit").toString();
+            if(target=="zh"&&dictionaryText(part)){
+                QStringList meanings;
+                for(auto row:data.value("wordCard").toObject().value("usualDict").toArray()){
+                    auto entry=row.toObject();QStringList values;for(auto v:entry.value("values").toArray())if(v.isString())values<<v.toString();
+                    if(!values.isEmpty())meanings<<(entry.value("pos").toString()+" "+values.join("；")).trimmed();
+                }if(!meanings.isEmpty())text=meanings.join('\n');
+            }result.segments<<unescape(text);
+        }
+    }else if(provider=="youdao"){
+        const bool official=!field(p,"appId").isEmpty();
+        if(official&&field(p,"endpoint").isEmpty())url="https://openapi.youdao.com/api";
+        for(auto part:parts){
+            if(official){
+                auto chars=part.toUcs4();QString input=part;
+                if(chars.size()>20)input=QString::fromUcs4(chars.constData(),10)+QString::number(chars.size())+QString::fromUcs4(chars.constData()+chars.size()-10,10);
+                auto salt=QUuid::createUuid().toString(QUuid::WithoutBraces),time=QString::number(QDateTime::currentSecsSinceEpoch()),appId=field(p,"appId");
+                auto sign=QString::fromLatin1(QCryptographicHash::hash((appId+input+salt+time+key).toUtf8(),QCryptographicHash::Sha256).toHex());
+                auto data=http.json(url,QJsonObject{{"q",part},{"from",code(source,"zh-CHS")},{"to",code(target,"zh-CHS")},
+                    {"appKey",appId},{"salt",salt},{"curtime",time},{"signType","v3"},{"sign",sign},{"strict","true"}},{},true).toObject();
+                if(data.value("errorCode").toString()!="0")fail("有道官方接口错误："+data.value("errorCode").toString());
+                result.segments<<strings(data.value("translation")).join('\n');
+            }else{
+                if(target!="zh"||(source!="en"&&source!="auto")||!dictionaryText(part))throw Unsupported("有道免密钥查词支持英译中；整句 / 其他语言请配置官方应用 ID 和密钥，或开启自动降级");
+                auto headers=browser();headers["Referer"]="https://dict.youdao.com/";
+                auto data=http.json(query(url,{{"q",part},{"le","en"},{"client","web"},{"keyfrom","webdict"},
+                    {"dicts","{\"count\":99,\"dicts\":[[\"ec\"]]}"}}),{},headers).toObject();
+                QStringList meanings;
+                for(auto word:data.value("ec").toObject().value("word").toArray())for(auto row:word.toObject().value("trs").toArray())
+                    for(auto tr:row.toObject().value("tr").toArray())for(auto item:tr.toObject().value("l").toObject().value("i").toArray())
+                        if(item.isString()&&!item.toString().trimmed().isEmpty())meanings<<unescape(item.toString());
+                if(meanings.isEmpty())throw Unsupported("有道词典未收录该词；可配置官方翻译或开启自动降级");
+                result.segments<<meanings.join('\n');
+            }
+        }
+    }else if(provider=="mymemory"||provider=="google"){
         QElapsedTimer batchClock;batchClock.start();
         auto one=[&](const QString& part)->QString{
             Http http(field(p,"proxy"),cancel,std::max(1,budget-int(batchClock.elapsed())));
@@ -410,9 +514,9 @@ Translation Services::route(const QJsonObject& p,const QStringList& parts,const 
             if(source=="auto"&&!rows.isEmpty())result.source=rows[0].toObject().value("detected_source_language").toString(result.source).toLower();
         }
     }else{
-        if(!url.endsWith("/chat/completions"))url=url.remove(QRegularExpression("/+$"))+"/chat/completions";
+        url.remove(QRegularExpression("/+$"));
+        if(!url.endsWith("/chat/completions"))url+="/chat/completions";
         QString model=field(p,"model");
-        if(model.isEmpty())model=provider=="deepseek"?"deepseek-flash":provider=="hunyuan"?"hunyuan-turbos-latest":"gpt-4o-mini";
         QString prompt=QString("Translate from %1 into %2. Input is a JSON array of independent screen text blocks. "
             "Return a JSON array of translated strings with exactly the same length and order. Preserve internal line breaks and identifiers. No markdown or explanations.").arg(source,target);
         QJsonObject body{{"model",model},{"temperature",0},{"messages",QJsonArray{

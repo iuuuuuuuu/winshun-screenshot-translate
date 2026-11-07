@@ -211,7 +211,7 @@ void Probe::run(App& app,const QJsonObject& params)
         app.openPin(word,{400,300,40,20});
         app.m_pinBackend.update({{"loadingStage","translate"}});
         app.status("正在翻译…");pump(40);
-        check(app.m_bar.window->property("compact").toBool()&&app.m_bar.window->width()<=210,"word-sized capture uses compact toolbar");
+        check(app.m_bar.window->width()<=460&&app.m_bar.window->height()==32,"word-sized capture keeps full compact toolbar");
         report["compactToolbarSize"]=QJsonArray{app.m_bar.window->width(),app.m_bar.window->height()};
         app.m_bar.window->grabWindow().save(out+"/toolbar-compact.png");
         check(app.m_status.window->size()==QSize(24,24),"tiny capture has 24px loading indicator");
@@ -269,7 +269,7 @@ void Probe::run(App& app,const QJsonObject& params)
         report["dpiPixelStable"]=true;
         app.m_translated.save(out+"/translation.png");
         app.m_bar.window->grabWindow().save(out+"/toolbar.png");
-        check(!app.m_bar.window->property("compact").toBool()&&app.m_bar.window->width()<=340,"large capture toolbar remains compact");
+        check(app.m_bar.window->width()<=460&&app.m_bar.window->height()==32,"large capture keeps full compact toolbar");
         report["toolbarSize"]=QJsonArray{app.m_bar.window->width(),app.m_bar.window->height()};
         app.m_pin->image().save(out+"/pin.png");
         app.pinAction("compare",{});check(app.m_pin->pictureRect().height()==fixture.height()*2+60,"vertical comparison");
@@ -286,37 +286,42 @@ void Probe::run(App& app,const QJsonObject& params)
         // immediate open above verifies the action; restore only the preview.
         if(!menu->isVisible()){menu->setProperty("receivedFocus",false);menu->show();pump(15);}
         menu->grabWindow().save(out+"/languages.png");menu->hide();
-        auto moreMenu=app.m_bar.window->findChild<QQuickWindow*>("toolbar-more-menu");check(moreMenu,"toolbar overflow menu");
-        auto moreOpened=std::make_shared<bool>(false);
-        QObject::connect(moreMenu,&QWindow::visibleChanged,moreMenu,[moreOpened](bool visible){if(visible)*moreOpened=true;});
-        // Check the moved actions through the actual popup, including the small
-        // capture layout. Merely resizing the bar must not remove any action.
         app.m_pin->setPicture(fixture.copy(0,0,180,80),{});app.place();pump(60);
-        click(app.m_bar.window,app.m_bar.window->findChild<QQuickItem*>("toolbar-more"));
-        check(*moreOpened,"compact toolbar opens more actions");
-        // As for LanguageMenu above, the inactive private desktop can remove
-        // focus immediately. Restore only after the real click opened it.
-        if(!moreMenu->isVisible()){moreMenu->setProperty("receivedFocus",false);moreMenu->show();pump(15);}
-        moreMenu->grabWindow().save(out+"/toolbar-more.png");
+        for(auto id:{"source","swap","target","compare","provider","copy","retry","text","settings","close"}){
+            auto item=app.m_bar.window->findChild<QQuickItem*>("toolbar-"+QString(id));
+            check(item&&item->isVisible(),"every original toolbar control remains directly visible");
+            auto at=item->mapToScene({0,0});
+            check(at.x()>=0&&at.y()>=0&&at.x()+item->width()<=app.m_bar.window->width()&&at.y()+item->height()<=app.m_bar.window->height(),"toolbar control stays inside bar");
+        }
         auto sourceMenu=app.m_bar.window->findChild<QQuickWindow*>("source-menu");check(sourceMenu,"source menu");
         auto sourceOpened=std::make_shared<bool>(false);
         QObject::connect(sourceMenu,&QWindow::visibleChanged,sourceMenu,[sourceOpened](bool visible){if(visible)*sourceOpened=true;});
-        click(moreMenu,moreMenu->findChild<QQuickItem*>("toolbar-menu-source"));
-        check(*sourceOpened,"compact toolbar keeps source language picker");sourceMenu->hide();
-        *moreOpened=false;
-        click(app.m_bar.window,app.m_bar.window->findChild<QQuickItem*>("toolbar-more"));
-        check(*moreOpened,"toolbar menu reopens");
-        if(!moreMenu->isVisible()){moreMenu->setProperty("receivedFocus",false);moreMenu->show();pump(15);}
-        click(moreMenu,moreMenu->findChild<QQuickItem*>("toolbar-menu-settings"));
-        pump(250);check(app.m_config.window&&app.m_config.window->isVisible(),"settings reachable from toolbar menu");
-        report["toolbarOverflowActions"]=true;
+        click(app.m_bar.window,app.m_bar.window->findChild<QQuickItem*>("toolbar-source"));
+        check(*sourceOpened,"small capture opens source language directly");sourceMenu->hide();
+        click(app.m_bar.window,app.m_bar.window->findChild<QQuickItem*>("toolbar-settings"));
+        pump(250);check(app.m_config.window&&app.m_config.window->isVisible(),"settings reachable directly from toolbar");
+        report["toolbarAllControlsVisible"]=true;
         app.m_config.window->grabWindow().save(out+"/settings.png");
+        app.configSelect("ai");pump(30);
+        for(auto id:{"apiKey","endpoint","model"}){
+            auto item=app.m_config.window->findChild<QQuickItem*>(QString::fromLatin1(id));
+            check(item&&item->isVisible(),"unified AI fields are visible");
+        }
+        check(providers.count("ai")==1&&!providers.contains("openai")&&!providers.contains("deepseek"),"AI has one exposed channel");
+        app.m_config.window->grabWindow().save(out+"/settings-ai.png");
+        app.configSelect("youdao");pump(30);
+        check(app.m_config.window->findChild<QQuickItem*>("appId")->isVisible(),"Youdao application ID is editable");
+        app.m_config.window->grabWindow().save(out+"/settings-youdao.png");
+        app.configSelect("ecdict");pump(30);
+        check(!app.m_config.window->findChild<QQuickItem*>("apiKey")->isVisible()&&!app.m_config.window->findChild<QQuickItem*>("endpoint")->isVisible(),"offline dictionary needs no network configuration");
+        app.m_config.window->grabWindow().save(out+"/settings-ecdict.png");
+        report["newProviderSettings"]=true;app.configSelect("zvo");pump(30);
         auto testAll=app.m_config.window->findChild<QQuickItem*>("test-all");click(app.m_config.window,testAll);
         report["batchAfterClick"]=QJsonObject{{"count",int(app.m_tests.size())},{"running",app.m_testRunning},{"queued",int(app.m_testQueue.size())},
             {"message",app.m_configBackend.values.value("message").toString()}};
         check(app.m_batch,"batch button starts service tests");
         check(until([&]{return app.m_testRunning==0&&app.m_testQueue.isEmpty();},25000),"batch tests finish");
-        check(app.m_tests.size()==10,"batch covers all ten providers");
+        check(app.m_tests.size()==providers.size(),"batch covers every provider");
         report["batchResults"]=QJsonValue::fromVariant(app.m_configBackend.values.value("testResults"));
         app.m_config.window->grabWindow().save(out+"/settings-tested.png");
         report["activeMemory"]=memory();

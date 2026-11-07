@@ -8,6 +8,7 @@ import ctypes
 from ctypes import wintypes as w
 import http.server
 import json
+import hashlib
 import os
 from pathlib import Path
 import subprocess
@@ -98,6 +99,20 @@ class Server(http.server.BaseHTTPRequestHandler):
         elif path.startswith("/deepl"):
             assert self.headers.get("Authorization") == "DeepL-Auth-Key fixture-key"
             result = {"translations": [{"text": translate(t)} for t in body["text"]]}
+        elif path == "/youdao-dictionary":
+            assert query["q"] == ["hello"]
+            result = {"ec": {"word": [{"trs": [{"tr": [{"l": {"i": ["int. 你好"]}}]}]}]}}
+        elif path == "/youdao":
+            text = body["q"][0]
+            signed_input = text if len(text) <= 20 else text[:10] + str(len(text)) + text[-10:]
+            assert body["appKey"] == ["fixture-app"] and body["signType"] == ["v3"]
+            assert body["sign"][0] == hashlib.sha256(('fixture-app' + signed_input + body['salt'][0] + body['curtime'][0] + 'fixture-key').encode()).hexdigest()
+            result = {"errorCode": "0", "translation": [translate(text)]}
+        elif path.startswith("/sogou"):
+            state = {"textTranslate": {"translateData": {"translate": {"errorCode": "0", "dit": translate(query['keyword'][0])}}}}
+            page = '<script>window.__INITIAL_STATE__=' + json.dumps(state, ensure_ascii=False) + ';window.extra="ignored";</script>'
+            self.send_response(200);self.send_header('Content-Type','text/html');self.end_headers()
+            self.wfile.write(page.encode('gb18030' if path.endswith('-gbk') else 'utf-8'));return
         else:
             assert self.headers.get("Authorization") == "Bearer fixture-key"
             result = {"choices": [{"message": {"content": json.dumps([translate(t) for t in json.loads(body["messages"][1]["content"])])}}]}
@@ -176,8 +191,11 @@ def main():
             print((out/"stdout.jsonl").read_text(encoding="utf-8"))
         elif "--live" in sys.argv:
             (data/"services.json").write_text('{"version":2,"profiles":{}}')
-            launch(build/"native_tests.exe",["--live","--proxy","http://127.0.0.1:7890"],data,ROOT/".test-output/native-live")
-            print(json.dumps(json.loads((ROOT/".test-output/native-live/stdout.jsonl").read_text(encoding="utf-8")),ensure_ascii=True))
+            options=[]
+            for key in ("--proxy", "--live-providers"):
+                if key in sys.argv:options.extend([key,sys.argv[sys.argv.index(key)+1]])
+            launch(build/"native_tests.exe",["--live",*options],data,out)
+            print(json.dumps(json.loads((out/"stdout.jsonl").read_text(encoding="utf-8")),ensure_ascii=True))
         elif "--core" in sys.argv:
             from services import Profiles
             profiles=Profiles(data)

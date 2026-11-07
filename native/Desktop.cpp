@@ -274,7 +274,7 @@ Block phraseAt(const QList<Block>& words,QPointF point,const QImage* image)
     }
     return phrase;
 }
-QList<Block> recognize(const QImage& source,Cancel cancel,bool grouped,double maxScale)
+QList<Block> recognize(const QImage& source,Cancel cancel,bool grouped,double maxScale,bool retryEmpty)
 {
     using namespace winrt::Windows::Media::Ocr;
     using namespace winrt::Windows::Graphics::Imaging;
@@ -291,18 +291,65 @@ QList<Block> recognize(const QImage& source,Cancel cancel,bool grouped,double ma
         if(!engine)engine=OcrEngine::TryCreateFromUserProfileLanguages();
         if(!engine&&available.Size())engine=OcrEngine::TryCreateFromLanguage(available.GetAt(0));
         if(!engine)throw std::runtime_error("Windows 未安装 OCR 语言包；请在 Windows 语言设置中安装");
-        int maxSide=int(OcrEngine::MaxImageDimension());double scale=std::min(maxScale,double(maxSide)/std::max(source.width(),source.height()));
-        QImage image=source.scaled(qRound(source.width()*scale),qRound(source.height()*scale),Qt::IgnoreAspectRatio,Qt::SmoothTransformation).convertToFormat(QImage::Format_ARGB32);
-        for(int y=0;y<image.height();++y){auto px=reinterpret_cast<QRgb*>(image.scanLine(y));for(int x=0;x<image.width();++x)px[x]|=0xff000000;}
-        auto size=uint32_t(image.sizeInBytes());winrt::Windows::Storage::Streams::Buffer buffer(size);
-        std::memcpy(buffer.data(),image.constBits(),size);buffer.Length(size);
-        SoftwareBitmap bitmap(BitmapPixelFormat::Bgra8,image.width(),image.height(),BitmapAlphaMode::Premultiplied);bitmap.CopyFromBuffer(buffer);
-        if(cancel->load())return {};
-        auto result=engine.RecognizeAsync(bitmap).get();
-        QList<Block> words;
-        for(auto line:result.Lines())for(auto word:line.Words()){
-            auto r=word.BoundingRect();words.append({from(word.Text()),QRectF(r.X/scale,r.Y/scale,r.Width/scale,r.Height/scale),r.Height/scale});
-        }return cancel->load()?QList<Block>():grouped?groupWords(words):words;
+        if(source.isNull()||cancel->load())return {};
+        const int maxSide=int(OcrEngine::MaxImageDimension());
+        const QImage* pixels=&source;
+        auto read=[&](OcrEngine reader,double requested,int padding){
+            QList<Block> words;if(cancel->load())return words;
+            double scale=std::min(requested,double(maxSide-2*padding)/std::max(source.width(),source.height()));
+            QSize scaled(qMax(1,qRound(source.width()*scale)),qMax(1,qRound(source.height()*scale)));
+            QImage image=pixels->scaled(scaled,Qt::IgnoreAspectRatio,Qt::SmoothTransformation).convertToFormat(QImage::Format_ARGB32);
+            if(padding){
+                QImage padded(scaled+QSize(padding*2,padding*2),QImage::Format_ARGB32);
+                padded.fill(pixels->pixelColor(source.width()-1,source.height()-1));
+                {QPainter painter(&padded);painter.drawImage(padding,padding,image);}image=padded;
+            }
+            for(int y=0;y<image.height();++y){auto px=reinterpret_cast<QRgb*>(image.scanLine(y));for(int x=0;x<image.width();++x)px[x]|=0xff000000;}
+            auto size=uint32_t(image.sizeInBytes());winrt::Windows::Storage::Streams::Buffer buffer(size);
+            std::memcpy(buffer.data(),image.constBits(),size);buffer.Length(size);
+            SoftwareBitmap bitmap(BitmapPixelFormat::Bgra8,image.width(),image.height(),BitmapAlphaMode::Premultiplied);bitmap.CopyFromBuffer(buffer);
+            if(cancel->load())return words;
+            auto result=reader.RecognizeAsync(bitmap).get();
+            const double sx=double(scaled.width())/source.width(),sy=double(scaled.height())/source.height();
+            for(auto line:result.Lines())for(auto word:line.Words()){
+                auto r=word.BoundingRect();QRectF box((r.X-padding)/sx,(r.Y-padding)/sy,r.Width/sx,r.Height/sy);
+                box=box.intersected(QRectF(source.rect()));
+                if(!box.isEmpty())words.append({from(word.Text()),box,r.Height/sy});
+            }return words;
+        };
+        auto words=read(engine,maxScale,0);
+        // The CJK recognizer may drop a short Latin word entirely. Retry an
+        // installed English recognizer, without changing the user's languages.
+        OcrEngine english{nullptr};
+        if(retryEmpty&&words.isEmpty()&&!cancel->load())for(auto lang:available)if(from(lang.LanguageTag()).startsWith("en")){
+            english=OcrEngine::TryCreateFromLanguage(lang);if(english){words=read(english,maxScale,0);break;}
+        }
+        if(retryEmpty&&words.isEmpty()&&!cancel->load()&&source.width()<=640&&source.height()<=240){
+            auto scale=std::max(maxScale,4.);
+            words=read(engine,scale,32);
+            if(words.isEmpty()&&english&&!cancel->load())words=read(english,scale,32);
+            if(words.isEmpty()&&!cancel->load()){
+                // ClearType's colored edge pixels can make a very short word
+                // disappear in the CJK recognizer, even after enlargement.
+                // Otsu contrast recovery is used only after the normal passes
+                // returned no words. Keep the image and returned geometry intact.
+                auto clean=source.convertToFormat(QImage::Format_RGB32);quint64 histogram[256]{};
+                for(int y=0;y<clean.height();++y)for(int x=0;x<clean.width();++x)++histogram[qGray(clean.pixel(x,y))];
+                double sum=0;quint64 count=quint64(clean.width())*clean.height();
+                for(int i=0;i<256;++i)sum+=double(i)*histogram[i];
+                quint64 weight=0;double partial=0,best=0;int threshold=0;
+                for(int i=0;i<255;++i){weight+=histogram[i];partial+=double(i)*histogram[i];if(!weight||weight==count)continue;
+                    double difference=partial/weight-(sum-partial)/(count-weight),score=double(weight)*(count-weight)*difference*difference;
+                    if(score>best){best=score;threshold=i;}}
+                if(best>0){
+                    bool light=qGray(clean.pixel(clean.width()-1,clean.height()-1))>threshold;
+                    for(int y=0;y<clean.height();++y){auto row=reinterpret_cast<QRgb*>(clean.scanLine(y));for(int x=0;x<clean.width();++x)row[x]=((qGray(row[x])>threshold)==light)?qRgb(255,255,255):qRgb(0,0,0);}
+                    pixels=&clean;words=read(engine,scale,32);
+                    if(words.isEmpty()&&english&&!cancel->load())words=read(english,scale,32);
+                }
+            }
+        }
+        return cancel->load()?QList<Block>():grouped?groupWords(words):words;
     }catch(const winrt::hresult_error&){throw std::runtime_error("Windows OCR 识别失败；请检查语言包");}
 }
 namespace {
@@ -506,7 +553,7 @@ Block recognizeLineAt(const QImage& image,const QList<Block>& words,Cancel cance
     QRect area(x1,top,x2-x1,bottom-top);
     if(area.isEmpty())return original();
     QList<Block> refined;
-    try{refined=recognize(image.copy(area),cancel,false,std::clamp(std::ceil(96./h),2.,8.));}
+    try{refined=recognize(image.copy(area),cancel,false,std::clamp(std::ceil(96./h),2.,8.),false);}
     catch(const std::exception&){return cancel->load()?Block():original();}
     if(cancel->load())return {};
     int oldLetters=0,newLetters=0;QRectF oldBounds,newBounds;
@@ -549,7 +596,7 @@ Block wrappedPhraseAt(const QList<Block>& words,QPointF point,const QImage* imag
 }
 Block recognizeAt(const QImage& image,Cancel cancel,QPointF point)
 {
-    auto words=recognize(image,cancel,false);
+    auto words=recognize(image,cancel,false,2.,false);
     if(cancel->load())return {};
     auto layout=pointerLayout(words,point,&image);
     return layout.restore(recognizeLineAt(layout.image,layout.words,cancel,layout.point));

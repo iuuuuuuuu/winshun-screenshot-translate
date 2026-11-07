@@ -1,5 +1,6 @@
 #include "Desktop.h"
 #include "Services.h"
+#include "Dictionary.h"
 #include <QGuiApplication>
 #include <QTemporaryDir>
 #include <QJsonArray>
@@ -173,17 +174,64 @@ int main(int argc,char** argv)
         if(reopened.profile("openai").value("apiKey").toString()!="native-test-密钥")throw std::runtime_error("DPAPI");
         if(args.contains("--endpoint")){
             auto base=args.value(args.indexOf("--endpoint")+1);
+            auto freshCancel=[] {return std::make_shared<std::atomic_bool>(false);};
+            for(bool dark:{false,true}){
+                QImage small(101,55,QImage::Format_RGB32);small.fill(dark?QColor(32,32,32):Qt::white);
+                {QPainter painter(&small);painter.setPen(dark?Qt::white:Qt::black);QFont font("Segoe UI");font.setPixelSize(13);painter.setFont(font);painter.drawText(23,33,"Hi");}
+                QList<st::Block> found;std::exception_ptr ocrError;
+                std::thread reader([&]{try{found=st::recognize(small,freshCancel());}catch(...){ocrError=std::current_exception();}});reader.join();if(ocrError)std::rethrow_exception(ocrError);
+                if(found.size()!=1||found[0].text!="Hi"||!QRectF(small.rect()).contains(found[0].box)||found[0].box.width()>25){
+                    small.save(QCoreApplication::applicationDirPath()+"/small-ocr-fixture.png");
+                    QJsonArray actual;for(auto word:found)actual.append(QJsonObject{{"text",word.text},{"box",QJsonArray{word.box.x(),word.box.y(),word.box.width(),word.box.height()}}});
+                    throw std::runtime_error((QString("small screenshot OCR dark=%1 ").arg(dark)+QString::fromUtf8(QJsonDocument(actual).toJson(QJsonDocument::Compact))).toStdString());
+                }
+            }
+            QImage blank(60,25,QImage::Format_RGB32);blank.fill(Qt::white);QList<st::Block> empty;
+            std::thread blankReader([&]{empty=st::recognize(blank,freshCancel());});blankReader.join();
+            if(!empty.isEmpty())throw std::runtime_error("blank screenshot must stay empty");
+            // Existing saved providers migrate once, keeping both DPAPI secrets
+            // and the selected provider's endpoint/model. Legacy backups remain.
+            QTemporaryDir oldDir;st::Services old(oldDir.path());
+            old.save({{"openai",QJsonObject{{"apiKey","unused"}}},
+                {"deepseek",QJsonObject{{"apiKey","chosen-secret"},{"endpoint",base+"/ai"},{"model","chosen-model"}}}});
+            old.migrateAi({{"provider","ai"},{"aiProvider","deepseek"}});
+            auto migrated=old.profile("ai");
+            if(migrated.value("apiKey")!="chosen-secret"||migrated.value("model")!="chosen-model"||migrated.value("endpoint")!=base+"/ai")throw std::runtime_error("selected AI profile migration");
+            old.save({{"ai",QJsonObject{{"apiKey","edited"},{"model","new-model"}}}});old.migrateAi({{"provider","openai"}});
+            if(old.profile("ai").value("apiKey")!="edited"||old.profile("deepseek").value("apiKey")!="chosen-secret")throw std::runtime_error("AI migration preserves edits and legacy backups");
+            QTemporaryDir defaultsDir;st::Services legacyDefaults(defaultsDir.path());
+            legacyDefaults.save({{"deepseek",QJsonObject{{"apiKey","secret"}}}});legacyDefaults.migrateAi({{"provider","deepseek"}});
+            if(legacyDefaults.profile("ai").value("endpoint")!="https://api.deepseek.com"||legacyDefaults.profile("ai").value("model")!="deepseek-flash")throw std::runtime_error("legacy AI defaults retained");
+            if(st::dictionaryEntry("HELLO").isEmpty()||st::dictionaryEntry("baby").isEmpty()||!st::dictionaryEntry("zznotaword7789").isEmpty())throw std::runtime_error("bundled ECDICT lookup");
+            QTemporaryDir dictionaryDir;st::Services dictionary(dictionaryDir.path());
+            dictionary.save({{"zvo",QJsonObject{{"endpoint",base+"/zvo"}}}});
+            auto missing=dictionary.translate({{"provider","ecdict"},{"fallbackEnabled",true}},{"zznotawordtest"},"en","zh",freshCancel());
+            auto known=dictionary.translate({{"provider","ecdict"},{"fallbackEnabled",true}},{"hello"},"en","zh",freshCancel());
+            if(missing.provider!="zvo"||known.provider!="ecdict"||known.fallback)throw std::runtime_error("dictionary misses must not quarantine lookup");
+            auto offline=dictionary.translate({{"provider","ecdict"},{"fallbackEnabled",false},{"proxy","invalid proxy"}},{"hello"},"en","zh",freshCancel());
+            if(offline.provider!="ecdict")throw std::runtime_error("offline dictionary must not depend on proxy configuration");
+            auto sentence=dictionary.translate({{"provider","ecdict"},{"fallbackEnabled",true}},{"This is a complete sentence that is not in the dictionary."},"en","zh",freshCancel());
+            if(sentence.provider!="zvo")throw std::runtime_error("dictionary sentence fallback");
             QStringList routes;
             for(auto p:st::providers){
-                if(p=="edge")continue;auto draft=services.profile(p);
+                if(p=="edge"||p=="ecdict")continue;auto draft=services.profile(p);
                 draft["endpoint"]=base+"/"+p;draft["apiKey"]="fixture-key";draft["model"]="fixture-model";
+                if(p=="youdao")draft["appId"]="fixture-app";
                 auto cancel=std::make_shared<std::atomic_bool>(false);
                 auto result=services.translate(QJsonObject{{"fallbackEnabled",false}},{"Hello + 100%","499"},"en","zh",cancel,draft);
                 if(result.segments!=QStringList{"你好 + 100%","499"})throw std::runtime_error(("route "+p).toStdString());
                 routes<<p;
             }
             auto chunked=services.profile("mymemory");chunked["endpoint"]=base+"/mymemory";
-            auto freshCancel=[] {return std::make_shared<std::atomic_bool>(false);};
+            auto freeYoudao=services.profile("youdao");freeYoudao["endpoint"]=base+"/youdao-dictionary";
+            auto lookup=services.translate({}, {"hello"},"en","zh",freshCancel(),freeYoudao);
+            if(lookup.segments!=QStringList{"int. 你好"})throw std::runtime_error("Youdao free dictionary");
+            auto official=freeYoudao;official["endpoint"]=base+"/youdao";official["apiKey"]="fixture-key";official["appId"]="fixture-app";
+            auto unicodeSign=services.translate({}, {QString::fromUtf8("你好😀这是用于测试有道签名的超长 Unicode 字符串 1234567890")},"zh","en",freshCancel(),official);
+            if(unicodeSign.segments.isEmpty())throw std::runtime_error("Youdao Unicode signing");
+            auto gbk=services.profile("sogou");gbk["endpoint"]=base+"/sogou-gbk";
+            auto gbkResult=services.translate({}, {"Hello + 100%"},"en","zh",freshCancel(),gbk);
+            if(gbkResult.segments!=QStringList{"你好 + 100%"})throw std::runtime_error("Sogou GB18030 page");
             auto proxied=chunked;proxied["endpoint"]="http://native-fixture.invalid/mymemory";
             auto proxyResult=services.translate(QJsonObject{{"proxy",base}},{"Hello + 100%"},"en","zh",freshCancel(),proxied);
             if(proxyResult.segments!=QStringList{"你好 + 100%"})throw std::runtime_error("explicit HTTP proxy");
@@ -215,14 +263,16 @@ int main(int argc,char** argv)
             auto primary=recovered.translate(settings,{"Hello + 100%"},"en","zh",fresh());
             if(primary.fallback||primary.provider!="mymemory")throw std::runtime_error("config reset health");
             std::puts(QJsonDocument(QJsonObject{{"passed",true},{"fixtureRoutes",QJsonArray::fromStringList(routes)},
-                {"dpapi",true},{"persistentFallback",true},{"recovery",true},{"cancel",true},{"httpProxy",true},{"pointerPhrases",true}}).toJson(QJsonDocument::Compact).constData());
+                {"dpapi",true},{"smallScreenshotOcr",true},{"aiMigration",true},{"offlineDictionary",true},{"dictionaryFallback",true},{"youdaoSignature",true},{"sogouEncoding",true},
+                {"persistentFallback",true},{"recovery",true},{"cancel",true},{"httpProxy",true},{"pointerPhrases",true}}).toJson(QJsonDocument::Compact).constData());
         }else if(args.contains("--live")){
             QJsonArray routes;
-            for(auto p:QStringList{"google","edge","zvo","mymemory"}){
-                QJsonObject settings{{"provider",p},{"fallbackEnabled",false},{"proxy",args.value(args.indexOf("--proxy")+1)}};
+            auto live=args.contains("--live-providers")?args.value(args.indexOf("--live-providers")+1).split(','):QStringList{"google","edge","zvo","mymemory","sogou","youdao","ecdict"};
+            for(auto p:live){
+                QJsonObject settings{{"provider",p},{"fallbackEnabled",false},{"proxy",args.contains("--proxy")?args.value(args.indexOf("--proxy")+1):QString()}};
                 QJsonObject result{{"provider",p}};
                 try{
-                    auto data=services.translate(settings,{"Hello world"},"en","zh",std::make_shared<std::atomic_bool>(false));
+                    auto data=services.translate(settings,{p=="youdao"||p=="ecdict"?"hello":"Hello world. How are you?"},"en","zh",std::make_shared<std::atomic_bool>(false));
                     result["status"]="success";result["translation"]=data.segments.join('\n');
                 }catch(const std::exception& e){result["status"]="unavailable";result["error"]=QString::fromUtf8(e.what());}
                 routes.append(result);

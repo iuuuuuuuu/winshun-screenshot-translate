@@ -190,6 +190,27 @@
           }
         },
         {
+          "value": "sogou",
+          "title": {
+            "zh": "搜狗",
+            "en": "Sogou"
+          }
+        },
+        {
+          "value": "youdao",
+          "title": {
+            "zh": "有道",
+            "en": "Youdao"
+          }
+        },
+        {
+          "value": "ecdict",
+          "title": {
+            "zh": "ECDICT",
+            "en": "ECDICT"
+          }
+        },
+        {
           "value": "microsoft",
           "title": {
             "zh": "微软",
@@ -204,31 +225,10 @@
           }
         },
         {
-          "value": "openai",
+          "value": "ai",
           "title": {
-            "zh": "OpenAI",
-            "en": "OpenAI"
-          }
-        },
-        {
-          "value": "deepseek",
-          "title": {
-            "zh": "DeepSeek",
-            "en": "DeepSeek"
-          }
-        },
-        {
-          "value": "doubao",
-          "title": {
-            "zh": "豆包",
-            "en": "Doubao"
-          }
-        },
-        {
-          "value": "hunyuan",
-          "title": {
-            "zh": "混元",
-            "en": "Hunyuan"
+            "zh": "AI 翻译",
+            "en": "AI translation"
           }
         }
       ],

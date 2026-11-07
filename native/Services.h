@@ -6,13 +6,16 @@
 #include <memory>
 
 namespace st {
-inline const QStringList providers{"mymemory","google","edge","zvo","microsoft","deepl","openai","deepseek","doubao","hunyuan"};
-inline const QStringList names{"MyMemory","Google","Edge","translate.js","Microsoft","DeepL","OpenAI","DeepSeek","Doubao","Hunyuan"};
+inline const QStringList providers{"mymemory","google","edge","zvo","sogou","youdao","ecdict","microsoft","deepl","ai"};
+inline const QStringList names{"MyMemory","Google","Edge","translate.js","搜狗","有道","ECDICT","Microsoft","DeepL","AI 翻译"};
+inline const QStringList legacyAi{"openai","deepseek","doubao","hunyuan"};
 inline const QStringList endpoints{
     "https://api.mymemory.translated.net/get","https://translate.googleapis.com/translate_a/single",
     "https://api-edge.cognitive.microsofttranslator.com/translate","https://api.translate.zvo.cn/translate.json",
-    "https://api.cognitive.microsofttranslator.com","https://api-free.deepl.com","https://api.openai.com/v1",
-    "https://api.deepseek.com","https://ark.cn-beijing.volces.com/api/v3","https://api.hunyuan.cloud.tencent.com/v1"};
+    "https://fanyi.sogou.com/text","https://dict.youdao.com/jsonapi","",
+    "https://api.cognitive.microsofttranslator.com","https://api-free.deepl.com","https://api.openai.com/v1"};
+QString canonicalProvider(const QString& provider);
+QString configurationError(const QJsonObject& profile);
 using Cancel = std::shared_ptr<std::atomic_bool>;
 struct Translation {
     QStringList segments;
@@ -29,6 +32,7 @@ class Services {
 public:
     explicit Services(QString directory);
     QJsonObject profile(const QString& provider);
+    void migrateAi(const QJsonObject& settings);
     void save(const QJsonObject& drafts);
     int today();
     Translation translate(const QJsonObject& settings, const QStringList& parts,

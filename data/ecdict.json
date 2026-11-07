@@ -1,0 +1,9 @@
+{
+  "source": "https://raw.githubusercontent.com/skywind3000/ECDICT/39cfb9672c0906b63569e0453c2e6abfb9ab182a/ecdict.csv",
+  "revision": "39cfb9672c0906b63569e0453c2e6abfb9ab182a",
+  "sourceSha256": "d1ecbdf9ee2b920afb6f430ca6b6bb9f559588cf0dff86e04bd255f9390843cc",
+  "license": "MIT",
+  "entries": 770611,
+  "size": 71990182,
+  "sha256": "6400f040ac9dc8e5f6e13b88e7547438146eaaffe1d1726e58a8842b0b5342bc"
+}
