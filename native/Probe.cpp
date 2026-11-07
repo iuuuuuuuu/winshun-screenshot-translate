@@ -122,6 +122,13 @@ void key(QQuickWindow* window,int code,Qt::KeyboardModifiers modifiers=Qt::NoMod
     QKeyEvent press(QEvent::KeyPress,code,modifiers),release(QEvent::KeyRelease,code,modifiers);
     QCoreApplication::sendEvent(window,&press);QCoreApplication::sendEvent(window,&release);pump(20);
 }
+void hoverItem(QQuickWindow* window,QQuickItem* item)
+{
+    check(Probe::privateDesktop()&&window&&item,"hover requires private test desktop");
+    auto point=item->mapToScene(QPointF(item->width()/2,item->height()/2));
+    QMouseEvent move(QEvent::MouseMove,point,window->mapToGlobal(point.toPoint()),Qt::NoButton,Qt::NoButton,Qt::NoModifier);
+    QCoreApplication::sendEvent(window,&move);pump(20);
+}
 }
 bool Probe::privateDesktop()
 {
@@ -515,7 +522,9 @@ void Probe::run(App& app,const QJsonObject& params)
         check(app.m_wordBackend.values["translatedText"].toString()=="你好 + 100%","clipboard popup meaning");
         editableSource(app.m_word.window,"Hello + 100%");
         check(!app.m_word.window->findChild<QQuickItem*>("word-submit-edit")&&!app.m_word.window->findChild<QQuickItem*>("word-cancel-edit"),"word popup has no footer edit buttons");
-        check(app.m_word.window->findChild<QQuickItem*>("word-restore")->isVisible(),"source restore icon is visible");
+        auto restore=app.m_word.window->findChild<QQuickItem*>("word-restore");
+        hoverItem(app.m_word.window,app.m_word.window->findChild<QQuickItem*>("word-editor"));
+        check(!restore->isVisible(),"hovering unchanged source keeps restore hidden");
         auto sourceFont=app.m_word.window->findChild<QQuickItem*>("word-editor")->property("font").value<QFont>().family();
         check(sourceFont=="Segoe UI","word popup uses Windows body font");
         report["wordFontFamily"]=sourceFont;
@@ -532,8 +541,14 @@ void Probe::run(App& app,const QJsonObject& params)
         check(!app.m_wordEditing&&app.m_wordSource=="Hello + 100%","cancel discards draft without replacing source");
         editableSource(app.m_word.window,"Hello + 100%");
         typeDraft(app.m_word.window,"History");auto restoreEpoch=app.m_wordEpoch;
+        hoverItem(app.m_word.window,app.m_word.window->findChild<QQuickItem*>("word-provider"));
+        check(!restore->isVisible()||restore->opacity()==0,"edited source hides restore when pointer leaves");
+        hoverItem(app.m_word.window,app.m_word.window->findChild<QQuickItem*>("word-editor"));
+        check(restore->isVisible()&&restore->opacity()>0,"edited source shows restore only on hover");
         click(app.m_word.window,app.m_word.window->findChild<QQuickItem*>("word-restore"));pump(220);
         check(app.m_wordEpoch==restoreEpoch&&!app.m_wordEditing,"restore icon cancels draft without translating");
+        check(!restore->isVisible(),"restoring source hides restore icon immediately");
+        report["wordRestoreHoverOnly"]=true;
         editableSource(app.m_word.window,"Hello + 100%");
         typeDraft(app.m_word.window,QString("Long editable source line\n").repeated(24));pump(30);
         auto editor=app.m_word.window->findChild<QQuickItem*>("word-editor");
@@ -651,7 +666,7 @@ void Probe::run(App& app,const QJsonObject& params)
         check(movedWindow->color().alpha()==255&&!(GetWindowLongPtrW(HWND(movedWindow->winId()),GWL_EXSTYLE)&WS_EX_LAYERED),"word popup uses an opaque native backing store during moves");
         check(frame.pixelColor(frame.width()/2,frame.height()-6).alpha()==255&&
             movedWindow->findChild<QQuickItem*>("word-close")->isVisible()&&
-            movedWindow->findChild<QQuickItem*>("word-restore")->isVisible(),"moved popup keeps card and actions");
+            movedWindow->findChild<QQuickItem*>("word-provider")->isVisible(),"moved popup keeps card and actions");
         report["wordMoveRendering"]=true;
         auto fixedPosition=app.m_word.window->position();
         check(until([&]{return app.m_raw&&app.m_raw->m_hwnd.load();}),"pinned raw input");
@@ -669,6 +684,7 @@ void Probe::run(App& app,const QJsonObject& params)
         typeDraft(app.m_word.window,"草稿");selectedIndex->store(0);app.readSelection(true);pump(500);
         check(!app.m_followSelection.isActive()&&app.m_wordSource=="Settings"&&
             app.m_word.window->findChild<QQuickItem*>("word-editor")->property("text").toString()=="草稿","pinned following pauses while editing");
+        hoverItem(app.m_word.window,app.m_word.window->findChild<QQuickItem*>("word-editor"));
         click(app.m_word.window,app.m_word.window->findChild<QQuickItem*>("word-restore"));
         check(app.m_followSelection.isActive(),"pinned following resumes after editing");
         check(until([&]{return app.m_wordSource=="Hello + 100%";}),"new selection is translated after editing");

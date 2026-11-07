@@ -124,7 +124,9 @@ Window {
             id: body
             width: scroll.width; spacing: 10
             Item {
+                id: sourceArea
                 width: parent.width; height: editor.height + 10
+                HoverHandler { id: sourceHover }
                 TextEdit {
                     id: editor; objectName: "word-editor"
                     width: parent.width - 30; height: Math.max(22, contentHeight)
@@ -176,6 +178,12 @@ Window {
                     objectName: "word-restore"
                     anchors.right: parent.right; y: -2; width: 26; height: 26
                     glyph: "\uE7A7"
+                    visible: wordWindow.sourceDirty
+                    // Keep the hover hit area while hidden so entering the icon
+                    // cannot hide it between parent/child hover notifications.
+                    opacity: sourceHover.hovered || restoreHover.hovered ? (enabled ? 1 : 0.45) : 0
+                    keyboardActivation: false
+                    HoverHandler { id: restoreHover; blocking: false }
                     enabled: wordWindow.sourceDirty && !editor.inputMethodComposing
                     tip: backend.state.chinese ? "还原原文" : "Restore source"
                     onClicked: wordWindow.restoreSource()
