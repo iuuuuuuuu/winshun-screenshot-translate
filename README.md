@@ -1,4 +1,4 @@
-# 截图翻译 0.4.5
+# 截图翻译 0.4.6
 
 WinShun 原生翻译插件，支持截图翻译、剪贴板翻译、划词翻译和鼠标指词 OCR。**不需要安装 Python、PySide6 或 Qt。**
 
@@ -8,9 +8,9 @@ WinShun 原生翻译插件，支持截图翻译、剪贴板翻译、划词翻译
 
 需要 **Windows 10/11 x64、WinShun 0.22.0 或更新版本**，以及系统已安装的 OCR 语言包。
 
-1. 从 [0.4.5 发布页](https://github.com/iuuuuuuuu/winshun-screenshot-translate/releases/tag/v0.4.5) 下载 `iuuuuuuuu.screenshot-translate-0.4.5.wsplugin`。
+1. 从 [0.4.6 发布页](https://github.com/iuuuuuuuu/winshun-screenshot-translate/releases/tag/v0.4.6) 下载 `iuuuuuuuu.screenshot-translate-0.4.6.wsplugin`。
 2. 打开 WinShun 设置 → 插件 → 从压缩包安装，选择这个文件，查看并允许所需权限。
-3. 更新后检查插件卡片版本为 **0.4.5**。官方插件库收录状态以对应更新 PR 的合并结果为准。
+3. 更新后检查插件卡片版本为 **0.4.6**。官方插件库收录状态以对应更新 PR 的合并结果为准。
 
 从 0.3.3 / 0.4.0 升级继续使用原有渠道、密钥、代理、热键及偏好；不需要重新安装 Python 依赖。原先明确清空或自定义的热键优先于新版默认值，请在插件设置中检查。不要同时启用早期本地 `winshun.screenshot-translate` 与当前社区版。
 
@@ -41,6 +41,7 @@ WinShun 原生翻译插件，支持截图翻译、剪贴板翻译、划词翻译
 
 ### 词义小窗
 
+- 原文和译文较长时，小窗自动增加宽高；短词恢复紧凑大小。最大为 720 × 720 逻辑像素，且不超过所在屏幕可用宽高的 80%，超出内容可滚动查看；截图的“完整译文”窗口使用同样限制。
 - 原文默认可直接编辑，保留正文样式和面板底色；聚焦时只显示文字光标，没有额外的下划线和输入框高亮。
 - 编辑后离开输入框自动翻译，Enter 立即提交，Shift+Enter 换行；原文末尾的还原图标放弃未提交的修改。
 - 只有点击图钉才固定窗口；拖动标题只移动位置。固定后，新选区自动更新，编辑草稿期间暂停跟随。
@@ -48,6 +49,11 @@ WinShun 原生翻译插件，支持截图翻译、剪贴板翻译、划词翻译
 - 关闭小窗或触发新的翻译会取消旧请求；未固定时点击外部自动关闭，取消固定后恢复该行为。“点击其他区域关闭贴图”设置只影响截图贴图。
 
 <img src=".screenshots/word-0.4.5.png" alt="0.4.5 剪贴板翻译小窗" width="324">
+
+长段落自动展开，超长内容达到上限后滚动查看：
+
+<img src=".screenshots/word-adaptive-0.4.6.png" alt="0.4.6 长段落自适应翻译窗" width="448">
+<img src=".screenshots/text-adaptive-0.4.6.png" alt="0.4.6 完整译文达到尺寸上限后滚动查看" width="480">
 
 ### 截图与 OCR
 
@@ -134,6 +140,6 @@ OCR 仍受清晰度、字体、背景和系统语言包影响。很小文字经�
 
 [中文更新记录](CHANGELOG.md) · [构建与验证说明](native/README.md) · [第三方许可](THIRD_PARTY_NOTICES.md)
 
-公开发布使用标签 `v0.4.5` 对应源码；安装包内 `BUILD-INFO.json` 记录确切提交与 Qt 版本。GitHub Actions“原生构建与打包”从标签构建并保留日志、安装包与校验值。
+公开发布使用标签 `v0.4.6` 对应源码；安装包内 `BUILD-INFO.json` 记录确切提交与 Qt 版本。GitHub Actions“原生构建与打包”从标签构建并保留日志、安装包与校验值。
 
 插件自己的代码采用 MIT。Qt 6.10.0 动态库按 LGPL v3 分发，原始许可、依赖清单及来源随包提供；Visual C++ 运行库、阿里巴巴普惠体和 Phosphor 图标分别遵循各自许可。允许按 Qt 的许可替换兼容动态库及调试修改；经 WinShun 管理员授权的副本修改后需重新确认。

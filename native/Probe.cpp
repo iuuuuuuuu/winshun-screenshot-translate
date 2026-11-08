@@ -7,6 +7,7 @@
 #include <QDir>
 #include <QPainter>
 #include <QQuickItem>
+#include <QScreen>
 #include <QMouseEvent>
 #include <QKeyEvent>
 #include <QFocusEvent>
@@ -325,6 +326,24 @@ void Probe::run(App& app,const QJsonObject& params)
         check(screenshotProvider&&screenshotProvider->isVisible()&&screenshotProvider->property("text").toString()=="渠道：translate.js","screenshot shows actual service inline");
         app.pinAction("text",{});pump(30);
         check(app.m_text.window->findChild<QQuickItem*>("text-provider")->property("text").toString()=="渠道：translate.js","full translation shows service");
+        const auto savedTranslation=app.m_pinBackend.values["translatedText"];
+        app.m_pinBackend.update({{"translatedText",QStringLiteral("短译文")}});pump(30);
+        const auto shortTextSize=app.m_text.window->size();
+        app.m_pinBackend.update({{"translatedText",QStringLiteral("这是一段需要完整显示的长译文，窗口会自动适应文字长度，并限制最大宽度与高度。\n").repeated(100)}});pump(70);
+        auto textWindow=app.m_text.window;
+        auto textWork=textWindow->screen()->availableGeometry();
+        check(textWindow->width()>shortTextSize.width()&&textWindow->height()>shortTextSize.height(),"full translation grows in both dimensions");
+        check(textWindow->width()<=std::min(720,int(textWork.width()*.8))&&textWindow->height()<=std::min(720,int(textWork.height()*.8))&&
+            textWork.contains(textWindow->geometry()),"full translation respects monitor and size limits");
+        auto textScroll=textWindow->findChild<QQuickItem*>("text-scroll");
+        check(textScroll->property("contentHeight").toReal()>textScroll->height(),"full translation overflow scrolls");
+        auto textBar=textWindow->findChild<QQuickItem*>("text-scrollbar");
+        check(textBar->isVisible()&&textBar->x()>textWindow->width()-60&&textBar->y()>=54,"full translation scrollbar stays beside the body");
+        textWindow->grabWindow().save(out+"/text-adaptive-limit.png");
+        app.m_pinBackend.update({{"translatedText",QStringLiteral("短译文")}});pump(40);
+        check(textWindow->size()==shortTextSize,"full translation shrinks after short result");
+        app.m_pinBackend.update({{"translatedText",savedTranslation}});pump(30);
+        report["textAdaptiveGeometry"]=true;
         app.m_text.window->hide();
         check(app.m_pin->pictureRect().size()==fixture.size(),"translation pixel stability");
         auto pinOrigin=app.m_pin->pictureRect().topLeft();RECT suggestion{20,20,600,300};
@@ -557,6 +576,50 @@ void Probe::run(App& app,const QJsonObject& params)
         check(app.m_word.window->width()<=340&&app.m_word.window->height()<220,"word popup is compact");
         app.m_word.window->grabWindow().save(out+"/word-clipboard.png");
         report["wordClipboard"]=true;
+        {
+        const auto compactState=app.m_wordBackend.values;
+        const auto compactSize=app.m_word.window->size();
+        const QString paragraph=QStringLiteral("Long text should expand this translation window while keeping the toolbar visible. ");
+        const QString translation=QStringLiteral("长文本会自动调整窗口宽高，达到上限后可以滚动查看完整译文，操作按钮始终可见。");
+        auto word=app.m_word.window;
+        auto bounded=[&](QQuickWindow* window){
+            const auto work=window->screen()->availableGeometry();
+            return window->width()<=std::min(720,int(work.width()*.8))&&
+                window->height()<=std::min(720,int(work.height()*.8))&&work.contains(window->geometry());
+        };
+        app.m_wordBackend.update({{"sourceText",paragraph.repeated(3)},{"translatedText",translation.repeated(6)}});pump(80);
+        check(word->width()>compactSize.width()&&word->height()>compactSize.height(),"paragraph expands both word window dimensions");
+        auto mediumSize=word->size();word->grabWindow().save(out+"/word-adaptive-paragraph.png");
+        app.m_wordBackend.update({{"sourceText",paragraph.repeated(90)},{"translatedText",translation.repeated(200)}});pump(80);
+        auto longScroll=word->findChild<QQuickItem*>("word-scroll");
+        check(bounded(word)&&word->width()>=mediumSize.width()&&word->height()>=mediumSize.height(),"huge text stops at screen-aware width and height caps");
+        check(longScroll->property("contentHeight").toReal()>longScroll->height(),"huge text remains scrollable");
+        auto wordBar=word->findChild<QQuickItem*>("word-scrollbar");
+        check(wordBar->isVisible()&&wordBar->x()>word->width()-60&&wordBar->y()>=44,"word scrollbar stays beside the body");
+        longScroll->setProperty("contentY",longScroll->property("contentHeight").toReal()-longScroll->height());pump(30);
+        check(longScroll->property("contentY").toReal()>0&&word->findChild<QQuickItem*>("word-close")->isVisible(),"scrolling long translation preserves close control");
+        longScroll->setProperty("contentY",0);word->grabWindow().save(out+"/word-adaptive-limit.png");
+        for(auto screen:QGuiApplication::screens()){
+            const auto work=screen->availableGeometry();
+            app.m_wordAnchor=screen->geometry().topLeft()+((work.bottomRight()-QPoint(12,12))-screen->geometry().topLeft())*screen->devicePixelRatio();
+            app.placeWord();pump(40);
+            check(word->screen()==screen&&bounded(word),"large word popup fits each monitor at the bottom-right edge");
+        }
+        word->setProperty("availableArea",QRect(0,0,640,480));pump(50);
+        check(word->width()<=512&&word->height()<=384,"small work area lowers both popup limits");
+        word->setProperty("availableArea",word->screen()->availableGeometry());pump(30);
+        app.m_wordBackend.update(compactState);pump(60);
+        check(word->size()==compactSize&&longScroll->property("contentY").toReal()==0,"short result restores compact size and scroll origin");
+        app.m_wordPinned=true;
+        word->setPosition(word->screen()->availableGeometry().bottomRight()-QPoint(word->width()+4,word->height()+4));
+        app.m_wordBackend.update({{"translatedText",translation.repeated(200)}});pump(60);
+        check(bounded(word)&&word->width()>compactSize.width(),"pinned translation also grows without leaving the screen");
+        const auto pinnedPosition=word->position();
+        app.m_wordBackend.update(compactState);pump(60);
+        check(word->position()==pinnedPosition,"shrinking pinned content preserves its position");
+        app.m_wordPinned=false;app.m_wordAnchor=QPoint(400,180);app.placeWord();pump(30);
+        report["wordAdaptiveGeometry"]=true;
+        }
         auto readableHeight=app.m_word.window->height();
         click(app.m_word.window,app.m_word.window->findChild<QQuickItem*>("word-editor"));
         check(!app.m_wordEditing&&!app.m_word.window->flags().testFlag(Qt::WindowDoesNotAcceptFocus),"clicking source enables keyboard focus without marking a clean draft dirty");

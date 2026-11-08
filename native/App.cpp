@@ -59,6 +59,31 @@ void roundWindow(QQuickWindow* w)
 {
     int corner=2;DwmSetWindowAttribute(HWND(w->winId()),33,&corner,sizeof corner);
 }
+QPoint boundedPosition(QQuickWindow* window,QPoint point)
+{
+    const auto work=window->screen()->availableGeometry().adjusted(4,4,-4,-4);
+    point.setX(std::clamp(point.x(),work.left(),std::max(work.left(),work.right()+1-window->width())));
+    point.setY(std::clamp(point.y(),work.top(),std::max(work.top(),work.bottom()+1-window->height())));
+    return point;
+}
+void adaptiveWindow(QQuickWindow* window,std::function<void()> place)
+{
+    auto update=[window,place]{
+        window->setProperty("availableArea",window->screen()->availableGeometry());
+        place();
+    };
+    auto watch=[window,update](QScreen* screen){
+        QObject::connect(screen,&QScreen::availableGeometryChanged,window,[window,screen,update]{
+            if(window->screen()==screen)update();
+        });
+    };
+    for(auto screen:QGuiApplication::screens())watch(screen);
+    QObject::connect(qApp,&QGuiApplication::screenAdded,window,watch);
+    QObject::connect(window,&QWindow::screenChanged,window,update);
+    QObject::connect(window,&QWindow::widthChanged,window,place);
+    QObject::connect(window,&QWindow::heightChanged,window,place);
+    update();
+}
 }
 App::App(ws::captureplugin::Protocol& protocol,QString appDir,QJsonObject initial):m_appDir(std::move(appDir)),m_protocol(protocol)
 {
@@ -533,9 +558,18 @@ void App::pinAction(const QString& name,const QVariant& value)
             QStringList parts;for(auto v:m_data.value("segments").toArray())parts<<v.toString();
             if(!parts.isEmpty())translatePin(m_target,m_data.value("sourceLanguage").toString(),parts);
         }else if(name=="text"){
-            if(!m_text.window)m_text=view("qrc:/ui/qml/Text.qml",&m_pinBackend);
-            bool showing=!m_text.window->isVisible();m_text.window->setVisible(showing);
-            if(showing){m_text.window->setPosition(m_bar.window->position()+QPoint(0,m_bar.window->height()+8));m_text.window->requestActivate();}
+            if(!m_text.window){
+                m_text=view("qrc:/ui/qml/Text.qml",&m_pinBackend);
+                auto window=m_text.window;
+                adaptiveWindow(window,[window]{window->setPosition(boundedPosition(window,window->position()));});
+            }
+            bool showing=!m_text.window->isVisible();
+            if(showing){
+                m_text.window->setScreen(m_bar.window->screen());
+                m_text.window->setPosition(boundedPosition(m_text.window,m_bar.window->position()+QPoint(0,m_bar.window->height()+8)));
+            }
+            m_text.window->setVisible(showing);
+            if(showing)m_text.window->requestActivate();
             m_pinBackend.update({{"fullText",showing}});
         }
     }catch(const std::exception& e){status(failure(e),false);m_busy=false;}
@@ -608,14 +642,20 @@ void App::openWord(QString mode,QPoint anchor,QRect selection)
         {"status",mode=="jsel"?"正在读取选中文字…":mode=="ocr"?"正在识别鼠标处的短句…":"正在翻译…"}});
     if(!m_word.window){
         m_word=view("qrc:/ui/qml/Word.qml",&m_wordBackend);
-        QObject::connect(m_word.window,&QWindow::heightChanged,this,[this]{placeWord();});
+        adaptiveWindow(m_word.window,[this]{placeWord();});
     }
     QMetaObject::invokeMethod(m_word.window,"resetInteraction");
     placeWord();m_word.window->show();ensureRaw();
 }
 void App::placeWord()
 {
-    if(!m_word.window||m_wordPinned||m_wordPlacementFrozen)return;
+    if(!m_word.window)return;
+    if(m_wordPinned||m_wordPlacementFrozen){
+        // Keep the user's chosen position unless growth would move controls
+        // beyond this monitor. Retrying never anchors at the Retry button.
+        m_word.window->setPosition(boundedPosition(m_word.window,m_word.window->position()));
+        return;
+    }
     auto point=m_wordSelection.isEmpty()?m_wordAnchor:m_wordSelection.bottomLeft();
     auto s=screenAt(point);m_word.window->setScreen(s);auto work=s->availableGeometry();
     auto at=logical(point,s)+QPoint(10,10);
@@ -623,9 +663,7 @@ void App::placeWord()
         auto top=m_wordSelection.isEmpty()?m_wordAnchor:m_wordSelection.topLeft();
         at.setY(logical(top,s).y()-m_word.window->height()-10);
     }
-    at.setX(std::clamp(at.x(),work.left()+4,std::max(work.left()+4,work.right()-m_word.window->width()-4)));
-    at.setY(std::clamp(at.y(),work.top()+4,std::max(work.top()+4,work.bottom()-m_word.window->height()-4)));
-    m_word.window->setPosition(at);
+    m_word.window->setPosition(boundedPosition(m_word.window,at));
 }
 void App::closeWord()
 {

@@ -1,7 +1,7 @@
 import QtQuick
 import WinShun
 
-Window {
+AdaptiveWindow {
     id: wordWindow
     readonly property bool editing: !!backend.state.editing
     readonly property string sourceText: backend.state.sourceText || ""
@@ -9,13 +9,35 @@ Window {
     property bool syncingSource: false
     property bool acceptsInput: false
     property bool resetting: false
-    width: 324
-    height: 44 + Math.min(300, Math.max(62, body.implicitHeight)) + 48
+    // Measure at a fixed width so expanding/reflowing the visible text cannot
+    // feed back into the width calculation. Bound the probe cost for huge text.
+    preferredWidth: 28 + Math.sqrt(1.5 * (sourceMeasure.contentHeight * sourceMeasure.width
+                                       + meaningMeasure.contentHeight * meaningMeasure.width))
+    contentHeight: body.implicitHeight + 92
     visible: false
     flags: Qt.Tool | Qt.WindowStaysOnTopHint | Qt.FramelessWindowHint | (acceptsInput ? 0 : Qt.WindowDoesNotAcceptFocus)
     // Use an opaque backing store for the whole card so native moves and caret
     // updates cannot leave its unchanged controls in a translucent dirty region.
     color: Theme.card
+    Text {
+        id: sourceMeasure; visible: false; width: 266
+        text: editor.text.slice(0, 4096); textFormat: Text.PlainText
+        font: editor.font; wrapMode: Text.Wrap
+    }
+    Text {
+        id: meaningMeasure; visible: false; width: 286
+        text: meaning.text.slice(0, 4096); textFormat: Text.PlainText
+        font: meaning.font; wrapMode: Text.Wrap
+    }
+    function keepCursorVisible() {
+        if (!editor.activeFocus) return
+        var at = editor.mapToItem(body, editor.cursorRectangle.x, editor.cursorRectangle.y)
+        var nextY = scroll.contentY
+        if (at.y < nextY) nextY = at.y
+        else if (at.y + editor.cursorRectangle.height > nextY + scroll.height)
+            nextY = at.y + editor.cursorRectangle.height - scroll.height
+        scroll.contentY = Math.max(0, Math.min(nextY, scroll.contentHeight - scroll.height))
+    }
     function syncSource() {
         if (!editor || editing) return
         syncingSource = true
@@ -120,7 +142,11 @@ Window {
         x: 14; y: 44; width: parent.width - 28; height: parent.height - 92
         contentWidth: width; contentHeight: body.implicitHeight
         clip: true; boundsBehavior: Flickable.StopAtBounds
-        onContentHeightChanged: if (!wordWindow.editing) contentY = 0
+        onContentHeightChanged: {
+            if (!wordWindow.editing) contentY = 0
+            else Qt.callLater(wordWindow.keepCursorVisible)
+        }
+        onHeightChanged: Qt.callLater(wordWindow.keepCursorVisible)
         Column {
             id: body
             width: scroll.width; spacing: 10
@@ -152,13 +178,7 @@ Window {
                         acceptedButtons: Qt.LeftButton
                         onPressedChanged: if (pressed) wordWindow.focusEditor()
                     }
-                    onCursorRectangleChanged: {
-                        if (!activeFocus) return
-                        var at = mapToItem(body, cursorRectangle.x, cursorRectangle.y)
-                        if (at.y < scroll.contentY) scroll.contentY = at.y
-                        else if (at.y + cursorRectangle.height > scroll.contentY + scroll.height)
-                            scroll.contentY = at.y + cursorRectangle.height - scroll.height
-                    }
+                    onCursorRectangleChanged: Qt.callLater(wordWindow.keepCursorVisible)
                     Keys.onEscapePressed: backend.action(wordWindow.editing ? "cancelEdit" : "close", null)
                     Keys.onReturnPressed: event => {
                         if (event.modifiers & Qt.ShiftModifier || inputMethodComposing) event.accepted = false
@@ -191,8 +211,9 @@ Window {
                 }
             }
             TextEdit {
+                id: meaning
                 objectName: "word-meaning"
-                width: parent.width; height: visible ? contentHeight : 0
+                width: parent.width - 10; height: visible ? contentHeight : 0
                 visible: !!backend.state.translatedText
                 text: backend.state.translatedText || ""
                 textFormat: TextEdit.PlainText
@@ -231,7 +252,10 @@ Window {
                 onClicked: backend.action("retry", null)
             }
         }
-        ListScrollBar { flickable: scroll; parent: scroll.parent; anchors.right: scroll.right; anchors.top: scroll.top; anchors.bottom: scroll.bottom }
+    }
+    ListScrollBar {
+        objectName: "word-scrollbar"
+        flickable: scroll; anchors.right: scroll.right; anchors.top: scroll.top; anchors.bottom: scroll.bottom
     }
     Text {
         id: serviceLabel
