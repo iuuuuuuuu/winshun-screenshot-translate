@@ -20,7 +20,7 @@ QString configurationError(const QJsonObject& profile);
 using Cancel = std::shared_ptr<std::atomic_bool>;
 struct Translation {
     QStringList segments;
-    QString source, target, provider, preferred;
+    QString source, target, provider, preferred, channelId, channelName, model;
     bool fallback = false;
     QJsonObject json(const QStringList& parts) const;
 };
@@ -39,6 +39,7 @@ public:
     void save(const QJsonObject& drafts, const QJsonObject& routing = {});
     QJsonObject routing();
     QJsonArray queue(const QJsonObject& settings, const QJsonObject& drafts = {}, const QJsonObject& routing = {});
+    QList<QJsonObject> candidates(const QJsonObject& profile, const QJsonObject& settings, const QJsonObject& routing = {});
     int today();
     Translation translate(const QJsonObject& settings, const QStringList& parts,
         const QString& source, const QString& target, Cancel cancel, QJsonObject draft = {});

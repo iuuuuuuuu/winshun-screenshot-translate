@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(ScreenshotTranslate VERSION 0.4.7 LANGUAGES CXX)
+project(ScreenshotTranslate VERSION 0.4.8 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_AUTOMOC ON)
 find_package(Qt6 6.12 REQUIRED COMPONENTS Core Gui Qml Quick)
@@ -46,10 +46,11 @@ qt_add_qml_module(ScreenshotTranslateApp URI WinShun NO_PLUGIN
     SOURCES vendor/PhosphorGlyph.h)
 set_target_properties(ScreenshotTranslateApp PROPERTIES QT_QMLCACHEGEN_ARGUMENTS "--only-bytecode")
 set_source_files_properties("${CMAKE_CURRENT_BINARY_DIR}/nativeui/Settings.qml" PROPERTIES QT_RESOURCE_ALIAS Settings.qml)
+set_source_files_properties("${CMAKE_CURRENT_BINARY_DIR}/nativeui/AiChannels.qml" PROPERTIES QT_RESOURCE_ALIAS AiChannels.qml)
 set_source_files_properties("${CMAKE_CURRENT_BINARY_DIR}/nativeui/Toolbar.qml" PROPERTIES QT_RESOURCE_ALIAS Toolbar.qml)
 qt_add_resources(ScreenshotTranslateApp "screens" PREFIX "/ui" BASE "${CMAKE_CURRENT_SOURCE_DIR}"
-    FILES "${CMAKE_CURRENT_BINARY_DIR}/nativeui/Settings.qml" "${CMAKE_CURRENT_BINARY_DIR}/nativeui/Toolbar.qml"
-        qml/Status.qml qml/Text.qml qml/PinMenu.qml qml/Word.qml qml/AdaptiveWindow.qml)
+    FILES "${CMAKE_CURRENT_BINARY_DIR}/nativeui/AiChannels.qml" "${CMAKE_CURRENT_BINARY_DIR}/nativeui/Settings.qml" "${CMAKE_CURRENT_BINARY_DIR}/nativeui/Toolbar.qml"
+        qml/Status.qml qml/Text.qml qml/PinMenu.qml qml/Word.qml qml/AdaptiveWindow.qml qml/Panel.qml)
 qt_add_resources(ScreenshotTranslateApp "fonts" PREFIX "/fonts" BASE "${CMAKE_CURRENT_SOURCE_DIR}/../assets"
     FILES ../assets/Phosphor.ttf)
 option(BUILD_NATIVE_TESTS "Build native integration test driver" ON)

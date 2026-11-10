@@ -25,6 +25,7 @@ Window {
             before: to < from ? queue[to].provider : to + 1 < queue.length ? queue[to + 1].provider : ""})
     }
     function statusText(row) {
+        if (row.enabled === false) return t("已禁用", "Disabled")
         if (row.status === "running") return t("测试中", "Testing")
         if (row.status === "waiting") return t("等待中", "Queued")
         if (!row.configured) return row.provider === "ecdict" ? t("未下载", "Not downloaded") : t("待配置", "Configure")
@@ -76,6 +77,7 @@ Window {
                                "Test services, arrange fallback, or open a service tab to configure it.")
                 color: Theme.subtext; font.pixelSize: 12; wrapMode: Text.Wrap
             }
+            FlatButton { objectName: "open-panel"; text: window.t("打开独立翻译面板", "Open translation panel"); textPixelSize: 13; onClicked: backend.action("openPanel",null) }
             Item { width: 1; height: 4 }
             ChoiceTabs {
                 id: tabs
@@ -87,6 +89,7 @@ Window {
         }
         Flickable {
             id: scroll
+            objectName: "settings-scroll"
             anchors.top: heading.bottom; anchors.topMargin: 18
             anchors.left: parent.left; anchors.leftMargin: 24
             anchors.right: parent.right; anchors.rightMargin: 24
@@ -251,6 +254,13 @@ Window {
                                 Row {
                                     id: rowActions
                                     anchors.right: parent.right; anchors.rightMargin: 10; anchors.verticalCenter: parent.verticalCenter; spacing: 2
+                                    FlatButton {
+                                        objectName: "queue-enabled-" + queueRow.modelData.provider
+                                        text: queueRow.modelData.enabled === false ? window.t("禁用","Off") : window.t("启用","On")
+                                        textPixelSize: 12; implicitHeight: 30; highlighted: queueRow.modelData.enabled !== false
+                                        enabled: !backend.state.testing
+                                        onClicked: backend.action("enabled",{provider:queueRow.modelData.provider,enabled:queueRow.modelData.enabled === false})
+                                    }
                                     ToolButton {
                                         objectName: "queue-up-" + queueRow.modelData.provider
                                         visible: !window.automatic; glyph: "\uE70E"; tip: window.t("上移", "Move up")
@@ -283,9 +293,10 @@ Window {
                                    "Tests use hello without fallback. Unconfigured services are skipped; dictionary misses and cancellation do not reduce weights. Set the preferred service, proxy and recovery interval in WinShun.")
                 }
               }
+              AiChannels { visible: !window.home && window.provider === "ai"; width: scroll.width }
               Rectangle {
                 id: card
-                visible: !window.home
+                visible: !window.home && window.provider !== "ai"
                 width: scroll.width; height: rows.implicitHeight
                 radius: Theme.cardRadius; color: Theme.card
                 border.width: 1; border.color: Theme.cardBorder
@@ -444,6 +455,7 @@ Window {
                     onClicked: { scroll.contentY = 0; backend.action("home", null) }
                 }
                 FlatButton {
+                    objectName: "test-current"
                     visible: !window.home
                     text: window.t("测试当前", "Test current")
                     enabled: !backend.state.testing

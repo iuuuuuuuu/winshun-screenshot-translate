@@ -60,6 +60,11 @@ private:
     void placeWord();
     void ensureRaw();
     void showSettings();
+    void showPanel(const QString& text = {});
+    void panelAction(const QString& name,const QVariant& value);
+    void translatePanel();
+    void publishAi();
+    void aiAction(const QString& name,const QVariant& value);
     void configSelect(const QString& provider);
     void configAction(const QString& name,const QVariant& value);
     void testServices(bool all, const QString& provider = {});
@@ -84,8 +89,12 @@ private:
     QJsonObject m_settings,m_data,m_drafts,m_routingDraft;
     std::shared_ptr<Services> m_services;
     ws::captureplugin::Protocol& m_protocol;
-    Backend m_pinBackend,m_configBackend,m_wordBackend;
-    View m_bar,m_status,m_config,m_text,m_menu,m_word;
+    Backend m_pinBackend,m_configBackend,m_wordBackend,m_panelBackend;
+    View m_bar,m_status,m_config,m_text,m_menu,m_word,m_panel;
+    Cancel m_panelCancel;
+    quint64 m_panelEpoch=0;
+    int m_aiCurrent=0;
+    QJsonObject m_testProfiles;
     QTimer m_followSelection;
     Cancel m_wordCancel,m_selectionCancel;
     quint64 m_wordEpoch=0,m_selectionPendingEpoch=0;

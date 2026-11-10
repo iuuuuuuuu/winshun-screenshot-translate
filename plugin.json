@@ -5,7 +5,7 @@
     "zh": "截图翻译",
     "en": "Screenshot Translate"
   },
-  "version": "0.4.7",
+  "version": "0.4.8",
   "settingsWindow": true,
   "description": {
     "zh": "无需 Python 的原生截图、剪贴板、划词和鼠标指词翻译；支持可编辑原文、固定跟随、管理员选区及渠道自动降级。",
@@ -149,6 +149,37 @@
             "en": "Read the clipboard again"
           },
           "key": "Shift+Enter"
+        }
+      ]
+    },
+    {
+      "id": "panel",
+      "title": {
+        "zh": "翻译面板",
+        "en": "Translation panel"
+      },
+      "description": {
+        "zh": "输入文字，自动检测语言，查看双语对照和释义",
+        "en": "Type text, detect language, translate and explain"
+      },
+      "hint": {
+        "zh": "Enter 打开独立面板",
+        "en": "Enter opens the panel"
+      },
+      "icon": "glyph:U+E8C1",
+      "keyword": [
+        "jfy",
+        "翻译面板"
+      ],
+      "mode": "list",
+      "actions": [
+        {
+          "id": "open-panel",
+          "title": {
+            "zh": "打开翻译面板",
+            "en": "Open translation panel"
+          },
+          "key": "Enter"
         }
       ]
     }

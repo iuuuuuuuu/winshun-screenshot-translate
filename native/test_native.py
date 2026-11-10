@@ -103,7 +103,16 @@ class Server(http.server.BaseHTTPRequestHandler):
             if text.startswith("Loading and outside"):return "加载期间也能点击外部关闭。"
             if text=="<button>&":return "&lt;button&gt;&amp;"
             return "你好 + 100%" if text == "Hello + 100%" else text if text == "499" else "翻译：" + text
-        if path.startswith("/mymemory"):
+        if path.startswith("/ai-test"):
+            model=body["model"]
+            definition=body["messages"][0]["content"].startswith("Explain")
+            key="ai:"+model+(":definition" if definition else "")
+            counts[key]=counts.get(key,0)+1
+            assert model != "disabled", "Disabled model sent a network request"
+            if model == "bad" and counts[key] == 1:
+                self.send_response(503);self.end_headers();self.wfile.write(b'fixture model failure');return
+            result={"choices":[{"message":{"content":json.dumps([("meaning:" if definition else model+":")+t for t in json.loads(body["messages"][1]["content"])])}}]}
+        elif path.startswith("/mymemory"):
             assert len(query["q"][0].encode("utf-8"))<=500
             result = {"responseStatus": 200, "responseData": {"translatedText": translate(query["q"][0])}}
         elif path.startswith("/google"):
@@ -187,7 +196,7 @@ def launch(program, args, data, output, initial=None, gpu=False):
         api("user32", "CloseDesktop", w.BOOL, w.HANDLE)(desktop)
 
 def main():
-    build = Path(tempfile.gettempdir()) / "winshun-st-native-047"
+    build = Path(tempfile.gettempdir()) / "winshun-st-native-048"
     if "--build" in sys.argv:
         build = Path(sys.argv[sys.argv.index("--build")+1])
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Server)
@@ -226,6 +235,7 @@ def main():
             profiles.save({"openai":{"apiKey":"python-fixture-key"}})
             launch(build/"native_tests.exe",["--endpoint",base],data,out)
             assert Profiles(data).get("openai")["apiKey"]=="native-fixture-key"
+            assert counts.get("ai:bad") == 2 and not counts.get("ai:disabled"), counts
             assert counts.get("/fail") == 2, counts  # memory skips, elapsed recovery retries
             print((out/"stdout.jsonl").read_text(encoding="utf-8"))
         else:

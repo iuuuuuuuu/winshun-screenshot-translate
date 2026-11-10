@@ -82,9 +82,10 @@ QQuickItem* visualItem(QQuickItem* root,const QString& name)
     for(auto child:root->childItems())if(auto found=visualItem(child,name))return found;
     return nullptr;
 }
-void typeDraft(QQuickWindow* window,const QString& text)
+void typeDraft(QQuickWindow* window,const QString& text,const QString& name="word-editor")
 {
-    auto editor=window->findChild<QQuickItem*>("word-editor");check(editor,"source editor exists");
+    check(Probe::privateDesktop(),"typing requires private test desktop");
+    auto editor=visualItem(window->contentItem(),name);check(editor,"source editor exists");
     // Deliver focus and IME commits only to the probe window on its private
     // desktop. This does not send input to the Owner's foreground application.
     QFocusEvent focus(QEvent::FocusIn,Qt::MouseFocusReason);QCoreApplication::sendEvent(window,&focus);
@@ -98,6 +99,19 @@ void typeDraft(QQuickWindow* window,const QString& text)
         QInputMethodEvent input;input.setCommitString(text);QCoreApplication::sendEvent(window,&input);
     }pump(10);
     check(editor->property("text").toString()==text,"IME commit changes source draft");
+}
+void typeField(QQuickWindow* window,const QString& name,const QString& text)
+{
+    check(Probe::privateDesktop(),"field typing requires private desktop");
+    auto box=visualItem(window->contentItem(),name);check(box&&box->isVisible(),"AI text field exists");
+    auto scroll=window->findChild<QQuickItem*>("settings-scroll");check(scroll,"settings scroll exists");
+    auto y=box->mapToItem(scroll,QPointF()).y()+scroll->property("contentY").toDouble();
+    scroll->setProperty("contentY",std::clamp(y-40,0.0,std::max(0.0,scroll->property("contentHeight").toDouble()-scroll->height())));pump(30);
+    QFocusEvent focus(QEvent::FocusIn,Qt::MouseFocusReason);QCoreApplication::sendEvent(window,&focus);
+    QMetaObject::invokeMethod(box,"takeFocus");check(window->activeFocusItem(),"AI field takes focus");
+    QKeyEvent select(QEvent::KeyPress,Qt::Key_A,Qt::ControlModifier);QCoreApplication::sendEvent(window,&select);
+    QInputMethodEvent input;input.setCommitString(text);QCoreApplication::sendEvent(window,&input);pump(30);
+    check(box->property("text").toString()==text,"AI field accepts input without losing focus");
 }
 void dragQueue(QQuickWindow* window,QQuickItem* item,int distance)
 {
@@ -404,10 +418,12 @@ void Probe::run(App& app,const QJsonObject& params)
         app.configAction("routingMode","manual");pump(30);
         app.m_config.window->grabWindow().save(out+"/settings.png");
         app.configSelect("ai");pump(30);
+        app.m_config.window->grabWindow().save(out+"/settings-ai.png");
         check(!app.m_config.window->findChild<QQuickItem*>("test-all")->isVisible(),"test all moved out of provider footer");
-        for(auto id:{"apiKey","endpoint","model"}){
-            auto item=app.m_config.window->findChild<QQuickItem*>(QString::fromLatin1(id));
-            check(item&&item->isVisible(),"unified AI fields are visible");
+        for(auto id:{"ai-key","ai-endpoint","ai-model-0"}){
+            auto item=visualItem(app.m_config.window->contentItem(),QString::fromLatin1(id));
+            report[QString("control-")+id]=QJsonObject{{"exists",bool(item)},{"visible",item&&item->isVisible()}};
+            check(item&&item->isVisible(),"multi-channel AI fields are visible");
         }
         check(providers.count("ai")==1&&!providers.contains("openai")&&!providers.contains("deepseek"),"AI has one exposed channel");
         app.m_config.window->grabWindow().save(out+"/settings-ai.png");
@@ -900,7 +916,7 @@ void Probe::run(App& app,const QJsonObject& params)
         report["wordMouseSpacingOcr"]=true;
         QJsonArray mixedAttempts;
         for(bool chineseMajority:{true,false}){
-            QString prefix=chineseMajority?"这是中文说明，":"Please translate the ";
+            QString prefix=chineseMajority?"这是中文说明，":"Now translate the ";
             QString minority=chineseMajority?"hello world":"中文";
             QString suffix=chineseMajority?" 是要翻译的英文。":" words in this sentence.";
             QImage mixedText(650,60,QImage::Format_RGB32);mixedText.fill(Qt::white);
@@ -1077,6 +1093,64 @@ void Probe::run(App& app,const QJsonObject& params)
         for(auto label:{app.m_bar.window->findChild<QQuickItem*>("toolbar-provider"),app.m_text.window->findChild<QQuickItem*>("text-provider")})
             check(label->property("text").toString()=="渠道：Google"&&label->property("color").value<QColor>()==QColor("#666666"),"preferred screenshot restores default color");
         report["providerFallbackAppearance"]=true;report["actualProviderLabels"]=true;app.closePin();
+        // Exercise the real panel QML: debounce, editing, cancellation and independent lifetime.
+        app.m_settings["provider"]="zvo";app.m_settings["fallbackEnabled"]=false;
+        app.showPanel();pump(50);check(app.m_panel.window&&app.m_panel.window->isVisible(),"independent translation panel opens");
+        auto panelInput=app.m_panel.window->findChild<QQuickItem*>("panel-input");check(panelInput,"panel input exists");
+        app.panelAction("explain",false);typeDraft(app.m_panel.window,"hello","panel-input");
+        check(until([&]{return app.m_panelBackend.values.value("translatedText").toString()=="翻译：hello";},4000),"panel automatically translates after typing");
+        check(app.m_panelBackend.values.value("detected").toString()=="en","panel detects source language");
+        typeDraft(app.m_panel.window,"newer input","panel-input");
+        check(until([&]{return app.m_panelBackend.values.value("translatedText").toString()=="翻译：newer input";},4000),"panel latest input replaces result");
+        app.m_panel.window->grabWindow().save(out+"/panel-translation.png");
+        app.panelAction("autoTranslate",false);typeDraft(app.m_panel.window,"manual text","panel-input");pump(900);
+        check(app.m_panelBackend.values.value("translatedText").toString().isEmpty(),"manual mode does not auto-submit");
+        click(app.m_panel.window,app.m_panel.window->findChild<QQuickItem*>("panel-submit"));
+        check(until([&]{return !app.m_panelBackend.values.value("translatedText").toString().isEmpty();}),"panel translate button works");
+        // A cancelled request must never replace the newer input's result.
+        app.m_settings["provider"]="mymemory";typeDraft(app.m_panel.window,"stale blocked text","panel-input");
+        app.translatePanel();pump(80);auto pendingPanel=app.m_panelCancel;
+        check(app.m_panelBackend.values.value("loading").toBool(),"panel blocked request starts");
+        app.m_settings["provider"]="zvo";typeDraft(app.m_panel.window,"replacement text","panel-input");
+        check(pendingPanel->load(),"new input cancels pending panel request");app.translatePanel();
+        check(until([&]{return app.m_panelBackend.values.value("translatedText").toString()=="翻译：replacement text";},4000),"panel cancelled result cannot replace latest input");
+        app.panelAction("explain",true);typeDraft(app.m_panel.window,"hello","panel-input");app.translatePanel();
+        check(until([&]{return !app.m_panelBackend.values.value("definition").toString().isEmpty();},4000),"panel offline definition arrives independently");
+        check(app.m_panelBackend.values.value("definitionProvider").toString().contains("ECDICT"),"panel uses enabled downloaded dictionary");
+        app.appearance({{"theme","dark"}});pump(40);app.m_panel.window->grabWindow().save(out+"/panel-dark.png");
+        app.m_panel.window->resize(600,520);pump(40);app.m_panel.window->grabWindow().save(out+"/panel-small.png");
+        check(app.m_panel.window->findChild<QQuickItem*>("panel-submit")->isVisible(),"small panel retains translate button");
+        app.appearance({{"theme","light"}});
+        panelInput->setProperty("text",QString(10001,'x'));app.translatePanel();
+        check(app.m_panelBackend.values.value("status").toString().contains("10,000"),"panel limits oversized input");
+        app.panelAction("input","");app.translatePanel();check(!app.m_panelBackend.values.value("loading").toBool(),"empty panel stops work");
+        app.m_settings["provider"]="mymemory";app.panelAction("explain",false);typeDraft(app.m_panel.window,"close while blocked","panel-input");
+        app.translatePanel();pump(80);auto closingPanel=app.m_panelCancel;
+        app.panelAction("close",{});pump(40);check(!app.m_panel.window&&closingPanel->load(),"panel closes and cancels pending work");
+        app.showSettings();app.configSelect("ai");pump(30);
+        auto initialChannels=app.m_configBackend.values.value("aiChannels").toList().size();
+        app.aiAction("aiAdd",{});check(app.m_configBackend.values.value("aiChannels").toList().size()==initialChannels+1,"AI channel added");
+        typeField(app.m_config.window,"ai-name","测试渠道");
+        check(app.m_drafts.value("ai").toObject().value("channels").toArray().last().toObject().value("name")=="测试渠道","typed AI channel name updates draft");
+        typeField(app.m_config.window,"ai-model-0","model-one");
+        app.aiAction("aiModelAdd",{});app.aiAction("aiModelField",QVariantMap{{"index",1},{"key","name"},{"value","model-two"}});
+        app.aiAction("aiModelMove",QVariantMap{{"index",1},{"to",0}});
+        auto aiChannels=app.m_drafts.value("ai").toObject().value("channels").toArray();
+        check(aiChannels.last().toObject().value("models").toArray()[0].toObject().value("name")=="model-two","AI model order changes");
+        // Configure actual local endpoints and exercise every enabled AI model from the UI.
+        auto aiEndpoint=params.value("probeDictionaryEndpoint").toString()+"/ai-test";
+        app.aiAction("aiField",QVariantMap{{"key","endpoint"},{"value",aiEndpoint}});
+        app.aiAction("aiField",QVariantMap{{"key","apiKey"},{"value","fixture-key"}});
+        click(app.m_config.window,app.m_config.window->findChild<QQuickItem*>("test-current"));
+        check(until([&]{return !app.m_testRunning&&app.m_testQueue.isEmpty();},5000),"AI UI model tests finish");
+        check(app.m_configBackend.values.value("aiTests").toList().size()==2,"AI tests cover both enabled models");
+        check(app.m_tests.at("ai").value("detail").toString().contains("2/2"),"AI summary includes model results");
+        app.m_config.window->grabWindow().save(out+"/settings-ai-tested.png");
+        app.aiAction("aiField",QVariantMap{{"key","name"},{"value","已修改渠道"}});
+        check(app.m_configBackend.values.value("aiTests").toList().isEmpty(),"editing AI settings clears stale model tests");
+        app.configAction("enabled",QVariantMap{{"provider","google"},{"enabled",false}});app.configAction("home",{});pump(30);
+        for(auto row:app.m_configBackend.values.value("queue").toList())if(row.toMap().value("provider")=="google")check(!row.toMap().value("enabled").toBool(),"disabled provider visible in queue");
+        app.configAction("close",{});report["translationPanel"]=true;report["aiChannelControls"]=true;
         pump(200);report["closedMemory"]=memory();
         report["passed"]=true;code=0;
     }catch(const std::exception& e){report["passed"]=false;report["error"]=QString::fromUtf8(e.what());}

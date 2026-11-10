@@ -321,8 +321,43 @@ int main(int argc,char** argv)
             if(!queueEntry(queueReopened.queue(settings,{{"zvo",failedProbe}}),"zvo").value("cooling").toBool())throw std::runtime_error("test failure enters cooldown");
             queueReopened.translate({}, {"hello"},"en","zh",fresh(),failedProbe);
             if(queueEntry(queueReopened.queue(settings,{{"zvo",failedProbe}}),"zvo").value("cooling").toBool())throw std::runtime_error("successful probe clears the same configuration cooldown");
+            // Multi-endpoint/model routing uses real requests, encryption and reopened state.
+            QTemporaryDir aiDir;st::Services multi(aiDir.path());
+            auto model=[](QString name,bool enabled=true){return QJsonObject{{"name",name},{"enabled",enabled}};};
+            auto channel=[&](QString id,QJsonArray models,bool enabled=true){return QJsonObject{{"id",id},{"name",id},{"endpoint",base+"/ai-test"},{"apiKey","fixture-key"},{"enabled",enabled},{"models",models}};};
+            QJsonArray channels{channel("first",QJsonArray{model("bad"),model("disabled",false),model("good")}),channel("second",QJsonArray{model("last")})};
+            QJsonObject aiProfile{{"provider","ai"},{"enabled",true},{"channels",channels}};
+            QJsonObject configs;for(auto id:st::providers)configs[id]=QJsonObject{{"enabled",false}};
+            configs["ai"]=aiProfile;multi.save(configs,{{"mode","manual"}});
+            QJsonObject aiSettings{{"provider","ai"},{"fallbackEnabled",true},{"fallbackRecoveryMinutes",1}};
+            auto aiFirst=multi.translate(aiSettings,{"hello"},"auto","zh",fresh());
+            if(aiFirst.model!="good"||aiFirst.channelId!="first"||!aiFirst.fallback)throw std::runtime_error("AI falls through failed model to next enabled model");
+            st::Services aiReopened(aiDir.path());auto remembered=aiReopened.translate(aiSettings,{"hello"},"auto","zh",fresh());
+            if(remembered.model!="good"||!remembered.fallback)throw std::runtime_error("AI per-model cooldown persists");
+            QFile encrypted(aiDir.path()+"/services.json");encrypted.open(QIODevice::ReadOnly);auto encoded=encrypted.readAll();encrypted.close();
+            if(encoded.contains("fixture-key")||encoded.contains("apiKey"))throw std::runtime_error("all AI channel keys must be encrypted");
+            auto autoPolicy=aiReopened.routing();autoPolicy["mode"]="auto";aiReopened.save({},autoPolicy);
+            if(aiReopened.candidates(aiReopened.profile("ai"),aiSettings).first().value("model")!="good")throw std::runtime_error("AI weights rank healthy models first");
+            auto firstChannel=channels[0].toObject();firstChannel["models"]=QJsonArray{model("bad"),model("good",false),model("disabled",false)};channels[0]=firstChannel;
+            aiProfile["channels"]=channels;aiReopened.save({{"ai",aiProfile}},{{"mode","manual"}});
+            auto alternate=aiReopened.translate(aiSettings,{"hello"},"auto","zh",fresh());
+            if(alternate.channelId!="second"||alternate.model!="last"||!alternate.fallback)throw std::runtime_error("AI falls through across channels");
+            QFile aiHealth(aiDir.path()+"/service-health.json");aiHealth.open(QIODevice::ReadOnly);auto aiDoc=QJsonDocument::fromJson(aiHealth.readAll()).object();aiHealth.close();
+            auto aiEntries=aiDoc.value("services").toObject();for(auto it=aiEntries.begin();it!=aiEntries.end();++it){auto row=it.value().toObject();row["failedAt"]=0;it.value()=row;}
+            st::atomicJson(aiDir.path()+"/service-health.json",{{"version",2},{"services",aiEntries}});
+            st::Services aiRecovered(aiDir.path());auto recovery=aiRecovered.translate(aiSettings,{"hello"},"auto","zh",fresh());
+            if(recovery.model!="bad"||recovery.fallback)throw std::runtime_error("AI recovers first model after cooldown");
+            firstChannel["enabled"]=false;channels[0]=firstChannel;aiProfile["channels"]=channels;aiRecovered.save({{"ai",aiProfile}});
+            if(aiRecovered.translate(aiSettings,{"hello"},"auto","zh",fresh()).channelId!="second")throw std::runtime_error("disabled AI channel is skipped");
+            auto definitionSettings=aiSettings;definitionSettings["definition"]=true;
+            if(aiRecovered.translate(definitionSettings,{"hello"},"auto","zh",fresh()).segments!=QStringList{"meaning:hello"})throw std::runtime_error("AI explanation prompt used independently");
+            aiProfile["enabled"]=false;aiRecovered.save({{"ai",aiProfile},{"google",QJsonObject{{"enabled",true},{"endpoint",base+"/google"}}}});
+            if(aiRecovered.translate(aiSettings,{"hello"},"auto","zh",fresh()).provider!="google")throw std::runtime_error("disabled primary falls back to enabled service");
+            aiRecovered.save({{"google",QJsonObject{{"enabled",false},{"endpoint",base+"/google"}}}});
+            bool noEnabled=false;try{aiRecovered.translate(aiSettings,{"hello"},"auto","zh",fresh());}catch(const std::exception&){noEnabled=true;}
+            if(!noEnabled)throw std::runtime_error("all-disabled queue must not send requests");
             std::puts(QJsonDocument(QJsonObject{{"passed",true},{"fixtureRoutes",QJsonArray::fromStringList(routes)},
-                {"dpapi",true},{"smallScreenshotOcr",true},{"aiMigration",true},{"offlineDictionary",true},{"dictionaryFallback",true},{"dictionaryDownload",true},{"dictionaryIntegrity",true},{"youdaoSignature",true},{"sogouEncoding",true},
+                {"multiAiFallback",true},{"aiModelCooldown",true},{"aiModelRecovery",true},{"aiChannelEncryption",true},{"disabledProviders",true},{"aiExplanation",true},{"dpapi",true},{"smallScreenshotOcr",true},{"aiMigration",true},{"offlineDictionary",true},{"dictionaryFallback",true},{"dictionaryDownload",true},{"dictionaryIntegrity",true},{"youdaoSignature",true},{"sogouEncoding",true},
                 {"persistentFallback",true},{"recovery",true},{"cancel",true},{"httpProxy",true},{"pointerPhrases",true},
                 {"manualQueue",true},{"automaticWeights",true},{"persistentQueue",true},{"diagnosticsHealth",true},{"neutralCancellationAndMisses",true}}).toJson(QJsonDocument::Compact).constData());
         }else if(args.contains("--live")){

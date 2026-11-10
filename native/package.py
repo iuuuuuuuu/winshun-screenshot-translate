@@ -15,7 +15,7 @@ import zipfile
 def main():
     root = Path(__file__).resolve().parents[1]
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--build', type=Path, default=Path(tempfile.gettempdir())/'winshun-st-native-047')
+    parser.add_argument('--build', type=Path, default=Path(tempfile.gettempdir())/'winshun-st-native-048')
     parser.add_argument('--vs-root', type=Path, default=Path('D:/VisualStudio/Product'))
     parser.add_argument('--out', type=Path)
     parser.add_argument('--allow-dirty', action='store_true', help='仅本地验证允许未提交源码')

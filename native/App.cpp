@@ -1,4 +1,5 @@
 #include "App.h"
+#include <QUuid>
 #include "CaptureKeys.h"
 #include <QClipboard>
 #include <QDateTime>
@@ -108,6 +109,9 @@ App::App(ws::captureplugin::Protocol& protocol,QString appDir,QJsonObject initia
     m_wordBackend.update({{"chinese",m_chinese},{"dark",m_dark},{"pinned",false},{"editing",false},{"loading",false},
         {"sourceText",""},{"translatedText",""},{"status",""},{"provider",""},{"mode","clip"}});
     QObject::connect(&m_wordBackend,&Backend::invoked,this,&App::wordAction);
+    m_panelBackend.update({{"chinese",m_chinese},{"dark",m_dark},{"sourceText",""},{"source","auto"},{"target","auto"},
+        {"translatedText",""},{"definition",""},{"status",""},{"loading",false},{"autoTranslate",true},{"explain",true}});
+    QObject::connect(&m_panelBackend,&Backend::invoked,this,&App::panelAction);
     m_followSelection.setInterval(450);
     QObject::connect(&m_followSelection,&QTimer::timeout,this,[this]{readSelection(true);});
     m_idleTimer.setSingleShot(true);
@@ -140,12 +144,12 @@ void App::reclaimIdle()
     if(tick-m_idleSince<20000){m_idleTimer.start(int(20000-(tick-m_idleSince)));return;}
     if(!m_idleReleased){
         m_idleReleased=true;
-        dispose(m_word);dispose(m_bar);dispose(m_status);dispose(m_text);dispose(m_menu);dispose(m_config);
+        dispose(m_word);dispose(m_bar);dispose(m_status);dispose(m_text);dispose(m_menu);dispose(m_config);dispose(m_panel);
         m_original={};m_translated={};m_blocks.clear();m_data={};m_drafts={};m_tests.clear();m_testCancels.clear();
         m_pinBackend.update({{"translatedText",""},{"sourceText",""},{"provider",""},{"providerNote",""}});
         m_wordBackend.update({{"sourceText",""},{"translatedText",""},{"provider",""},{"providerNote",""},{"status",""}});
         m_configBackend.update({{"apiKey",""},{"endpoint",""},{"model",""},{"region",""},{"appId",""},
-            {"testResults",QVariantList()},{"queue",QVariantList()},{"message",""}});
+            {"testResults",QVariantList()},{"queue",QVariantList()},{"aiChannels",QVariantList()},{"aiTests",QVariantList()},{"message",""}});
         QPixmapCache::clear();
         // QQmlEngine deletion is deferred: let it finish before returning pages.
         m_idleTimer.start(250);return;
@@ -166,6 +170,7 @@ QString App::providerLabel(const QJsonObject& data) const
     if(provider.isEmpty())return {};
     auto label=names.value(providers.indexOf(provider),provider);
     if(!m_chinese){if(provider=="sogou")label="Sogou";else if(provider=="youdao")label="Youdao";else if(provider=="ai")label="AI";}
+    if(provider=="ai"&&!data.value("model").toString().isEmpty())label+=" · "+data.value("channelName").toString()+" / "+data.value("model").toString();
     return (m_chinese?"渠道：":"Service: ")+label+(data.value("fallback").toBool()?(m_chinese?" · 已降级":" · fallback"):QString());
 }
 QString App::providerNote(const QJsonObject& data) const
@@ -195,6 +200,7 @@ void App::appearance(const QJsonObject& params)
     else{serviceNames[4]="Sogou";serviceNames[5]="Youdao";serviceNames[9]="AI translation";}
     m_configBackend.update({{"chinese",m_chinese},{"dark",m_dark},{"names",serviceNames}});
     m_wordBackend.update({{"chinese",m_chinese},{"dark",m_dark}});
+    m_panelBackend.update({{"chinese",m_chinese},{"dark",m_dark},{"sourceLabels",labels},{"codes",QStringList{"auto","zh","en","ja","ko","fr","de","es","ru"}}});
     if(m_pin)render();
 }
 View App::view(const QString& file,Backend* backend)
@@ -293,6 +299,11 @@ void App::query(const QJsonValue& id,const QJsonObject& params)
     used();
     QString command=params.value("command").toString(),text=params.value("text").toString().trimmed();
     int qid=params.value("queryId").toInt();QJsonArray items;
+    if(command=="panel"){
+        auto item=row("panel",m_chinese?"打开翻译面板":"Open translation panel",m_chinese?"输入文字 · 自动翻译 · 双语对照与释义":"Type, translate and explain");
+        item["data"]=QJsonObject{{"source",text}};item["actions"]=QJsonArray{QJsonObject{{"id","open-panel"},{"title","打开"},{"key","Enter"}}};
+        m_protocol.respond(id,QJsonObject{{"items",QJsonArray{item}}});return;
+    }
     if(command=="shot"){
         auto item=row("shot",m_chinese?"框选屏幕并翻译":"Capture and translate",m_chinese?"Enter 框选 · Ctrl+Enter 全屏 · Shift+Enter 当前窗口":"Enter region · Ctrl+Enter full · Shift+Enter window");
         item["actions"]=QJsonArray{QJsonObject{{"id","start-region"},{"title","框选"},{"key","Enter"}},
@@ -338,7 +349,9 @@ void App::dispatch(const QJsonValue& id,const QString& method,const QJsonObject&
             else if(key.compare(m_settings.value("wordOcrHotkey").toString(),Qt::CaseInsensitive)==0)textFlow("ocr");
         }else if(method=="action"){
             QString action=params.value("action").toString();QJsonArray effects;
-            if(action.startsWith("copy-")){
+            if(action=="open-panel"){
+                showPanel(params.value("item").toObject().value("data").toObject().value("source").toString());effects.append(effect("hide"));
+            }else if(action.startsWith("copy-")){
                 auto data=params.value("item").toObject().value("data").toObject();
                 effects.append(QJsonObject{{"type","copy"},{"text",data.value(action=="copy-source"?"source":"translated")}});
             }else if(action=="retry-text"){
@@ -358,7 +371,7 @@ void App::dispatch(const QJsonValue& id,const QString& method,const QJsonObject&
             if(m_pin){render();m_pinOpened=GetTickCount();}
         }else if(method=="appearance")appearance(params);
         else if(method=="shutdown"){
-            if(hasId(id))m_protocol.respond(id,QJsonObject());closeWord();closePin();dispose(m_config);ExitProcess(0);
+            if(hasId(id))m_protocol.respond(id,QJsonObject());closeWord();closePin();panelAction("close",{});dispose(m_config);ExitProcess(0);
         }else if(hasId(id))m_protocol.respond(id,QJsonObject());
     }catch(const std::exception& e){
         m_busy=false;
@@ -766,6 +779,110 @@ void App::translateWord(QString text)
         cancel->store(true);m_wordBackend.update({{"loading",false},{"status","翻译超时，请重试或更换渠道"}});
     });
 }
+void App::showPanel(const QString& text)
+{
+    used();
+    if(!m_panel.window)m_panel=view("qrc:/ui/qml/Panel.qml",&m_panelBackend);
+    auto screen=QGuiApplication::screenAt(m_mouse());if(!screen)screen=QGuiApplication::primaryScreen();
+    auto area=screen->availableGeometry();m_panel.window->setScreen(screen);
+    m_panel.window->setMaximumSize(QSize(std::min(1280,area.width()),std::min(1000,area.height())));
+    if(!m_panel.window->isVisible()){
+        m_panel.window->resize(std::min(960,area.width()-24),std::min(760,area.height()-40));
+        m_panel.window->setPosition(area.center()-QPoint(m_panel.window->width()/2,m_panel.window->height()/2));
+    }
+    m_panelBackend.update({{"menuLeft",area.left()},{"menuRight",area.right()},{"menuTop",area.top()},{"menuBottom",area.bottom()}});
+    if(!text.isEmpty())m_panelBackend.update({{"sourceText",text}});
+    m_panel.window->show();m_panel.window->requestActivate();
+}
+void App::panelAction(const QString& name,const QVariant& value)
+{
+    used();
+    if(name=="close"){
+        if(m_panelCancel)m_panelCancel->store(true);++m_panelEpoch;
+        if(m_panel.window)m_panel.window->hide();dispose(m_panel);m_panelBackend.update({{"loading",false}});return;
+    }
+    if(name=="settings"){showSettings();return;}
+    if(name=="copy"){QGuiApplication::clipboard()->setText(m_panelBackend.values.value(value.toString()).toString());return;}
+    if(name=="translate"){translatePanel();return;}
+    if(name=="menu")return;
+    if(!QStringList{"input","source","target","autoTranslate","explain"}.contains(name))return;
+    if(m_panelCancel)m_panelCancel->store(true);++m_panelEpoch;
+    m_panelBackend.update({{name=="input"?"sourceText":name,value},{"loading",false},{"status",""},{"definitionStatus",""},
+        {"translatedText",""},{"definition",""},{"provider",""},{"definitionProvider",""},{"detected",""}});
+}
+void App::translatePanel()
+{
+    auto text=m_panelBackend.values.value("sourceText").toString().trimmed();
+    if(m_panelCancel)m_panelCancel->store(true);m_panelCancel=token();auto cancel=m_panelCancel;auto epoch=++m_panelEpoch;
+    if(text.isEmpty()){m_panelBackend.update({{"loading",false}});return;}
+    if(text.size()>10000){m_panelBackend.update({{"status","一次最多输入 10,000 个字符"},{"loading",false}});return;}
+    auto source=m_panelBackend.values.value("source").toString();auto target=targetFor(text,m_panelBackend.values.value("target").toString());
+    auto settings=m_settings;auto services=m_services;
+    m_panelBackend.update({{"loading",true},{"status","正在翻译…"},{"translatedText",""},{"definition",""},{"definitionStatus",""},
+        {"provider",""},{"definitionProvider",""},{"detected",source=="auto"?detect(text):source},{"actualTarget",target}});
+    background([services,settings,text,source,target,cancel]{return services->translate(settings,{text},source,target,cancel).json({text});},
+        [this,cancel,epoch](QJsonObject data,QString error){
+            if(cancel->load()||epoch!=m_panelEpoch)return;
+            m_panelBackend.update({{"loading",false},{"status",error},{"translatedText",data.value("translated").toString()},
+                {"provider",providerLabel(data)},{"providerNote",providerNote(data)},{"providerFallback",data.value("fallback").toBool()}});
+            if(error.isEmpty())m_panelBackend.update({{"detected",data.value("sourceLanguage").toString()}});
+        });
+    if(m_panelBackend.values.value("explain").toBool()){
+        settings["definition"]=true;settings["fallbackEnabled"]=true;
+        // Prefer the offline dictionary for words, otherwise use the configured eligible service.
+        if(dictionaryText(text)&&m_services->profile("ecdict").value("enabled").toBool(true)&&dictionaryAvailable(m_services->directory()))settings["provider"]="ecdict";
+        m_panelBackend.update({{"definitionStatus","正在查询释义…"}});
+        background([services,settings,text,source,target,cancel]{return services->translate(settings,{text},source,target,cancel).json({text});},
+            [this,cancel,epoch](QJsonObject data,QString error){
+                if(cancel->load()||epoch!=m_panelEpoch)return;
+                m_panelBackend.update({{"definition",data.value("translated").toString()},{"definitionStatus",error},
+                    {"definitionProvider",providerLabel(data)},{"definitionFallback",data.value("fallback").toBool()}});
+            });
+    }
+}
+void App::publishAi()
+{
+    auto channels=m_drafts.value("ai").toObject().value("channels").toArray();
+    m_aiCurrent=std::clamp(m_aiCurrent,0,std::max(0,int(channels.size())-1));
+    m_configBackend.update({{"aiChannels",channels.toVariantList()},{"aiCurrent",m_aiCurrent}});
+}
+void App::aiAction(const QString& name,const QVariant& value)
+{
+    auto ai=m_drafts.value("ai").toObject();auto channels=ai.value("channels").toArray();auto input=value.toMap();
+    if(name=="aiSelect"){m_aiCurrent=value.toInt();publishAi();return;}
+    if(name=="aiAdd"){
+        if(channels.size()>=32)throw std::runtime_error("AI 渠道最多 32 个");
+        channels.append(QJsonObject{{"id",QUuid::createUuid().toString(QUuid::WithoutBraces)},{"name",QString("AI 渠道 %1").arg(channels.size()+1)},
+            {"endpoint",""},{"apiKey",""},{"enabled",true},{"models",QJsonArray{QJsonObject{{"name",""},{"enabled",true}}}}});m_aiCurrent=channels.size()-1;
+    }else if(name=="aiRemove"){int index=value.toInt();if(index>=0&&index<channels.size())channels.removeAt(index);}
+    else if(name=="aiMove"){
+        int from=input.value("from").toInt(),to=input.value("to").toInt();
+        if(from<0||from>=channels.size()||to<0||to>=channels.size())return;
+        auto c=channels.takeAt(from);channels.insert(to,c);m_aiCurrent=to;
+    }else{
+        if(m_aiCurrent<0||m_aiCurrent>=channels.size())return;auto channel=channels[m_aiCurrent].toObject();
+        if(name=="aiField"){
+            auto key=input.value("key").toString();if(!QStringList{"name","endpoint","apiKey","enabled"}.contains(key))return;
+            channel[key]=QJsonValue::fromVariant(input.value("value"));
+        }else{
+            auto models=channel.value("models").toArray();int index=input.value("index").toInt();
+            if(name=="aiModelAdd"){if(models.size()>=32)throw std::runtime_error("每个渠道最多 32 个模型");models.append(QJsonObject{{"name",""},{"enabled",true}});}
+            else if(index>=0&&index<models.size()){
+                if(name=="aiModelRemove")models.removeAt(index);
+                else if(name=="aiModelMove"){
+                    int to=input.value("to").toInt();if(to<0||to>=models.size())return;auto m=models.takeAt(index);models.insert(to,m);
+                }else if(name=="aiModelField"){
+                    auto key=input.value("key").toString();if(key!="name"&&key!="enabled")return;
+                    auto m=models[index].toObject();m[key]=QJsonValue::fromVariant(input.value("value"));models[index]=m;
+                }
+            }
+            channel["models"]=models;
+        }channels[m_aiCurrent]=channel;
+    }
+    ai["channels"]=channels;m_drafts["ai"]=ai;publishAi();
+    for(auto it=m_tests.begin();it!=m_tests.end();)if(it->first=="ai"||it->first.startsWith("ai:"))it=m_tests.erase(it);else ++it;
+    publishTests();
+}
 void App::showSettings()
 {
     used();
@@ -773,6 +890,10 @@ void App::showSettings()
     ++m_configEpoch;m_drafts={};m_tests.clear();m_batch=false;
     m_routingDraft=m_services->routing();
     for(auto p:providers)m_drafts[p]=m_services->profile(p);
+    auto ai=m_drafts.value("ai").toObject();
+    if(!ai.contains("channels"))ai["channels"]=QJsonArray{QJsonObject{{"id","legacy"},{"name","默认 AI"},{"enabled",true},
+        {"endpoint",ai.value("endpoint")},{"apiKey",ai.value("apiKey")},{"models",QJsonArray{QJsonObject{{"name",ai.value("model")},{"enabled",true}}}}}};
+    m_drafts["ai"]=ai;m_aiCurrent=0;publishAi();
     m_configBackend.update({{"testResults",QVariantList()},{"showTestResults",false},{"testing",false},{"batch",false},{"message",""}});
     configSelect(m_settings.value("provider").toString("mymemory"));
     m_configBackend.update({{"home",true}});publishTests();
@@ -819,6 +940,15 @@ void App::startDictionaryDownload()
 void App::configAction(const QString& name,const QVariant& value)
 {
     try{
+        if(name=="openPanel"){showPanel();return;}
+        if(name.startsWith("ai")){aiAction(name,value);return;}
+        if(name=="enabled"){
+            auto data=value.toMap();auto provider=data.value("provider").toString();if(!providers.contains(provider))return;
+            auto profile=m_drafts.value(provider).toObject();profile["enabled"]=data.value("enabled").toBool();m_drafts[provider]=profile;
+            for(auto it=m_tests.begin();it!=m_tests.end();)if(it->first==provider||(provider=="ai"&&it->first.startsWith("ai:")))it=m_tests.erase(it);else ++it;
+            if(provider==m_configProvider)m_configBackend.update({{"enabled",profile["enabled"].toBool()}});
+            publishTests();return;
+        }
         if(name=="select")configSelect(providers.value(value.toInt()));
         else if(name=="selectProvider")configSelect(value.toString());
         else if(name=="home"){m_configBackend.update({{"home",true}});publishTests();}
@@ -844,7 +974,7 @@ void App::configAction(const QString& name,const QVariant& value)
             if(draft.value(name)!=next)m_tests.erase(m_configProvider);
             draft[name]=next;m_drafts[m_configProvider]=draft;
             if(name=="appId")m_configBackend.update({{"endpointHint",value.toString().trimmed().isEmpty()?"https://dict.youdao.com/jsonapi":"https://openapi.youdao.com/api"}});
-        }else if(name=="save"){m_services->save(m_drafts,m_routingDraft);configAction("close",{});}
+        }else if(name=="save"){m_services->save(m_drafts,m_routingDraft);m_cache.clear();configAction("close",{});}
         else if(name=="test"||name=="testAll")testServices(name=="testAll");
         else if(name=="testService")testServices(false,value.toString());
         else if(name=="showTests")configAction("home",{});
@@ -852,7 +982,7 @@ void App::configAction(const QString& name,const QVariant& value)
             used();
             if(m_config.window)m_config.window->hide();++m_configEpoch;
             for(auto c:m_testCancels)c->store(true);m_testCancels.clear();m_testQueue.clear();m_testRunning=0;
-            dispose(m_config);m_drafts={};
+            dispose(m_config);m_drafts={};m_testProfiles={};m_configBackend.update({{"apiKey",""},{"aiChannels",QVariantList()}});
         }
     }catch(const std::exception& e){m_configBackend.update({{"message",failure(e)}});}
 }
@@ -860,16 +990,23 @@ void App::testServices(bool all,const QString& provider)
 {
     if(m_testRunning||!m_testQueue.isEmpty())return;
     auto single=provider.isEmpty()?m_configProvider:provider;if(!all&&!providers.contains(single))return;
-    m_batch=all;if(all)m_tests.clear();m_testQueue=all?providers:QStringList{single};
-    for(auto p:m_testQueue){
+    m_batch=all;if(all)m_tests.clear();m_testQueue.clear();m_testProfiles={};
+    if(!all)for(auto it=m_tests.begin();it!=m_tests.end();)if(it->first==single||(single=="ai"&&it->first.startsWith("ai:")))it=m_tests.erase(it);else ++it;
+    for(auto p:all?providers:QStringList{single}){
         if(!m_drafts.contains(p))m_drafts[p]=m_services->profile(p);
-        m_tests[p]={{"status","waiting"},{"detail","等待测试"}};
+        auto profile=m_drafts.value(p).toObject();auto candidates=m_services->candidates(profile,m_settings,m_routingDraft);
+        if(candidates.isEmpty()){m_tests[p]={{"status","skipped"},{"detail","已禁用或没有启用的模型"}};continue;}
+        for(auto config:candidates){
+            auto id=p=="ai"?"ai:"+config.value("channelId").toString()+":"+config.value("model").toString():p;
+            m_testProfiles[id]=config;m_testQueue<<id;m_tests[id]={{"status","waiting"},{"detail","等待测试"},
+                {"name",p=="ai"?config.value("channelName").toString()+" / "+config.value("model").toString():p}};
+        }
     }pumpTests();
 }
 void App::pumpTests()
 {
     while(m_testRunning<3&&!m_testQueue.isEmpty()){
-        auto p=m_testQueue.takeFirst();auto draft=m_drafts.value(p).toObject();
+        auto p=m_testQueue.takeFirst();auto draft=m_testProfiles.value(p).toObject();
         auto problem=m_services->configurationProblem(draft);
         if(!problem.isEmpty()){
             m_tests[p]={{"status","skipped"},{"detail",problem+"，已跳过"}};continue;
@@ -880,7 +1017,7 @@ void App::pumpTests()
         background([services,settings,draft,cancel]{return services->translate(settings,{"hello"},"en","zh",cancel,draft);},
             [this,p,cancel,epoch,started,draft](Translation data,QString error){
                 if(epoch!=m_configEpoch||cancel->load())return;--m_testRunning;
-                if(m_drafts.value(p).toObject()==draft)m_tests[p]={{"status",error.isEmpty()?"success":"failed"},{"elapsedMs",started->elapsed()},{"checkedAt",QDateTime::currentMSecsSinceEpoch()},
+                if(m_testProfiles.value(p).toObject()==draft)m_tests[p]={{"status",error.isEmpty()?"success":"failed"},{"elapsedMs",started->elapsed()},{"checkedAt",QDateTime::currentMSecsSinceEpoch()},
                     {"detail",error.isEmpty()?"连接成功："+data.segments.join('\n'):error}};
                 pumpTests();
             });
@@ -889,26 +1026,43 @@ void App::pumpTests()
 void App::publishTests()
 {
     publishDictionary();
-    QVariantList rows;int completed=0;
+    QVariantList aiTests;int aiComplete=0,aiSuccess=0,aiFailed=0;bool aiRunning=false,aiWaiting=false;qint64 aiChecked=0;
+    for(auto& [id,test]:m_tests)if(id.startsWith("ai:")){
+        auto r=test;auto config=m_testProfiles.value(id).toObject();r["name"]=config.value("channelName").toString()+" / "+config.value("model").toString();aiTests<<r;
+        auto status=test.value("status").toString();aiRunning|=status=="running";aiWaiting|=status=="waiting";
+        if(status!="waiting"&&status!="running")++aiComplete;
+        if(status=="success")++aiSuccess;if(status=="failed")++aiFailed;
+        aiChecked=std::max(aiChecked,test.value("checkedAt").toLongLong());
+    }
+    if(!aiTests.isEmpty()){
+        QVariantMap summary{{"status",aiRunning?"running":aiWaiting?"waiting":aiSuccess?"success":aiFailed?"failed":"skipped"},
+            {"detail",QString("已测试 %1/%2 个模型，%3 个可用").arg(aiComplete).arg(aiTests.size()).arg(aiSuccess)}};
+        if(!aiRunning&&!aiWaiting&&aiChecked)summary["checkedAt"]=aiChecked;m_tests["ai"]=summary;
+    }
+    QVariantList rows;int completed=0,total=0;
+    for(auto& [id,test]:m_tests){
+        if(id=="ai"&&!aiTests.isEmpty())continue;++total;
+        if(test.value("status")!="waiting"&&test.value("status")!="running")++completed;
+    }
     for(auto p:providers){
         auto it=m_tests.find(p);if(it==m_tests.end())continue;
         auto row=it->second;row["provider"]=p;row["name"]=m_configBackend.values["names"].toStringList().value(providers.indexOf(p));
-        rows.append(row);if(row["status"]!="waiting"&&row["status"]!="running")++completed;
+        rows.append(row);
     }
     QVariantList queue;int ready=0,cooling=0,unconfigured=0;
     for(auto value:m_services->queue(m_settings,m_drafts,m_routingDraft)){
         auto row=value.toObject().toVariantMap();auto p=row["provider"].toString();
         row["name"]=m_configBackend.values["names"].toStringList().value(providers.indexOf(p));
-        if(!row["configured"].toBool())++unconfigured;else if(row["cooling"].toBool())++cooling;else ++ready;
+        if(!row["enabled"].toBool()){}else if(!row["configured"].toBool())++unconfigured;else if(row["cooling"].toBool())++cooling;else ++ready;
         if(auto it=m_tests.find(p);it!=m_tests.end()){
             if(!it->second.contains("checkedAt")||it->second.value("checkedAt").toLongLong()>=row.value("checkedAt").toLongLong())
                 for(auto entry=it->second.begin();entry!=it->second.end();++entry)row[entry.key()]=entry.value();
         }
         queue.append(row);
     }
-    m_configBackend.update({{"testResults",rows},{"testing",m_testRunning>0||!m_testQueue.isEmpty()},{"batch",m_batch},
+    m_configBackend.update({{"aiTests",aiTests},{"testResults",rows},{"testing",m_testRunning>0||!m_testQueue.isEmpty()},{"batch",m_batch},
         {"queue",queue},{"routingMode",m_routingDraft.value("mode").toString("manual")},{"readyCount",ready},{"coolingCount",cooling},{"unconfiguredCount",unconfigured},
         {"fallbackEnabled",m_settings.value("fallbackEnabled").toBool(true)},{"recoveryMinutes",std::clamp(m_settings.value("fallbackRecoveryMinutes").toDouble(10),1.0,1440.0)},
-        {"message",m_batch?QString("已测试 %1/%2").arg(completed).arg(rows.size()):m_tests[m_configProvider].value("detail").toString()}});
+        {"message",m_batch?QString("已测试 %1/%2").arg(completed).arg(total):m_tests.contains(m_configProvider)?m_tests.at(m_configProvider).value("detail").toString():QString()}});
 }
 }

@@ -1,6 +1,6 @@
 # Keep the community version's layout, with WinShun's own Quick-only helpers.
 # The host deliberately does not ship the QtQuick.Controls QML plugin.
-foreach(name Settings Toolbar)
+foreach(name Settings Toolbar AiChannels)
     file(READ "${CMAKE_CURRENT_SOURCE_DIR}/../qml/${name}.qml" content)
     string(REPLACE "import QtQuick.Controls\n" "" content "${content}")
     if(name STREQUAL "Settings")
