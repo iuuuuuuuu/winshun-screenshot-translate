@@ -1,0 +1,20 @@
+{
+  "version": "6.12.0",
+  "archives": [
+    {
+      "module": "qtbase",
+      "url": "https://download.qt.io/online/qtsdkrepository/windows_x86/desktop/qt6_6120/qt6_6120_msvc2022_64/qt.qt6.6120.win64_msvc2022_64/6.12.0-0-202609280346qtbase-Windows-Windows_11_24H2-MSVC2022-Windows-Windows_11_24H2-X86_64.7z",
+      "sha256": "219d1b86def3be418e31d704572bc4acc91b2ec373c65595c9fb12b42bf098dc"
+    },
+    {
+      "module": "qtdeclarative",
+      "url": "https://download.qt.io/online/qtsdkrepository/windows_x86/desktop/qt6_6120/qt6_6120_msvc2022_64/qt.qt6.6120.win64_msvc2022_64/6.12.0-0-202609280346qtdeclarative-Windows-Windows_11_24H2-MSVC2022-Windows-Windows_11_24H2-X86_64.7z",
+      "sha256": "258146e9972fadbc1162cda31c7d7ed7e627f5022b2a848f2edb84d9c2ce27db"
+    },
+    {
+      "module": "qttools",
+      "url": "https://download.qt.io/online/qtsdkrepository/windows_x86/desktop/qt6_6120/qt6_6120_msvc2022_64/qt.qt6.6120.win64_msvc2022_64/6.12.0-0-202609280346qttools-Windows-Windows_11_24H2-MSVC2022-Windows-Windows_11_24H2-X86_64.7z",
+      "sha256": "73328e361429378df518f391ebe4d82c51e833f4d5a951692768ab5a5a1d7da5"
+    }
+  ]
+}

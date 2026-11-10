@@ -5,7 +5,7 @@
     "zh": "截图翻译",
     "en": "Screenshot Translate"
   },
-  "version": "0.4.6",
+  "version": "0.4.7",
   "settingsWindow": true,
   "description": {
     "zh": "无需 Python 的原生截图、剪贴板、划词和鼠标指词翻译；支持可编辑原文、固定跟随、管理员选区及渠道自动降级。",
@@ -14,7 +14,7 @@
   "author": "iuuuuuuuu",
   "homepage": "https://github.com/iuuuuuuuu/winshun-screenshot-translate",
   "license": "MIT",
-  "minWinShun": "0.22.0",
+  "minWinShun": "0.23.0",
   "runtime": {
     "mode": "resident",
     "program": "ScreenshotTranslate.exe",
@@ -23,7 +23,9 @@
     "timeoutMs": 25000,
     "debounceMs": 300,
     "idleExitSec": 0,
-    "memoryMB": 1024
+    "memoryMB": 1024,
+    "qt": "host",
+    "qtVersion": "6.12.0"
   },
   "permissions": [
     "ui",

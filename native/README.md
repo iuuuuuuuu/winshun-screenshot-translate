@@ -1,23 +1,25 @@
-# 截图翻译 0.4.6：原生版构建与验证
+# 截图翻译 0.4.7：原生版构建与验证
 
 原生 C++ / Qt Quick 版本，运行时不需要 Python、PySide6、PowerShell OCR 脚本或另装 Qt。
-小型启动器只从本插件的 `runtime/` 加载随包 Qt，系统 Windows OCR 在后台线程识别图片。
-支持 Windows 10/11 x64、WinShun 0.22.0+ 和至少一种 Windows OCR 语言包。
-构建与分发使用 Qt 6.10.0 公共 API；运行时不从宿主目录加载 Qt。
+小型启动器从 WinShun runner 提供的 `WS_QT_DIR` 加载宿主 Qt，系统 Windows OCR 在后台线程识别图片。
+支持 Windows 10/11 x64、WinShun 0.23.0+ 和至少一种 Windows OCR 语言包。
+构建使用 Qt 6.12.0 公共 API；运行时接受宿主 Qt 6.12.x，禁止从 PATH 或旧版随包 Qt 回退。
 
-原生 EXE / DLL 按官方“未审核的原生插件”类别提交，最低宿主版本为 0.22.0。
-管理员插件自带运行库，不声明 `runtime.qt: host`；代码审核状态以官方索引为准。
+原生 EXE / DLL 按官方“未审核的原生插件”类别提交，最低宿主版本为 0.23.0。
+清单声明 `runtime.qt: host` 与 `runtime.qtVersion: 6.12.0`，保留 `elevated`；代码审核状态以官方索引为准。
 本包沿用社区 ID `iuuuuuuuu.screenshot-translate`。
+
+包内不含 Qt DLL、平台插件、QML 运行库或 `qt.conf`。字体放在插件自身 `fonts/`；共享 Qt 目录只读。选区工作进程继承 runner 提供的环境。
 
 ## 安装和回退
 
 在 WinShun 设置 → 插件 → 从压缩包安装，选择
-`iuuuuuuuu.screenshot-translate-0.4.6.wsplugin`。运行时不检查或启动 Python。
-包内包括启动器、应用 DLL、Qt/Visual C++ 运行库、许可和文档；DLL 内包含 QML 控件与授权图标字体。
+`iuuuuuuuu.screenshot-translate-0.4.7.wsplugin`。运行时不检查或启动 Python。
+包内包括启动器、应用 DLL、少量 Visual C++ 依赖、许可和文档；DLL 内包含 QML 控件与授权图标字体。
 现有渠道、热键、代理、偏好和 DPAPI 密钥格式保持兼容，不迁移或删除用户的数据目录。
 
 本地候选版的安装脚本和备份仍用于历史回退。公开版使用 WinShun 的压缩包安装流程。
-回退时可安装原 v0.3.3 包及其 Python 依赖，或恢复已保存的完整备份。
+回退时可安装原 v0.4.6 自带 Qt 包，或恢复已保存的完整备份。
 不要同时启用历史 `winshun.screenshot-translate` 和当前社区 ID。
 
 ### 读取以管理员身份运行的软件
@@ -143,21 +145,25 @@ Enter 仍可立即提交，末尾的还原图标恢复当前结果对应的原�
 在独立桌面依次完成复制翻译、真实 Windows OCR 截图翻译、设置开关，等待真实闲置延迟，
 记录各阶段总工作集、私有工作集、提交大小、句柄数和闲置后重新打开耗时；另检查固定窗与睡眠保护。
 
-开发构建需要 Python 3。`build.ps1` 自动下载固定提交的 ECDICT 数据、校验 SHA-256 并生成 `data/ecdict.bin`。
+开发构建需要 Python 3。Qt SDK 由 `native/install_qt.py` 下载固定 SHA-256 的官方 6.12.0 MSVC 包并解压；先安装开发依赖 `py7zr==1.1.4`。这些工具不随插件运行。`build.ps1` 自动下载固定提交的 ECDICT 数据、校验 SHA-256 并生成 `data/ecdict.bin`。
 已有词库通过校验后复用，不会重复下载；`package.py` 将索引作为独立 Release 附件，插件包仅保留来源校验记录和 MIT 许可。
 用户安装后不需要 Python；使用 ECDICT 前在设置中一键下载词库。完整 UI 测试应串行运行，避免测试热键互相冲突。
 
 ```powershell
-.\native\build.ps1 -QtRoot <Qt6.10.0-msvc2022_64> -VsRoot <VisualStudio> -Output <构建目录>
-python -B native/package.py --build <构建目录> --qt-root <Qt目录> --vs-root <VisualStudio>
+.\native\build.ps1 -QtRoot <Qt6.12.0-msvc2022_64> -VsRoot <VisualStudio> -Output <构建目录>
+python -B native/package.py --build <构建目录> --vs-root <VisualStudio>
 # package.json 中的 stage 是完整待发布目录；开发中可加 --allow-dirty，仅供本地验证。
-python -B native/test_native.py --build <stage目录> --runtime <stage目录>/runtime
-python -B native/test_native_standard.py --build <stage目录> --runtime <stage目录>/runtime --output .test-output/native-standard
-python -B native/test_native.py --build <构建目录> --runtime <stage目录>/runtime --core
+python -B native/test_native.py --build <stage目录> --runtime <WinShun安装目录>
+python -B native/test_native_standard.py --build <stage目录> --runtime <WinShun安装目录> --output .test-output/native-standard
+python -B native/test_native.py --build <构建目录> --runtime <WinShun安装目录> --core
 ```
 
+`python -B native/test_native_runner.py --build <stage目录> --runtime <WinShun安装目录> --output <输出目录>`
+通过官方 WinShunPluginHost.exe 的命名管道运行同一套 UI 回归，验证实际共享 Qt 注入和选区子进程。
+从管理员终端运行此命令可验证管理员宿主的自身 Qt 目录限制；测试只使用独立桌面和临时数据。
+
 Python 仅用于开发时打包和测试。测试子进程的 PATH 不含 Python，公开包验证使用
-包内 Qt。UI 测试在从不切换到前台的独立桌面运行，使用合成截图、
+WinShun 本体 Qt。UI 测试在从不切换到前台的独立桌面运行，使用合成截图、
 本地模拟服务和真实 Windows OCR；真实 Win32 窗口检查双屏蒙版、贴图像素、对照、
 菜单、关闭按钮、原始输入线程和热键协议。独立桌面不提供桌面 BitBlt，截图像素注入
 仅存在于受独立桌面约束的预览入口；正常入口始终使用 Win32 BitBlt 抓屏。

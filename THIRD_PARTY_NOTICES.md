@@ -7,17 +7,12 @@
 数据来源、原文件及索引的校验值和词条数量记录在 `data/ecdict.json`；完整许可随包保存在 `licenses/ECDICT-LICENSE.txt`。
 索引保留词库释义，未添加在线查询依赖；不含用户文本。
 
-## 0.4.0 原生包的运行库与字体
+## 0.4.7 共享 Qt 与字体
 
-插件代码采用 MIT。包内 `runtime/` 中的 Qt 6.10.0 动态库采用 LGPL v3；Qt 的著作权属于
-The Qt Company Ltd. 和相应贡献者。Qt 源码未作修改，使用官方 MSVC x64 构建；
-`windeployqt` 仅按标准部署流程调整安装路径。
-
-- 对应源码：https://download.qt.io/archive/qt/6.10/6.10.0/single/qt-everywhere-src-6.10.0.tar.xz
-- 模块源码与原始许可：https://github.com/qt/qtbase/tree/v6.10.0 、https://github.com/qt/qtdeclarative/tree/v6.10.0 、https://github.com/qt/qtsvg/tree/v6.10.0
-- 完整许可文本位于包内 `licenses/qt/`；Qt 官方提供的模块 SPDX 清单位于 `licenses/qtbase-6.10.0.spdx.json` 等文件，包含第三方组件来源和著作权。
-- 本插件通过动态链接使用 Qt，允许按适用许可替换兼容的 Qt 动态库，并调试相应修改。
-  管理员副本由 WinShun 校验；修改后需要由使用者重新确认。
+插件代码采用 MIT。本版动态链接 WinShun 提供的 Qt 6.12.x，不再分发 Qt DLL、平台插件或 QML 运行库。
+Qt 的著作权属于 The Qt Company Ltd. 和相应贡献者；Qt 运行库来源、SPDX 与适用许可请查看 WinShun 的发布包。
+插件保留 `licenses/qt/` 中的许可文本，允许按适用许可替换兼容动态库及调试修改。
+管理员插件自身文件变动后仍需要由使用者重新确认。
 
 Microsoft Visual C++ x64 可分发运行库为 Microsoft Corporation 版权所有的软件组件，
 从构建工具的 `VC/Redist/MSVC` 目录随应用分发，不适用本项目的 MIT 许可。

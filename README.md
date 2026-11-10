@@ -1,20 +1,20 @@
-# 截图翻译 0.4.6
+# 截图翻译 0.4.7
 
 WinShun 原生翻译插件，支持截图翻译、剪贴板翻译、划词翻译和鼠标指词 OCR。**不需要安装 Python、PySide6 或 Qt。**
 
-插件 ID：`iuuuuuuuu.screenshot-translate`。本版使用 C++ / Qt Quick 和 Windows OCR，安装包自带 Qt 6.10.0 及 Visual C++ 运行库。社区原生插件按官方规则标记为**未审核**；源码公开和文件校验不等于代码安全审核。
+插件 ID：`iuuuuuuuu.screenshot-translate`。本版使用 C++ / Qt Quick 和 Windows OCR，通过官方契约复用 WinShun 的 Qt 6.12，安装包不再包含 Qt DLL、平台插件或 QML 运行库。社区原生插件按官方规则标记为**未审核**；源码公开和文件校验不等于代码安全审核。
 
 ## 安装与升级
 
-需要 **Windows 10/11 x64、WinShun 0.22.0 或更新版本**，以及系统已安装的 OCR 语言包。
+需要 **Windows 10/11 x64、WinShun 0.23.0 或更新版本**，以及系统已安装的 OCR 语言包。
 
-1. 从 [0.4.6 发布页](https://github.com/iuuuuuuuu/winshun-screenshot-translate/releases/tag/v0.4.6) 下载 `iuuuuuuuu.screenshot-translate-0.4.6.wsplugin`。
+1. 从 [0.4.7 发布页](https://github.com/iuuuuuuuu/winshun-screenshot-translate/releases/tag/v0.4.7) 下载 `iuuuuuuuu.screenshot-translate-0.4.7.wsplugin`。
 2. 打开 WinShun 设置 → 插件 → 从压缩包安装，选择这个文件，查看并允许所需权限。
-3. 更新后检查插件卡片版本为 **0.4.6**。官方插件库收录状态以对应更新 PR 的合并结果为准。
+3. 更新后检查插件卡片版本为 **0.4.7**。新版通过检查后由官方插件库自动同步；安装和每次更新仍需用户确认。
 
 从 0.3.3 / 0.4.0 升级继续使用原有渠道、密钥、代理、热键及偏好；不需要重新安装 Python 依赖。原先明确清空或自定义的热键优先于新版默认值，请在插件设置中检查。不要同时启用早期本地 `winshun.screenshot-translate` 与当前社区版。
 
-当前共享 Qt 契约不支持与 `elevated` 同用。为保留管理员软件划词能力，本版自带运行库；详见 [WinShun 官方说明](https://github.com/LingCore/WinShun/issues/239#issuecomment-6701427923)。
+WinShun 0.23.0 起，共享 Qt 支持 `elevated`。本版声明 `runtime.qt: "host"` 和 `runtime.qtVersion: "6.12.0"`，普通和管理员模式均从宿主指定的目录加载 Qt，保留管理员软件划词。宿主 Qt 主次版本必须为 6.12；不兼容时启动前显示原因。旧版 WinShun 请先更新，0.4.6 安装包仍保留供回退。详见 [官方共享 Qt 契约](https://github.com/LingCore/WinShun/blob/v0.23.0/docs/plugins.md#原生插件的共享-qt-契约最低-0220)。共享运行库主要节省下载和磁盘空间，插件仍是独立进程，不保证内存同比下降。
 
 ### 翻译管理员软件中的选中文字
 
@@ -140,6 +140,6 @@ OCR 仍受清晰度、字体、背景和系统语言包影响。很小文字经�
 
 [中文更新记录](CHANGELOG.md) · [构建与验证说明](native/README.md) · [第三方许可](THIRD_PARTY_NOTICES.md)
 
-公开发布使用标签 `v0.4.6` 对应源码；安装包内 `BUILD-INFO.json` 记录确切提交与 Qt 版本。GitHub Actions“原生构建与打包”从标签构建并保留日志、安装包与校验值。
+公开发布使用标签 `v0.4.7` 对应源码；安装包内 `BUILD-INFO.json` 记录确切提交与 Qt 版本。GitHub Actions“原生构建与打包”从标签构建并保留日志、安装包与校验值。
 
-插件自己的代码采用 MIT。Qt 6.10.0 动态库按 LGPL v3 分发，原始许可、依赖清单及来源随包提供；Visual C++ 运行库、阿里巴巴普惠体和 Phosphor 图标分别遵循各自许可。允许按 Qt 的许可替换兼容动态库及调试修改；经 WinShun 管理员授权的副本修改后需重新确认。
+插件自己的代码采用 MIT。本版使用宿主 Qt 6.12 动态库，不重复分发 Qt；其来源与许可由 WinShun 提供，插件保留 Qt 许可文本；Visual C++ 运行库、阿里巴巴普惠体和 Phosphor 图标分别遵循各自许可。允许按 Qt 的许可替换兼容动态库及调试修改；经 WinShun 管理员授权的副本修改后需重新确认。

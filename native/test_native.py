@@ -2,7 +2,7 @@
 
 Python is the development harness only. Child PATH contains Windows and the
 selected Qt runtime; shipped modules do not import Python/PySide. Public
-packages must pass --runtime with their own bundled runtime directory.
+packages must pass --runtime with the WinShun 0.23+ host runtime directory.
 """
 import ctypes
 from ctypes import wintypes as w
@@ -150,7 +150,7 @@ def launch(program, args, data, output, initial=None, gpu=False):
         host = Path(sys.argv[sys.argv.index("--runtime")+1]).resolve()
     env = dict(os.environ)
     env.update(PATH=str(host) + os.pathsep + str(Path(os.environ["SystemRoot"]) / "System32") + os.pathsep + os.environ["SystemRoot"],
-               WS_APP_DIR=str(host), WS_DATA_DIR=str(data), QT_PLUGIN_PATH=str(host), QML_IMPORT_PATH=str(host / "qml"),
+               WS_APP_DIR=str(host), WS_QT_DIR=str(host), WS_QT_QML_DIR=str(host / "qml"), WS_DATA_DIR=str(data), QT_PLUGIN_PATH=str(host), QML_IMPORT_PATH=str(host / "qml"),
                QT_QPA_PLATFORM="windows")
     for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "OPENAPI_TRANSLATE_PROXY", "PYTHONPATH", "PYTHONHOME", "QT_SCALE_FACTOR"):
         if "--dictionary-download" in args and key.endswith("PROXY"):
@@ -187,7 +187,7 @@ def launch(program, args, data, output, initial=None, gpu=False):
         api("user32", "CloseDesktop", w.BOOL, w.HANDLE)(desktop)
 
 def main():
-    build = Path(tempfile.gettempdir()) / "winshun-st-native-044"
+    build = Path(tempfile.gettempdir()) / "winshun-st-native-047"
     if "--build" in sys.argv:
         build = Path(sys.argv[sys.argv.index("--build")+1])
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Server)
@@ -200,7 +200,7 @@ def main():
                     for p in ("zvo", "google", "mymemory")}
         (data/"services.json").write_text(json.dumps({"version":2,"profiles":profiles}),encoding="utf-8")
         out = ROOT/".test-output"/("native-gpu" if "--gpu" in sys.argv else "native-software")
-        if "--output" in sys.argv:out=Path(sys.argv[sys.argv.index("--output")+1])
+        if "--output" in sys.argv:out=Path(sys.argv[sys.argv.index("--output")+1]).resolve()
         if "--ocr-image" in sys.argv:
             source=Path(sys.argv[sys.argv.index("--ocr-image")+1]).resolve()
             options=[]
@@ -234,7 +234,7 @@ def main():
                 pointer_fixtures=json.loads(Path(sys.argv[sys.argv.index("--pointer-fixture")+1]).read_text(encoding="utf-8"))
             launch(build/"ScreenshotTranslate.exe",["--probe"],data,out,{
                 "dataDir":str(data), "probeOutput":str(out), "probeBlockedEndpoint":base+"/blocked",
-                "probeRuntime":str(Path(sys.argv[sys.argv.index("--runtime")+1]).resolve()) if "--runtime" in sys.argv else str(build.resolve()/"runtime"),
+                "probeRuntime":str(Path(sys.argv[sys.argv.index("--runtime")+1]).resolve()) if "--runtime" in sys.argv else str((Path(os.environ["LOCALAPPDATA"])/"Programs/WinShun").resolve()),
                 "locale":"zh", "appearance":{"theme":"light","renderer":"d3d11" if "--gpu" in sys.argv else "software","locale":"zh"},
                 "settings":{"provider":"zvo","fallbackEnabled":False}, "capabilities":{"hostHotkeys":True},
                 "probePointerFixtures":pointer_fixtures, "probeDictionaryEndpoint":base,
@@ -242,6 +242,7 @@ def main():
             }, "--gpu" in sys.argv)
             report=json.loads((out/"report.json").read_text(encoding="utf-8"))
             assert report["passed"], report
+            assert report["qtVersion"].startswith("6.12.") and not report["qtBundled"], report
             if "--memory" in sys.argv:
                 print(json.dumps({k:v for k,v in report.items() if k.endswith("Memory") or k.endswith("Ms") or k in ("passed","idleWordEngineRetained")},ensure_ascii=True))
                 server.shutdown()
