@@ -236,6 +236,12 @@ int main(int argc,char** argv)
             if(!st::dictionaryWords("你好 café abc123").isEmpty())throw std::runtime_error("non English text does not create partial words");
             if(st::dictionaryDetails("walk",dictionaryDir.path()).value("forms").toString().isEmpty())throw std::runtime_error("dictionary word forms");
             dictionary.save({{"youdao",QJsonObject{{"endpoint",base+"/word-dictionary"}}}});
+            auto chineseCandidates=dictionary.lookupWords({},"玩具",freshCancel());auto chineseRows=chineseCandidates["rows"].toArray();
+            if(chineseCandidates["direction"]!="zh-en"||chineseRows.size()<3||chineseRows[0].toObject()["word"]!="toy"||chineseRows[1].toObject()["word"]!="plaything"||chineseRows[0].toObject()["meaning"].toString().isEmpty())throw std::runtime_error("Chinese dictionary provides ordered multiple English alternatives");
+            auto phraseCandidates=dictionary.lookupWords({},"银行",freshCancel())["rows"].toArray();
+            if(phraseCandidates.isEmpty()||phraseCandidates[0].toObject()["word"]!="banking house")throw std::runtime_error("Youdao Chinese multi-word candidates stay joined");
+            auto englishRelated=dictionary.lookupWords({},"beautiful",freshCancel())["related"].toArray();
+            if(englishRelated.size()!=2||englishRelated[0].toObject()["kind"]!="synonym"||englishRelated[0].toObject()["words"].toArray().size()!=2||englishRelated[1].toObject()["kind"]!="derived")throw std::runtime_error("synonyms grouped by sense and separated from related forms");
             bool localFirst=false;
             auto perWord=dictionary.lookupWords({},"Hello HELLO, novelword unknownword.",freshCancel(),[&](QJsonObject value){
                 if(value["found"].toInt()==1&&value["rows"].toArray().size()==3)localFirst=true;
@@ -243,6 +249,9 @@ int main(int argc,char** argv)
             auto wordRows=perWord["rows"].toArray();auto onlineWord=wordRows[1].toObject();
             if(!localFirst||perWord["found"].toInt()!=2||wordRows[0].toObject()["count"].toInt()!=2||onlineWord["provider"]!="有道"||!onlineWord["pronunciation"].toString().contains("美")||onlineWord["meaning"]!="n. 新词；<例>"||onlineWord["forms"]!="复数 novelwords"||wordRows[2].toObject()["status"]!="missing")throw std::runtime_error("local first progressive word lookup with Youdao fallback");
             dictionary.save({{"youdao",QJsonObject{{"enabled",false}}}});
+            auto reverseOffline=dictionary.lookupWords({{"proxy","invalid proxy"}},"玩具",freshCancel())["rows"].toArray();QStringList reverseKeys;
+            for(auto value:reverseOffline)reverseKeys<<value.toObject()["word"].toString();
+            if(!reverseKeys.contains("toy")||!reverseKeys.contains("plaything")||reverseKeys.contains("toys")||reverseOffline[0].toObject()["relation"]!="汉英候选")throw std::runtime_error("offline reverse lookup ranks matching base words first");
             auto offlineWords=dictionary.lookupWords({{"proxy","invalid proxy"}},"hello unknownword",freshCancel());
             if(offlineWords["found"].toInt()!=1||offlineWords["rows"].toArray()[1].toObject()["status"]!="missing")throw std::runtime_error("disabled Youdao not requested, offline independent of proxy");
             dictionary.save({{"ecdict",QJsonObject{{"enabled",false}}}});
@@ -251,7 +260,10 @@ int main(int argc,char** argv)
             auto cancelWords=freshCancel();bool wordsCancelled=false;
             try{dictionary.lookupWords({},"hello novelword",cancelWords,[&](QJsonObject){cancelWords->store(true);});}catch(...){wordsCancelled=true;}
             if(!wordsCancelled)throw std::runtime_error("word lookup cancellation stops pending requests");
-            if(dictionary.lookupWords({},"你好",freshCancel())["message"].toString().isEmpty())throw std::runtime_error("word lookup empty language guidance");
+            if(dictionary.lookupWords({},"こんにちは",freshCancel())["message"].toString().isEmpty())throw std::runtime_error("word lookup empty language guidance");
+            auto reverseCancel=freshCancel();bool reverseStopped=false;
+            try{dictionary.lookupWords({},"玩具",reverseCancel,[&](QJsonObject){reverseCancel->store(true);});}catch(...){reverseStopped=true;}
+            if(!reverseStopped)throw std::runtime_error("Chinese candidate cancellation stops network request");
             QStringList longWords;for(int i=0;i<65;++i)longWords<<"hello"+QString(QChar('a'+i/26))+QChar('a'+i%26);
             dictionary.save({{"youdao",QJsonObject{{"enabled",false}}}});
             auto capped=dictionary.lookupWords({},longWords.join(' '),freshCancel());
@@ -382,9 +394,14 @@ int main(int argc,char** argv)
             bool noEnabled=false;try{aiRecovered.translate(aiSettings,{"hello"},"auto","zh",fresh());}catch(const std::exception&){noEnabled=true;}
             if(!noEnabled)throw std::runtime_error("all-disabled queue must not send requests");
             std::puts(QJsonDocument(QJsonObject{{"passed",true},{"fixtureRoutes",QJsonArray::fromStringList(routes)},
-                {"wordTokenizer",true},{"structuredDictionary",true},{"youdaoWordFallback",true},{"progressiveWordLookup",true},{"wordLookupLimits",true},{"wordLookupCancellation",true},{"multiAiFallback",true},{"aiModelCooldown",true},{"aiModelRecovery",true},{"aiChannelEncryption",true},{"disabledProviders",true},{"aiExplanation",true},{"dpapi",true},{"smallScreenshotOcr",true},{"aiMigration",true},{"offlineDictionary",true},{"dictionaryFallback",true},{"dictionaryDownload",true},{"dictionaryIntegrity",true},{"youdaoSignature",true},{"sogouEncoding",true},
+                {"chineseDictionaryCandidates",true},{"offlineReverseDictionary",true},{"senseGroupedSynonyms",true},{"wordTokenizer",true},{"structuredDictionary",true},{"youdaoWordFallback",true},{"progressiveWordLookup",true},{"wordLookupLimits",true},{"wordLookupCancellation",true},{"multiAiFallback",true},{"aiModelCooldown",true},{"aiModelRecovery",true},{"aiChannelEncryption",true},{"disabledProviders",true},{"aiExplanation",true},{"dpapi",true},{"smallScreenshotOcr",true},{"aiMigration",true},{"offlineDictionary",true},{"dictionaryFallback",true},{"dictionaryDownload",true},{"dictionaryIntegrity",true},{"youdaoSignature",true},{"sogouEncoding",true},
                 {"persistentFallback",true},{"recovery",true},{"cancel",true},{"httpProxy",true},{"pointerPhrases",true},
                 {"manualQueue",true},{"automaticWeights",true},{"persistentQueue",true},{"diagnosticsHealth",true},{"neutralCancellationAndMisses",true}}).toJson(QJsonDocument::Compact).constData());
+        }else if(args.contains("--live-candidates")){
+            auto cancel=std::make_shared<std::atomic_bool>(false);
+            auto chinese=services.lookupWords({},"玩具",cancel);auto english=services.lookupWords({},"beautiful",cancel);
+            if(chinese["rows"].toArray().size()<2||english["related"].toArray().isEmpty())throw std::runtime_error("live bilingual dictionary alternatives unavailable");
+            std::puts(QJsonDocument(QJsonObject{{"passed",true},{"chinese",chinese},{"english",english}}).toJson(QJsonDocument::Compact).constData());
         }else if(args.contains("--live-lookup")){
             auto words=services.lookupWords({},"hello beautiful running",std::make_shared<std::atomic_bool>(false));
             std::puts(QJsonDocument(words).toJson(QJsonDocument::Compact).constData());

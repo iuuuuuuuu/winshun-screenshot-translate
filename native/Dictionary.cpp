@@ -14,6 +14,7 @@
 #include <QRegularExpression>
 #include <QtEndian>
 #include <stdexcept>
+#include <algorithm>
 
 namespace st {
 namespace {
@@ -147,5 +148,50 @@ QJsonArray dictionaryWords(const QString& text,int limit)
         indices[key]=int(words.size());words.append(QJsonObject{{"word",word},{"key",key},{"count",1},{"start",match.capturedStart()},{"length",match.capturedLength()}});
     }
     return words;
+}
+bool chineseDictionaryText(const QString& text,int limit)
+{
+    auto term=text.trimmed();
+    static const QRegularExpression expression("^[\\p{Han}]+$");
+    return !term.isEmpty()&&term.size()<=limit&&expression.match(term).hasMatch();
+}
+QJsonArray dictionaryReverse(const QString& text,const QString& directory,Cancel cancel,int limit)
+{
+    if(!chineseDictionaryText(text))return {};
+    QFile file(installedDictionary(directory));if(!file.open(QIODevice::ReadOnly))return {};
+    auto mapped=file.map(0,file.size());if(!mapped)throw std::runtime_error("无法读取 ECDICT 词库");
+    auto u32=[](const uchar* p){return qFromLittleEndian<quint32>(p);};
+    const auto count=u32(mapped+8);const qint64 indexEnd=12+qint64(count)*12;
+    if(count>2000000||indexEnd>file.size())throw std::runtime_error("ECDICT 索引不完整");
+    const auto needle=text.trimmed().toUtf8();struct Match{QString word,sense;int score;};QList<Match> matches;
+    static const QRegularExpression split("[\\n,，;；、]");
+    static const QRegularExpression prefix("^(?:(?:[a-z]+\\.)|(?:\\[[^\\]]*\\])|(?:<[^>]*>))\\s*");
+    for(quint32 i=0;i<count;++i){
+        if(i%1024==0&&cancel->load())throw std::runtime_error("cancelled");
+        const auto index=mapped+12+qint64(i)*12;auto offset=u32(index),length=u32(index+4),size=u32(index+8);
+        if(length>4096||size>1024*1024||offset<indexEnd||quint64(offset)+length+size>quint64(file.size()))throw std::runtime_error("ECDICT 词条损坏");
+        QByteArrayView bytes(reinterpret_cast<const char*>(mapped+offset+length),size);
+        if(bytes.indexOf(needle)<0)continue;
+        auto values=QJsonDocument::fromJson(QByteArray(bytes.data(),bytes.size())).array();if(values.size()!=4)continue;
+        auto word=QString::fromUtf8(reinterpret_cast<const char*>(mapped+offset),length);
+        if(word.size()>60||!dictionaryText(word)||values[3].toString().startsWith("0:"))continue;
+        auto meaning=values[1].toString();int best=10000,position=0;QString matched;
+        for(auto sense:meaning.split(split,Qt::SkipEmptyParts)){
+            sense=sense.trimmed();while(prefix.match(sense).hasMatch())sense.remove(prefix.match(sense).capturedStart(),prefix.match(sense).capturedLength());
+            if(!sense.contains(text.trimmed())){++position;continue;}
+            int score=(sense==text.trimmed()?std::min(90,position*3):200+std::min(100,int(sense.size())))+word.count(' ')*5+std::min(30,int(word.size()));
+            if(score<best){best=score;matched=sense;}++position;
+        }
+        if(best<10000)matches.append({word,matched,best});
+    }
+    std::sort(matches.begin(),matches.end(),[](const Match& a,const Match& b){return a.score==b.score?a.word<b.word:a.score<b.score;});
+    QJsonArray rows;
+    for(int i=0;i<std::min(limit,int(matches.size()));++i){
+        if(cancel->load())throw std::runtime_error("cancelled");
+        const auto& match=matches[i];auto row=dictionaryDetails(match.word,directory);
+        row["word"]=match.word;row["key"]=match.word;row["count"]=1;row["candidate"]=true;
+        row["relation"]=match.score<200?"汉英候选":"相关词组";row["matchedMeaning"]=match.sense;rows.append(row);
+    }
+    return rows;
 }
 }

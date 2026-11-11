@@ -809,19 +809,29 @@ void App::panelAction(const QString& name,const QVariant& value)
         if(!QStringList{"auto","translate","lookup"}.contains(value.toString()))return;
         m_panelBackend.update({{"panelMode",value}});translatePanel(true);return;
     }
+    if(name=="lookupCandidate"){
+        auto word=value.toString().trimmed();if(!dictionaryText(word)||word.isEmpty())return;
+        auto previous=m_panelBackend.values.value("lookupBack").toString();
+        if(previous.isEmpty())previous=m_panelBackend.values.value("sourceText").toString();
+        panelAction("input",word);m_panelBackend.update({{"lookupBack",previous},{"panelMode","lookup"}});translatePanel();return;
+    }
+    if(name=="lookupBack"){
+        auto text=m_panelBackend.values.value("lookupBack").toString();if(text.isEmpty())return;
+        panelAction("input",text);m_panelBackend.update({{"panelMode","lookup"}});translatePanel();return;
+    }
     if(name=="menu")return;
     if(!QStringList{"input","source","target","autoTranslate","explain"}.contains(name))return;
     if(m_panelCancel)m_panelCancel->store(true);++m_panelEpoch;
     m_panelBackend.update({{name=="input"?"sourceText":name,value},{"loading",false},{"status",""},{"definitionStatus",""},
         {"translatedText",""},{"definition",""},{"provider",""},{"definitionProvider",""},{"detected",""},
-        {"lookupRows",QVariantList()},{"lookupMessage",""},{"lookupText",""},{"translationText",""},{"lookupTotal",0},{"lookupFound",0},{"lookupTruncated",false}});
+        {"lookupRows",QVariantList()},{"lookupRelated",QVariantList()},{"lookupBack",""},{"lookupRelatedMessage",""},{"lookupMessage",""},{"lookupText",""},{"translationText",""},{"lookupTotal",0},{"lookupFound",0},{"lookupTruncated",false}});
 }
 void App::translatePanel(bool reuse)
 {
     auto text=m_panelBackend.values.value("sourceText").toString().trimmed();
     if(m_panelCancel)m_panelCancel->store(true);m_panelCancel=token();auto cancel=m_panelCancel;auto epoch=++m_panelEpoch;
     auto mode=m_panelBackend.values.value("panelMode").toString();auto words=dictionaryWords(text,2);
-    bool lookup=mode=="lookup"||(mode=="auto"&&dictionaryText(text)&&words.size()==1&&words[0].toObject().value("count").toInt()==1);
+    bool lookup=mode=="lookup"||(mode=="auto"&&(chineseDictionaryText(text,8)||(dictionaryText(text)&&words.size()==1&&words[0].toObject().value("count").toInt()==1)));
     m_panelBackend.update({{"panelPage",lookup?"lookup":"translate"},{"loading",false},{"status",""}});
     if(text.isEmpty())return;
     if(text.size()>10000){m_panelBackend.update({{"status","一次最多输入 10,000 个字符"},{"loading",false}});return;}
@@ -830,14 +840,21 @@ void App::translatePanel(bool reuse)
     if(cachedTranslation&&(!m_panelBackend.values.value("explain").toBool()||m_panelBackend.values.value("definitionStatus")!="正在查询释义…"))return;
     if(lookup){
         auto services=m_services;auto settings=m_settings;
-        m_panelBackend.update({{"loading",true},{"lookupRows",QVariantList()},{"lookupMessage",""},{"lookupTotal",0},{"lookupFound",0}});
+        m_panelBackend.update({{"loading",true},{"lookupRows",QVariantList()},{"lookupRelated",QVariantList()},{"lookupRelatedMessage",""},{"lookupMessage",""},{"lookupTotal",0},{"lookupFound",0}});
         auto publish=[this,cancel,epoch](QJsonObject data){
             if(cancel->load()||epoch!=m_panelEpoch)return;
             QStringList copied;for(auto value:data.value("rows").toArray()){
                 auto row=value.toObject();if(!row.value("meaning").toString().isEmpty())copied<<row.value("word").toString()+"\n"+row.value("meaning").toString();
             }
+            for(auto value:data.value("related").toArray()){
+                auto group=value.toObject();QStringList words;
+                for(auto word:group["words"].toArray())words<<word.toString();
+                for(auto word:group["entries"].toArray())words<<word.toObject()["word"].toString()+" "+word.toObject()["meaning"].toString();
+                copied<<group["label"].toString()+" "+group["pos"].toString()+" "+group["meaning"].toString()+"\n"+words.join("; ");
+            }
             m_panelBackend.update({{"lookupRows",data.value("rows").toArray().toVariantList()},{"lookupTotal",data.value("total").toInt()},
-                {"lookupFound",data.value("found").toInt()},{"lookupTruncated",data.value("truncated").toBool()},{"lookupMessage",data.value("message").toString()},{"lookupCopy",copied.join("\n\n")}});
+                {"lookupFound",data.value("found").toInt()},{"lookupTruncated",data.value("truncated").toBool()},{"lookupMessage",data.value("message").toString()},{"lookupCopy",copied.join("\n\n")},
+                {"lookupRelated",data.value("related").toArray().toVariantList()},{"lookupRelatedMessage",data.value("relatedMessage").toString()},{"lookupDirection",data.value("direction").toString()}});
         };
         auto original=m_panelBackend.values.value("sourceText").toString();
         background([this,services,settings,original,cancel,publish]{

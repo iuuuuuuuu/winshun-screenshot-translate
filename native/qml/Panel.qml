@@ -42,7 +42,7 @@ Window {
             FlatButton { id: sourceButton; visible: !panel.lookup; anchors.verticalCenter: parent.verticalCenter; objectName: "panel-source"; text: panel.label(backend.state.source); trailingGlyph: "\uE70D"; textPixelSize: 13; onClicked: sourceMenu.open() }
             Text { visible: !panel.lookup; anchors.verticalCenter: parent.verticalCenter; text: "→"; color: Theme.subtext; font.pixelSize: 18 }
             FlatButton { id: targetButton; visible: !panel.lookup; anchors.verticalCenter: parent.verticalCenter; objectName: "panel-target"; text: backend.state.target === "auto" ? panel.t("中英互译","ZH ↔ EN") : panel.label(backend.state.target); trailingGlyph: "\uE70D"; textPixelSize: 13; onClicked: targetMenu.open() }
-            Text { visible: panel.lookup; anchors.verticalCenter: parent.verticalCenter; text: panel.t("英文词义 · 按原文顺序","English meanings · Original order"); color: Theme.subtext; font.pixelSize: 12 }
+            Text { visible: panel.lookup; anchors.verticalCenter: parent.verticalCenter; text: panel.t("双向词典 · 多词义与近义候选","Dictionary · Meanings and alternatives"); color: Theme.subtext; font.pixelSize: 12 }
         }
     }
     LanguageMenu { id: sourceMenu; objectName: "panel-source-menu"; hostWindow: panel; anchorItem: sourceButton; labels: backend.state.sourceLabels || []; codes: backend.state.codes || []; current: backend.state.source; onChosen: code => { backend.action("source",code); panel.schedule() } }
@@ -99,14 +99,15 @@ Window {
             id: lookupCard; objectName: "panel-lookup-card"; visible: panel.lookup
             anchors.right: parent.right; width: sourceCard.width; height: parent.height
             color: Theme.card; radius: Theme.largeCardRadius; border.color: Theme.cardBorder
-            Text { x: 16; y: 14; width: parent.width-56; text: panel.t("单词释义","Word meanings") + (backend.state.lookupTotal ? " · " + backend.state.lookupFound + "/" + Math.min(60,backend.state.lookupTotal) : ""); color: Theme.subtext; font.pixelSize: 12 }
+            Text { x: 16; y: 14; width: parent.width-56; text: (backend.state.lookupDirection === "zh-en" ? panel.t("英文候选","English alternatives") : panel.t("单词释义","Word meanings")) + (backend.state.lookupTotal ? " · " + (backend.state.lookupDirection === "zh-en" ? backend.state.lookupTotal : backend.state.lookupFound + "/" + Math.min(60,backend.state.lookupTotal)) : ""); color: Theme.subtext; font.pixelSize: 12 }
             ToolButton { anchors.right: parent.right; y: 4; glyph: "\uE8C8"; tip: panel.t("复制全部词义","Copy all meanings"); enabled: backend.state.lookupFound > 0; onClicked: backend.action("copy","lookupCopy") }
             Flickable {
                 id: lookupScroll; objectName: "panel-lookup-scroll"; x: 16; y: 42; width: parent.width-32; height: parent.height-56
                 contentWidth: width; contentHeight: Math.max(height,wordList.height); clip: true; boundsBehavior: Flickable.StopAtBounds
                 Column {
                     id: wordList; width: lookupScroll.width; spacing: 18
-                    Text { visible: !(backend.state.lookupRows || []).length; width: parent.width; wrapMode: Text.Wrap; color: Theme.faint; font.pixelSize: 15; text: backend.state.loading ? panel.t("正在查词…","Looking up words…") : (backend.state.lookupMessage || panel.t("输入一个英文单词，或一句英文逐词查看。","Enter an English word or sentence to look up each word.")); textFormat: Text.PlainText }
+                    FlatButton { objectName: "panel-lookup-back"; visible: !!backend.state.lookupBack; text: panel.t("返回原查询","Back to query") + " · " + (backend.state.lookupBack || "").slice(0,18); textPixelSize: 12; onClicked: backend.action("lookupBack",null) }
+                    Text { visible: !(backend.state.lookupRows || []).length; width: parent.width; wrapMode: Text.Wrap; color: Theme.faint; font.pixelSize: 15; text: backend.state.loading ? panel.t("正在查词…","Looking up words…") : (backend.state.lookupMessage || panel.t("输入中文词语查英文候选，或输入英文查词义与近义词。","Enter Chinese for English alternatives, or English for meanings and related words.")); textFormat: Text.PlainText }
                     Repeater {
                         model: backend.state.lookupRows || []
                         delegate: Column {
@@ -116,17 +117,44 @@ Window {
                             Row {
                                 width: parent.width; spacing: 8
                                 Text { id: wordTitle; objectName: "panel-word-title-" + wordRow.index; width: Math.min(implicitWidth,parent.width-45); elide: Text.ElideRight; text: wordRow.entry.word; textFormat: Text.PlainText; color: Theme.text; font.pixelSize: backend.state.lookupTotal === 1 ? 27 : 20; font.weight: Font.DemiBold
-                                    MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: { input.forceActiveFocus(); input.select(wordRow.entry.start,wordRow.entry.start+wordRow.entry.length) } }
+                                    MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: { if(wordRow.entry.candidate) backend.action("lookupCandidate",wordRow.entry.word); else { input.forceActiveFocus(); input.select(wordRow.entry.start,wordRow.entry.start+wordRow.entry.length) } } }
                                 }
                                 Text { visible: wordRow.entry.count > 1; anchors.verticalCenter: parent.verticalCenter; text: "×" + wordRow.entry.count; color: Theme.faint; font.pixelSize: 12 }
                             }
+                            Text { visible: !!wordRow.entry.relation; width: parent.width; wrapMode: Text.Wrap; text: wordRow.entry.relation || ""; color: Theme.accent; font.pixelSize: 12; textFormat: Text.PlainText }
                             Text { visible: !!(wordRow.entry.pronunciation || wordRow.entry.phonetic); width: parent.width; wrapMode: Text.Wrap; text: wordRow.entry.pronunciation || (wordRow.entry.phonetic ? "/" + wordRow.entry.phonetic + "/" : ""); textFormat: Text.PlainText; color: Theme.subtext; font.pixelSize: 13 }
-                            TextEdit { objectName: "panel-word-meaning-" + wordRow.index; width: parent.width; height: contentHeight; readOnly: true; selectByMouse: true; wrapMode: TextEdit.Wrap; textFormat: TextEdit.PlainText; color: wordRow.entry.meaning ? Theme.text : Theme.faint; selectionColor: Theme.textSelection; font.pixelSize: 15; text: wordRow.entry.meaning || (wordRow.entry.status === "pending" ? panel.t("有道补查中…","Checking Youdao…") : (wordRow.entry.error || panel.t("未收录该词","No dictionary entry"))) }
-                            Text { visible: !!wordRow.entry.forms; width: parent.width; wrapMode: Text.Wrap; text: wordRow.entry.forms || ""; textFormat: Text.PlainText; color: Theme.subtext; font.pixelSize: 12 }
+                            TextEdit { objectName: "panel-word-meaning-" + wordRow.index; width: parent.width; height: contentHeight; readOnly: true; selectByMouse: true; wrapMode: TextEdit.Wrap; textFormat: TextEdit.PlainText; color: wordRow.entry.meaning ? Theme.text : Theme.faint; selectionColor: Theme.textSelection; font.pixelSize: 15; text: wordRow.entry.candidateMeaning || wordRow.entry.meaning || (wordRow.entry.status === "pending" ? panel.t("有道补查中…","Checking Youdao…") : (wordRow.entry.error || panel.t("未收录该词","No dictionary entry"))) }
+                            Text { visible: !!wordRow.entry.forms && !wordRow.entry.candidate; width: parent.width; wrapMode: Text.Wrap; text: wordRow.entry.forms || ""; textFormat: Text.PlainText; color: Theme.subtext; font.pixelSize: 12 }
                             Text { visible: !!wordRow.entry.provider; text: wordRow.entry.provider || ""; textFormat: Text.PlainText; color: Theme.faint; font.pixelSize: 11 }
                             Rectangle { width: parent.width; height: 1; color: Theme.cardBorder }
                         }
                     }
+                    Repeater {
+                        model: backend.state.lookupRelated || []
+                        delegate: Column {
+                            id: relatedGroup; required property var modelData; required property int index
+                            readonly property var entry: modelData
+                            objectName: "panel-related-" + index; width: wordList.width; spacing: 8
+                            Text { text: (relatedGroup.entry.kind === "synonym" ? panel.t("同近义词","Synonyms") : relatedGroup.entry.kind === "related" ? panel.t("相关词条","Related entries") : panel.t("同根词","Related forms")) + (relatedGroup.entry.pos ? " · " + relatedGroup.entry.pos : ""); color: Theme.text; font.pixelSize: 17; font.weight: Font.DemiBold; textFormat: Text.PlainText }
+                            Text { visible: !!relatedGroup.entry.meaning; width: parent.width; wrapMode: Text.Wrap; text: relatedGroup.entry.meaning || ""; color: Theme.subtext; font.pixelSize: 13; textFormat: Text.PlainText }
+                            Flow {
+                                width: parent.width; spacing: 7
+                                Repeater { model: relatedGroup.entry.words || []
+                                    delegate: FlatButton { required property string modelData; required property int index; objectName: "panel-synonym-" + relatedGroup.index + "-" + index; text: modelData; textPixelSize: 14; onClicked: backend.action("lookupCandidate",modelData) }
+                                }
+                            }
+                            Repeater { model: relatedGroup.entry.entries || []
+                                delegate: Column {
+                                    id: derivedWord; required property var modelData; required property int index; width: relatedGroup.width; spacing: 3
+                                    FlatButton { objectName: "panel-derived-" + relatedGroup.index + "-" + derivedWord.index; text: derivedWord.modelData.word; textPixelSize: 14; onClicked: backend.action("lookupCandidate",derivedWord.modelData.word) }
+                                    Text { width: parent.width; wrapMode: Text.Wrap; text: derivedWord.modelData.meaning || ""; color: Theme.subtext; font.pixelSize: 13; textFormat: Text.PlainText }
+                                }
+                            }
+                            Text { text: relatedGroup.entry.provider || panel.t("有道词典","Youdao dictionary"); color: Theme.faint; font.pixelSize: 11 }
+                            Rectangle { width: parent.width; height: 1; color: Theme.cardBorder }
+                        }
+                    }
+                    Text { visible: !!backend.state.lookupRelatedMessage; width: parent.width; wrapMode: Text.Wrap; text: backend.state.lookupRelatedMessage || ""; color: Theme.faint; font.pixelSize: 12; textFormat: Text.PlainText }
                     Text { visible: !!backend.state.lookupTruncated; width: parent.width; wrapMode: Text.Wrap; text: panel.t("当前显示前 60 个不同单词；可缩短原文继续查询。","Showing the first 60 unique words; shorten the text to look up more."); color: Theme.caution; font.pixelSize: 12 }
                     Text { visible: !!backend.state.lookupMessage && (backend.state.lookupRows || []).length > 0; width: parent.width; wrapMode: Text.Wrap; text: backend.state.lookupMessage || ""; textFormat: Text.PlainText; color: Theme.faint; font.pixelSize: 12 }
                 }
@@ -150,7 +178,7 @@ Window {
     }
     Item {
         id: footer; x: 22; anchors.bottom: parent.bottom; anchors.bottomMargin: 14; width: parent.width-44; height: 38
-        Text { anchors.verticalCenter: parent.verticalCenter; width: parent.width-translateButton.width-16; wrapMode: Text.Wrap; text: backend.state.status || (backend.state.panelMode === "auto" ? panel.t("单词查词 · 句子翻译 · 切到查词看逐词释义","Words → meanings · Sentences → translation") : panel.lookup ? panel.t("点击单词定位原文 · Ctrl+Enter 查词","Click a word to select it · Ctrl+Enter to look up") : panel.t("Ctrl+Enter 翻译 · 查词查看逐词释义","Ctrl+Enter to translate · Words for individual meanings")); color: backend.state.status && !backend.state.loading ? Theme.danger : Theme.subtext; font.pixelSize: 12 }
+        Text { anchors.verticalCenter: parent.verticalCenter; width: parent.width-translateButton.width-16; wrapMode: Text.Wrap; text: backend.state.status || (backend.state.panelMode === "auto" ? panel.t("中英词语查词 · 句子翻译 · 候选词可点击","Chinese/English terms → dictionary · Sentences → translation") : panel.lookup ? panel.t("候选词点击查详情 · 句子单词点击定位原文","Click alternatives for details · Click sentence words to select") : panel.t("Ctrl+Enter 翻译 · 查词查看词典候选","Ctrl+Enter to translate · Words for dictionary alternatives")); color: backend.state.status && !backend.state.loading ? Theme.danger : Theme.subtext; font.pixelSize: 12 }
         FlatButton { id: translateButton; objectName: "panel-submit"; anchors.right: parent.right; highlighted: true; text: panel.lookup ? (backend.state.loading ? panel.t("重新查词","Look up again") : panel.t("查词","Look up")) : (backend.state.loading ? panel.t("重新翻译","Translate again") : panel.t("翻译","Translate")); enabled: input.text.trim().length > 0 && input.text.length <= 10000 && !input.inputMethodComposing; onClicked: panel.submit() }
     }
 }

@@ -15,7 +15,7 @@ import zipfile
 def main():
     root = Path(__file__).resolve().parents[1]
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--build', type=Path, default=Path(tempfile.gettempdir())/'winshun-st-native-049')
+    parser.add_argument('--build', type=Path, default=Path(tempfile.gettempdir())/'winshun-st-native-0410')
     parser.add_argument('--vs-root', type=Path, default=Path('D:/VisualStudio/Product'))
     parser.add_argument('--out', type=Path)
     parser.add_argument('--allow-dirty', action='store_true', help='仅本地验证允许未提交源码')
@@ -56,7 +56,7 @@ def main():
     (stage/'.screenshots').mkdir()
     for name in ('word-0.4.5.png', 'settings-0.4.5.png', 'toolbar-0.4.5.png', 'ecdict-0.4.5.png',
                  'word-adaptive-0.4.6.png', 'text-adaptive-0.4.6.png',
-                 'panel-word-0.4.9.png', 'panel-sentence-words-0.4.9.png'):
+                 'panel-word-0.4.9.png', 'panel-sentence-words-0.4.9.png', 'panel-chinese-candidates-0.4.10.png', 'panel-synonyms-0.4.10.png'):
         shutil.copy2(root/'.screenshots'/name, stage/'.screenshots'/name)
     (stage/'fonts').mkdir()
     shutil.copy2(root/'native/assets/AlibabaPuHuiTi-3-55-Regular.ttf', stage/'fonts/AlibabaPuHuiTi-3-55-Regular.ttf')

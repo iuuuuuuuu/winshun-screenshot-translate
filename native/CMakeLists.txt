@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(ScreenshotTranslate VERSION 0.4.9 LANGUAGES CXX)
+project(ScreenshotTranslate VERSION 0.4.10 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_AUTOMOC ON)
 find_package(Qt6 6.12 REQUIRED COMPONENTS Core Gui Qml Quick)

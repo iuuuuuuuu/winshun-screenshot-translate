@@ -6,7 +6,7 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 if (-not $QtRoot) { $QtRoot = Join-Path $PSScriptRoot '..\.host\qt\6.12.0\msvc2022_64' }
-if (-not $Output) { $Output = Join-Path $env:TEMP 'winshun-st-native-049' }
+if (-not $Output) { $Output = Join-Path $env:TEMP 'winshun-st-native-0410' }
 & python -B (Join-Path $PSScriptRoot 'build_ecdict.py')
 if ($LASTEXITCODE) { throw 'ECDICT dictionary preparation failed' }
 Import-Module (Join-Path $VsRoot 'Common7\Tools\Microsoft.VisualStudio.DevShell.dll')

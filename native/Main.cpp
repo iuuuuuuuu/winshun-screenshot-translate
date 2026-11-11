@@ -48,7 +48,7 @@ extern "C" __declspec(dllexport) int screenshotTranslateMain(const wchar_t* appD
         if(OpenProcessToken(GetCurrentProcess(),TOKEN_QUERY,&token)){
             GetTokenInformation(token,TokenElevation,&elevation,sizeof elevation,&size);CloseHandle(token);
         }
-        std::fprintf(stderr,"[screenshot-translate] version=0.4.9 runtime=host-qt ocr=windows selection-reader=%s\n",
+        std::fprintf(stderr,"[screenshot-translate] version=0.4.10 runtime=host-qt ocr=windows selection-reader=%s\n",
             elevation.TokenIsElevated?"administrator":"standard");
         if(st::Probe::requested())QTimer::singleShot(0,&plugin,[&]{st::Probe::run(plugin,params);});
         return app.exec();

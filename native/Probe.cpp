@@ -1096,6 +1096,7 @@ void Probe::run(App& app,const QJsonObject& params)
         // Exercise the real panel QML: debounce, editing, cancellation and independent lifetime.
         app.m_settings["provider"]="zvo";app.m_settings["fallbackEnabled"]=false;
         app.showPanel();pump(50);check(app.m_panel.window&&app.m_panel.window->isVisible(),"independent translation panel opens");
+        app.m_services->save({{"youdao",QJsonObject{{"endpoint",dictionaryBase+"/word-dictionary"},{"enabled",true}}}});
         auto panelInput=app.m_panel.window->findChild<QQuickItem*>("panel-input");check(panelInput,"panel input exists");
         app.panelAction("panelMode","translate");app.panelAction("explain",false);typeDraft(app.m_panel.window,"hello","panel-input");
         check(until([&]{return app.m_panelBackend.values.value("translatedText").toString()=="翻译：hello";},4000),"panel automatically translates after typing");
@@ -1126,6 +1127,24 @@ void Probe::run(App& app,const QJsonObject& params)
         check(app.m_panelBackend.values.value("panelPage")=="lookup","auto word page selected");pump(50);
         auto firstMeaning=visualItem(app.m_panel.window->contentItem(),"panel-word-meaning-0");check(firstMeaning&&!firstMeaning->property("text").toString().isEmpty(),"word definition rendered in QML");
         app.m_panel.window->grabWindow().save(out+"/panel-word.png");
+        check(app.m_panelBackend.values.value("lookupRelated").toList().size()==2,"English dictionary shows separate synonyms and related forms");
+        auto synonym=visualItem(app.m_panel.window->contentItem(),"panel-synonym-0-0");check(synonym&&synonym->property("text")=="fair","actual synonym button rendered");
+        app.m_panel.window->grabWindow().save(out+"/panel-synonyms.png");
+        click(app.m_panel.window,synonym);
+        check(until([&]{return !app.m_panelBackend.values.value("loading").toBool();})&&app.m_panelBackend.values.value("sourceText")=="fair","synonym click performs dictionary lookup");
+        click(app.m_panel.window,visualItem(app.m_panel.window->contentItem(),"panel-lookup-back"));
+        check(until([&]{return !app.m_panelBackend.values.value("loading").toBool();})&&app.m_panelBackend.values.value("sourceText")=="beautiful","dictionary returns to original query");
+        app.panelAction("panelMode","auto");typeDraft(app.m_panel.window,"玩具","panel-input");app.translatePanel();
+        check(until([&]{return !app.m_panelBackend.values.value("loading").toBool();},8000)&&app.m_panelBackend.values.value("panelPage")=="lookup","Chinese term automatically opens dictionary");
+        auto toyRows=app.m_panelBackend.values.value("lookupRows").toList();
+        check(toyRows.size()>=3&&toyRows[0].toMap().value("word")=="toy"&&toyRows[1].toMap().value("word")=="plaything","Chinese term renders several English candidates");
+        app.m_panel.window->grabWindow().save(out+"/panel-chinese-candidates.png");
+        click(app.m_panel.window,visualItem(app.m_panel.window->contentItem(),"panel-word-title-1"));
+        check(until([&]{return !app.m_panelBackend.values.value("loading").toBool();})&&app.m_panelBackend.values.value("sourceText")=="plaything","Chinese candidate can be inspected");
+        click(app.m_panel.window,visualItem(app.m_panel.window->contentItem(),"panel-lookup-back"));
+        check(until([&]{return !app.m_panelBackend.values.value("loading").toBool();},8000)&&app.m_panelBackend.values.value("sourceText")=="玩具","candidate returns to Chinese term");
+        app.m_panel.window->resize(600,520);app.appearance({{"theme","dark"}});pump(50);app.m_panel.window->grabWindow().save(out+"/panel-candidates-small-dark.png");
+        app.m_panel.window->resize(960,760);app.appearance({{"theme","light"}});app.panelAction("panelMode","auto");
         typeDraft(app.m_panel.window," Hello, HELLO! I like beautiful flowers.","panel-input");app.translatePanel();
         check(until([&]{return !app.m_panelBackend.values.value("translatedText").toString().isEmpty();}),"automatic sentence uses translation page");
         check(app.m_panelBackend.values.value("panelPage")=="translate","auto sentence page selected");
@@ -1148,10 +1167,11 @@ void Probe::run(App& app,const QJsonObject& params)
         typeDraft(app.m_panel.window,"zzunknownblockedword","panel-input");app.translatePanel();pump(100);auto pendingLookup=app.m_panelCancel;
         check(app.m_panelBackend.values.value("loading").toBool(),"unknown word online request pending");
         typeDraft(app.m_panel.window,"hello","panel-input");app.translatePanel();
-        check(pendingLookup->load()&&until([&]{return !app.m_panelBackend.values.value("loading").toBool()&&app.m_panelBackend.values.value("lookupFound").toInt()==1;}),"new word cancels old lookup and rejects stale progress");
-        typeDraft(app.m_panel.window,"你好","panel-input");app.translatePanel();
+        check(pendingLookup->load()&&until([&]{return !app.m_panelBackend.values.value("loading").toBool()&&app.m_panelBackend.values.value("lookupFound").toInt()==1;},6000),"new word cancels old lookup and rejects stale progress");
+        typeDraft(app.m_panel.window,"こんにちは","panel-input");app.translatePanel();
         check(until([&]{return !app.m_panelBackend.values.value("loading").toBool();})&&!app.m_panelBackend.values.value("lookupMessage").toString().isEmpty(),"non-English word page shows guidance");
         report["panelWordLookup"]=true;report["panelSmartModes"]=true;report["panelSentenceWords"]=true;report["panelLookupCancellation"]=true;
+        report["panelChineseCandidates"]=true;report["panelSynonyms"]=true;report["panelCandidateNavigation"]=true;
         app.panelAction("panelMode","translate");
         panelInput->setProperty("text",QString(10001,'x'));app.translatePanel();
         check(app.m_panelBackend.values.value("status").toString().contains("10,000"),"panel limits oversized input");

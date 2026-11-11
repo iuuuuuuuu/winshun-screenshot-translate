@@ -174,6 +174,66 @@ QString unescape(QString text)
         text.replace(it->capturedStart(),it->capturedLength(),QTextDocumentFragment::fromHtml(it->captured()).toPlainText());
     return text;
 }
+QJsonObject youdaoWordDetails(const QJsonObject& word)
+{
+    QStringList meanings,phones,forms;
+    if(!word.value("ukphone").toString().isEmpty())phones<<"英 /"+word.value("ukphone").toString()+"/";
+    if(!word.value("usphone").toString().isEmpty())phones<<"美 /"+word.value("usphone").toString()+"/";
+    if(phones.isEmpty()&&!word.value("phone").toString().isEmpty())phones<<"/"+word.value("phone").toString()+"/";
+    for(auto row:word.value("trs").toArray())for(auto tr:row.toObject().value("tr").toArray())
+        for(auto item:tr.toObject().value("l").toObject().value("i").toArray())
+            if(item.isString()&&!item.toString().trimmed().isEmpty())meanings<<unescape(item.toString());
+    for(auto value:word.value("wfs").toArray()){
+        auto form=value.toObject().value("wf").toObject();
+        if(!form.value("value").toString().isEmpty())forms<<form.value("name").toString()+" "+form.value("value").toString();
+    }
+    meanings.removeDuplicates();if(meanings.isEmpty())return {};
+    return {{"meaning",meanings.join('\n')},{"pronunciation",phones.join(" · ")},{"forms",forms.join(" · ")},{"provider","有道"}};
+}
+QJsonArray youdaoRelations(const QJsonObject& data)
+{
+    QJsonArray groups;int total=0;
+    for(auto value:data.value("syno").toObject().value("synos").toArray()){
+        auto sense=value.toObject().value("syno").toObject();QStringList words;
+        for(auto value:sense.value("ws").toArray()){
+            auto word=value.toObject().value("w").toString().trimmed();
+            if(dictionaryText(word)&&!words.contains(word)&&++total<=40)words<<word;
+        }
+        if(!words.isEmpty())groups.append(QJsonObject{{"kind","synonym"},{"label","同近义词"},{"pos",sense["pos"]},{"meaning",unescape(sense["tran"].toString())},{"words",array(words)}});
+    }
+    for(auto value:data.value("rel_word").toObject().value("rels").toArray()){
+        auto sense=value.toObject().value("rel").toObject();QJsonArray words;
+        for(auto value:sense.value("words").toArray()){
+            auto item=value.toObject();auto word=item["word"].toString().trimmed();
+            if(dictionaryText(word)&&++total<=40)words.append(QJsonObject{{"word",word},{"meaning",unescape(item["tran"].toString().trimmed())}});
+        }
+        if(!words.isEmpty())groups.append(QJsonObject{{"kind","derived"},{"label","同根词"},{"pos",sense["pos"]},{"entries",words}});
+    }
+    return groups;
+}
+QJsonArray youdaoChineseCandidates(const QJsonObject& data,const QString& directory,bool local,Cancel cancel,const QString& term)
+{
+    QJsonArray candidates;QStringList seen;
+    for(auto value:data.value("ce").toObject().value("word").toArray())for(auto value:value.toObject().value("trs").toArray())
+        for(auto value:value.toObject().value("tr").toArray()){
+            auto line=value.toObject().value("l").toObject();QString word;
+            for(auto part:line.value("i").toArray()){
+                if(part.isObject())word+=part.toObject().value("#text").toString();
+                else if(part.isString()&&QRegularExpression("^[A-Za-z '-]*$").match(part.toString()).hasMatch())word+=part.toString();
+            }
+            word=word.simplified();if(!dictionaryText(word)||word.isEmpty()||seen.contains(word.toLower()))continue;
+            if(cancel->load())fail("cancelled");seen<<word.toLower();
+            auto meaning=unescape(line.value("#tran").toString());
+            QJsonObject entry;if(local)try{entry=dictionaryDetails(word,directory);}catch(const std::exception&){}
+            if(entry.isEmpty())entry["meaning"]=line.value("pos").toString()+" "+meaning;
+            QStringList relevant;for(auto sense:entry["meaning"].toString().split('\n'))if(sense.contains(term))relevant<<sense;
+            entry["candidateMeaning"]=relevant.isEmpty()?entry["meaning"].toString().left(200):relevant.mid(0,2).join('\n');
+            entry["word"]=word;entry["key"]=word.toLower();entry["candidate"]=true;entry["relation"]="汉英候选";
+            entry["provider"]="有道汉英"+(entry.value("provider")=="ECDICT"?QString(" · ECDICT"):QString());
+            entry["count"]=1;candidates.append(entry);if(candidates.size()>=12)return candidates;
+        }
+    return candidates;
+}
 QJsonObject sogouPage(const QByteArray& bytes)
 {
     QStringDecoder decoder(QStringDecoder::Utf8);QString text=decoder(bytes);
@@ -429,14 +489,45 @@ QJsonObject Translation::json(const QStringList& parts) const
 QJsonObject Services::lookupWords(const QJsonObject& settings,const QString& text,Cancel cancel,std::function<void(QJsonObject)> progress)
 {
     if(text.size()>10000)fail("一次最多输入 10,000 个字符");
-    auto all=dictionaryWords(text,10000);QJsonArray rows;int found=0;
+    auto all=dictionaryWords(text,10000);QJsonArray rows,related;int found=0;QString message,relatedMessage;
     auto offline=profile("ecdict"),online=profile("youdao");
     const bool local=offline.value("enabled").toBool(true)&&dictionaryAvailable(m_directory);
     const bool network=online.value("enabled").toBool(true);
+    const bool chinese=chineseDictionaryText(text);
     QString proxy=settings.value("proxy").toString().trimmed();if(proxy.isEmpty())proxy=field(online,"proxy");
-    // Official Youdao credentials configure translation, not the public word dictionary.
+    // Official credentials configure translation, not the public word dictionary.
     auto url=field(online,"appId").isEmpty()?endpoint(online):endpoints.value(providers.indexOf("youdao"));
-    auto snapshot=[&]{return QJsonObject{{"rows",rows},{"found",found},{"total",all.size()},{"truncated",all.size()>60}};};
+    auto request=[&](const QString& word,int budget){
+        Http http(proxy,cancel,budget);auto headers=browser();headers["Referer"]="https://dict.youdao.com/";
+        return http.json(query(url,{{"q",word},{"le","en"},{"client","web"},{"keyfrom","webdict"},
+            {"dicts","{\"count\":99,\"dicts\":[[\"ce\",\"ec\",\"syno\",\"rel_word\"]]}"}}),{},headers).toObject();
+    };
+    auto snapshot=[&]{return QJsonObject{{"rows",rows},{"related",related},{"relatedMessage",relatedMessage},
+        {"found",found},{"total",chinese?int(rows.size()):int(all.size())},{"truncated",!chinese&&all.size()>60},
+        {"direction",chinese?"zh-en":"en-zh"},{"message",message}};};
+    if(chinese){
+        if(local)try{rows=dictionaryReverse(text,m_directory,cancel);}catch(const std::exception&){if(cancel->load())fail("cancelled");message="离线词库读取失败";}
+        auto reverse=rows;
+        auto separate=[&](const QJsonArray& values){
+            rows={};related={};QJsonArray phrases;
+            for(auto value:values){auto row=value.toObject();if(row["relation"]=="汉英候选")rows.append(row);else if(phrases.size()<6)phrases.append(row);}
+            if(!phrases.isEmpty())related.append(QJsonObject{{"kind","related"},{"label","相关词条"},{"entries",phrases},{"provider","ECDICT"}});
+            found=int(rows.size());
+        };
+        separate(reverse);if(progress)progress(snapshot());
+        if(network)try{
+            auto candidates=youdaoChineseCandidates(request(text.trimmed(),6000),m_directory,local,cancel,text.trimmed());QStringList seen;
+            for(auto value:candidates)seen<<value.toObject()["key"].toString();
+            // Dictionary alternatives come first; broader phrase matches retain their own label.
+            for(auto value:reverse){auto row=value.toObject();if(!seen.contains(row["key"].toString())&&candidates.size()<18)candidates.append(row);}
+            separate(candidates);
+        }catch(const std::exception&){if(cancel->load())fail("cancelled");message=found?"有道暂不可用，已显示离线候选":"有道查询失败；可下载 ECDICT 后离线查词";}
+        if(!local&&!network)message="请在渠道设置中启用 ECDICT 并下载词库，或启用有道查词";
+        else if(rows.isEmpty()&&message.isEmpty())message="未找到直接匹配的汉英词条；试试更短的词语，或切到翻译查看整句";
+        else if(message.isEmpty())message="候选词的含义和用法可能不同；点击词名查看详细释义";
+        return snapshot();
+    }
+    const bool enrich=all.size()==1;
     for(int i=0;i<std::min(60,int(all.size()));++i){
         if(cancel->load())fail("cancelled");
         auto row=all[i].toObject();QJsonObject entry;
@@ -449,40 +540,36 @@ QJsonObject Services::lookupWords(const QJsonObject& settings,const QString& tex
     QElapsedTimer clock;clock.start();
     for(int i=0;i<rows.size();++i){
         if(cancel->load())fail("cancelled");
-        auto row=rows[i].toObject();if(row.value("status")!="pending")continue;
+        auto row=rows[i].toObject();const bool known=row.contains("meaning");
+        if((known&&!enrich)||!network)continue;
         QString error;
         try{
             const int remaining=12000-int(clock.elapsed());if(remaining<=0)fail("在线查询超时，请重试");
-            Http http(proxy,cancel,std::min(4000,remaining));auto headers=browser();headers["Referer"]="https://dict.youdao.com/";
-            auto data=http.json(query(url,{{"q",row.value("key").toString()},{"le","en"},{"client","web"},{"keyfrom","webdict"},
-                {"dicts","{\"count\":99,\"dicts\":[[\"ec\"]]}"}}),{},headers).toObject();
-            QStringList meanings,phones,forms;
+            auto data=request(row.value("key").toString(),std::min(4000,remaining));QJsonObject entry;
             for(auto value:data.value("ec").toObject().value("word").toArray()){
-                auto word=value.toObject();
-                if(!word.value("ukphone").toString().isEmpty())phones<<"英 /"+word.value("ukphone").toString()+"/";
-                if(!word.value("usphone").toString().isEmpty())phones<<"美 /"+word.value("usphone").toString()+"/";
-                if(phones.isEmpty()&&!word.value("phone").toString().isEmpty())phones<<"/"+word.value("phone").toString()+"/";
-                for(auto row:word.value("trs").toArray())for(auto tr:row.toObject().value("tr").toArray())
-                    for(auto item:tr.toObject().value("l").toObject().value("i").toArray())
-                        if(item.isString()&&!item.toString().trimmed().isEmpty())meanings<<unescape(item.toString());
-                for(auto value:word.value("wfs").toArray()){
-                    auto form=value.toObject().value("wf").toObject();
-                    if(!form.value("value").toString().isEmpty())forms<<form.value("name").toString()+" "+form.value("value").toString();
-                }
+                entry=youdaoWordDetails(value.toObject());if(!entry.isEmpty())break;
             }
-            meanings.removeDuplicates();
-            if(!meanings.isEmpty()){row["meaning"]=meanings.join('\n');row["pronunciation"]=phones.join(" · ");row["forms"]=forms.join(" · ");row["provider"]="有道";++found;}
-        }catch(const std::exception&){if(cancel->load())fail("cancelled");error="在线查询失败或超时，请重试";}
+            if(!entry.isEmpty()){
+                if(!known){for(auto it=entry.begin();it!=entry.end();++it)row[it.key()]=it.value();++found;}
+                else if(!entry["pronunciation"].toString().isEmpty())row["pronunciation"]=entry["pronunciation"];
+                row.remove("error");
+            }
+            if(enrich){related=youdaoRelations(data);if(related.isEmpty())relatedMessage="有道未提供此词的同近义词";}
+        }catch(const std::exception&){
+            if(cancel->load())fail("cancelled");
+            if(known)relatedMessage="同近义词查询暂不可用；已保留离线释义";
+            else error="在线查询失败或超时，请重试";
+        }
         row["status"]=row.contains("meaning")?"found":"missing";
         if(!error.isEmpty())row["error"]=error;
         rows[i]=row;if(progress)progress(snapshot());
     }
-    auto result=snapshot();
-    if(all.isEmpty())result["message"]="输入英文单词或英文句子，即可查看每个词的释义";
-    else if(!local&&!network)result["message"]="请在渠道设置中启用 ECDICT 并下载词库，或启用有道查词";
-    else if(!local)result["message"]="正在使用有道在线查词；下载 ECDICT 后可离线查词";
-    return result;
+    if(all.isEmpty())message="输入中文词语、英文单词或英文句子，即可查看词典释义与候选";
+    else if(!local&&!network)message="请在渠道设置中启用 ECDICT 并下载词库，或启用有道查词";
+    else if(!local)message="正在使用有道在线查词；下载 ECDICT 后可离线查词";
+    return snapshot();
 }
+
 Translation Services::translate(const QJsonObject& settings,const QStringList& parts,const QString& source,
     const QString& target,Cancel cancel,QJsonObject draft)
 {
