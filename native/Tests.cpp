@@ -231,6 +231,31 @@ int main(int argc,char** argv)
             if(missing.provider!="zvo"||known.provider!="ecdict"||known.fallback)throw std::runtime_error("dictionary misses must not quarantine lookup");
             auto offline=dictionary.translate({{"provider","ecdict"},{"fallbackEnabled",false},{"proxy","invalid proxy"}},{"hello"},"en","zh",freshCancel());
             if(offline.provider!="ecdict")throw std::runtime_error("offline dictionary must not depend on proxy configuration");
+            auto tokens=st::dictionaryWords(" Hello, HELLO! can't well-known café abc123 你好 hello.");
+            if(tokens.size()!=3||tokens[0].toObject()["count"].toInt()!=3||tokens[0].toObject()["start"].toInt()!=1||tokens[1].toObject()["key"]!="can't"||tokens[2].toObject()["key"]!="well-known")throw std::runtime_error("English token boundaries, contraction, order and duplicates");
+            if(!st::dictionaryWords("你好 café abc123").isEmpty())throw std::runtime_error("non English text does not create partial words");
+            if(st::dictionaryDetails("walk",dictionaryDir.path()).value("forms").toString().isEmpty())throw std::runtime_error("dictionary word forms");
+            dictionary.save({{"youdao",QJsonObject{{"endpoint",base+"/word-dictionary"}}}});
+            bool localFirst=false;
+            auto perWord=dictionary.lookupWords({},"Hello HELLO, novelword unknownword.",freshCancel(),[&](QJsonObject value){
+                if(value["found"].toInt()==1&&value["rows"].toArray().size()==3)localFirst=true;
+            });
+            auto wordRows=perWord["rows"].toArray();auto onlineWord=wordRows[1].toObject();
+            if(!localFirst||perWord["found"].toInt()!=2||wordRows[0].toObject()["count"].toInt()!=2||onlineWord["provider"]!="有道"||!onlineWord["pronunciation"].toString().contains("美")||onlineWord["meaning"]!="n. 新词；<例>"||onlineWord["forms"]!="复数 novelwords"||wordRows[2].toObject()["status"]!="missing")throw std::runtime_error("local first progressive word lookup with Youdao fallback");
+            dictionary.save({{"youdao",QJsonObject{{"enabled",false}}}});
+            auto offlineWords=dictionary.lookupWords({{"proxy","invalid proxy"}},"hello unknownword",freshCancel());
+            if(offlineWords["found"].toInt()!=1||offlineWords["rows"].toArray()[1].toObject()["status"]!="missing")throw std::runtime_error("disabled Youdao not requested, offline independent of proxy");
+            dictionary.save({{"ecdict",QJsonObject{{"enabled",false}}}});
+            if(dictionary.lookupWords({},"hello",freshCancel())["found"].toInt()!=0)throw std::runtime_error("disabled offline dictionary not consulted");
+            dictionary.save({{"ecdict",QJsonObject{{"enabled",true}}},{"youdao",QJsonObject{{"enabled",true},{"endpoint",base+"/word-dictionary"}}}});
+            auto cancelWords=freshCancel();bool wordsCancelled=false;
+            try{dictionary.lookupWords({},"hello novelword",cancelWords,[&](QJsonObject){cancelWords->store(true);});}catch(...){wordsCancelled=true;}
+            if(!wordsCancelled)throw std::runtime_error("word lookup cancellation stops pending requests");
+            if(dictionary.lookupWords({},"你好",freshCancel())["message"].toString().isEmpty())throw std::runtime_error("word lookup empty language guidance");
+            QStringList longWords;for(int i=0;i<65;++i)longWords<<"hello"+QString(QChar('a'+i/26))+QChar('a'+i%26);
+            dictionary.save({{"youdao",QJsonObject{{"enabled",false}}}});
+            auto capped=dictionary.lookupWords({},longWords.join(' '),freshCancel());
+            if(!capped["truncated"].toBool()||capped["rows"].toArray().size()!=60||capped["total"].toInt()!=65)throw std::runtime_error("word lookup explicit bounded results");
             auto sentence=dictionary.translate({{"provider","ecdict"},{"fallbackEnabled",true}},{"This is a complete sentence that is not in the dictionary."},"en","zh",freshCancel());
             if(sentence.provider!="zvo")throw std::runtime_error("dictionary sentence fallback");
             QStringList routes;
@@ -357,9 +382,13 @@ int main(int argc,char** argv)
             bool noEnabled=false;try{aiRecovered.translate(aiSettings,{"hello"},"auto","zh",fresh());}catch(const std::exception&){noEnabled=true;}
             if(!noEnabled)throw std::runtime_error("all-disabled queue must not send requests");
             std::puts(QJsonDocument(QJsonObject{{"passed",true},{"fixtureRoutes",QJsonArray::fromStringList(routes)},
-                {"multiAiFallback",true},{"aiModelCooldown",true},{"aiModelRecovery",true},{"aiChannelEncryption",true},{"disabledProviders",true},{"aiExplanation",true},{"dpapi",true},{"smallScreenshotOcr",true},{"aiMigration",true},{"offlineDictionary",true},{"dictionaryFallback",true},{"dictionaryDownload",true},{"dictionaryIntegrity",true},{"youdaoSignature",true},{"sogouEncoding",true},
+                {"wordTokenizer",true},{"structuredDictionary",true},{"youdaoWordFallback",true},{"progressiveWordLookup",true},{"wordLookupLimits",true},{"wordLookupCancellation",true},{"multiAiFallback",true},{"aiModelCooldown",true},{"aiModelRecovery",true},{"aiChannelEncryption",true},{"disabledProviders",true},{"aiExplanation",true},{"dpapi",true},{"smallScreenshotOcr",true},{"aiMigration",true},{"offlineDictionary",true},{"dictionaryFallback",true},{"dictionaryDownload",true},{"dictionaryIntegrity",true},{"youdaoSignature",true},{"sogouEncoding",true},
                 {"persistentFallback",true},{"recovery",true},{"cancel",true},{"httpProxy",true},{"pointerPhrases",true},
                 {"manualQueue",true},{"automaticWeights",true},{"persistentQueue",true},{"diagnosticsHealth",true},{"neutralCancellationAndMisses",true}}).toJson(QJsonDocument::Compact).constData());
+        }else if(args.contains("--live-lookup")){
+            auto words=services.lookupWords({},"hello beautiful running",std::make_shared<std::atomic_bool>(false));
+            std::puts(QJsonDocument(words).toJson(QJsonDocument::Compact).constData());
+            if(words.value("found").toInt()!=3)throw std::runtime_error("live Youdao word lookup unavailable");
         }else if(args.contains("--live")){
             QJsonArray routes;
             auto live=args.contains("--live-providers")?args.value(args.indexOf("--live-providers")+1).split(','):QStringList{"google","edge","zvo","mymemory","sogou","youdao","ecdict"};

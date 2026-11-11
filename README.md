@@ -1,4 +1,4 @@
-# 截图翻译 0.4.8
+# 截图翻译 0.4.9
 
 WinShun 原生翻译插件，支持截图翻译、剪贴板翻译、划词翻译和鼠标指词 OCR。**不需要安装 Python、PySide6 或 Qt。**
 
@@ -18,9 +18,9 @@ WinShun 原生翻译插件，支持截图翻译、剪贴板翻译、划词翻译
 
 需要 **Windows 10/11 x64、WinShun 0.23.0 或更新版本**，以及系统已安装的 OCR 语言包。
 
-1. 从 [0.4.8 发布页](https://github.com/iuuuuuuuu/winshun-screenshot-translate/releases/tag/v0.4.8) 下载 `iuuuuuuuu.screenshot-translate-0.4.8.wsplugin`。
+1. 从 [0.4.9 发布页](https://github.com/iuuuuuuuu/winshun-screenshot-translate/releases/tag/v0.4.9) 下载 `iuuuuuuuu.screenshot-translate-0.4.9.wsplugin`。
 2. 打开 WinShun 设置 → 插件 → 从压缩包安装，选择这个文件，查看并允许所需权限。
-3. 更新后检查插件卡片版本为 **0.4.8**。新版通过检查后由官方插件库自动同步；安装和每次更新仍需用户确认。
+3. 更新后检查插件卡片版本为 **0.4.9**。新版通过检查后由官方插件库自动同步；安装和每次更新仍需用户确认。
 
 从 0.3.3 / 0.4.0 升级继续使用原有渠道、密钥、代理、热键及偏好；不需要重新安装 Python 依赖。原先明确清空或自定义的热键优先于新版默认值，请在插件设置中检查。不要同时启用早期本地 `winshun.screenshot-translate` 与当前社区版。
 
@@ -150,6 +150,14 @@ OCR 仍受清晰度、字体、背景和系统语言包影响。很小文字经�
 
 [中文更新记录](CHANGELOG.md) · [构建与验证说明](native/README.md) · [第三方许可](THIRD_PARTY_NOTICES.md)
 
-公开发布使用标签 `v0.4.8` 对应源码；安装包内 `BUILD-INFO.json` 记录确切提交与 Qt 版本。GitHub Actions“原生构建与打包”从标签构建并保留日志、安装包与校验值。
+公开发布使用标签 `v0.4.9` 对应源码；安装包内 `BUILD-INFO.json` 记录确切提交与 Qt 版本。GitHub Actions“原生构建与打包”从标签构建并保留日志、安装包与校验值。
 
 插件自己的代码采用 MIT。本版使用宿主 Qt 6.12 动态库，不重复分发 Qt；其来源与许可由 WinShun 提供，插件保留 Qt 许可文本；Visual C++ 运行库、阿里巴巴普惠体和 Phosphor 图标分别遵循各自许可。允许按 Qt 的许可替换兼容动态库及调试修改；经 WinShun 管理员授权的副本修改后需重新确认。
+
+### 面板查词
+
+使用 `jfy` 打开面板。顶部自动 / 翻译 / 查词共用一个输入框：自动模式下英文单词显示词义，句子显示翻译；输入句子后切到查词，可按顺序查看每个词的音标、词性释义和词形。手动选择视图后保持该选择。重复词合并并标注次数，点击词名定位原文。即时查询可开关，Ctrl+Enter 立即提交。
+
+查词优先使用启用且已下载的 ECDICT；缺词再由启用的有道在线补查，共用已有代理设置。有道官方翻译密钥不用于公开词典接口。最多展示前 60 个不同英文词，未知词和网络失败按词提示。这里显示词典释义，具体语境可在翻译视图开启 AI 释义。
+
+<img src=".screenshots/panel-sentence-words-0.4.9.png" alt="英文句子逐词释义" width="720">

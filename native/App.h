@@ -62,7 +62,7 @@ private:
     void showSettings();
     void showPanel(const QString& text = {});
     void panelAction(const QString& name,const QVariant& value);
-    void translatePanel();
+    void translatePanel(bool reuse=false);
     void publishAi();
     void aiAction(const QString& name,const QVariant& value);
     void configSelect(const QString& provider);

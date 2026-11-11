@@ -14,6 +14,9 @@ DictionarySource dictionarySource();
 QString dictionaryPath(const QString& directory);
 bool dictionaryAvailable(const QString& directory);
 QString dictionaryEntry(const QString& text,const QString& directory={});
+QJsonObject dictionaryDetails(const QString& text,const QString& directory={});
+// Ordered, case-insensitive unique English tokens; retain positions and repeats.
+QJsonArray dictionaryWords(const QString& text,int limit=60);
 void downloadDictionary(const QString& directory,const QString& proxy,Cancel cancel,
     std::function<void(qint64,qint64)> progress={},const DictionarySource& source=dictionarySource());
 bool dictionaryText(const QString& text);

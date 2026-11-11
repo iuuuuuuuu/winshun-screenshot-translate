@@ -94,7 +94,7 @@ bool dictionaryText(const QString& text)
     return text.size()<=100&&text.simplified().count(' ')<=7&&
         QRegularExpression("^[A-Za-z][A-Za-z '\\x{2019}.-]*$").match(text.trimmed()).hasMatch();
 }
-QString dictionaryEntry(const QString& text,const QString& directory)
+QJsonObject dictionaryDetails(const QString& text,const QString& directory)
 {
     QFile file(installedDictionary(directory));
     if(!file.open(QIODevice::ReadOnly))throw std::runtime_error("ECDICT 词库未下载，请到设置 → ECDICT 一键下载");
@@ -115,12 +115,37 @@ QString dictionaryEntry(const QString& text,const QString& directory)
         if(order<0){left=mid+1;continue;}if(order>0){right=mid;continue;}
         auto values=QJsonDocument::fromJson(file.read(size)).array();
         if(values.size()!=4)throw std::runtime_error("ECDICT 词条格式不正确");
-        QStringList lines;
-        if(!values[0].toString().isEmpty())lines<<"/"+values[0].toString()+"/";
         auto meaning=values[1].toString();if(meaning.isEmpty())meaning=values[2].toString();
-        if(meaning.isEmpty())return {};lines<<meaning;
-        return lines.join('\n');
+        if(meaning.isEmpty())return {};
+        QStringList forms;
+        const QMap<QString,QString> labels{{"p","过去式"},{"d","过去分词"},{"i","现在分词"},{"3","第三人称单数"},{"r","比较级"},{"t","最高级"},{"s","复数"},{"0","原形"}};
+        for(auto item:values[3].toString().split('/',Qt::SkipEmptyParts)){
+            auto at=item.indexOf(':');auto label=labels.value(item.left(at));
+            if(at>0&&!label.isEmpty())forms<<label+" "+item.mid(at+1);
+        }
+        return {{"phonetic",values[0].toString()},{"meaning",meaning},{"forms",forms.join(" · ")},{"provider","ECDICT"}};
     }
     return {};
+}
+QString dictionaryEntry(const QString& text,const QString& directory)
+{
+    auto entry=dictionaryDetails(text,directory);if(entry.isEmpty())return {};
+    auto phone=entry.value("phonetic").toString();
+    return (phone.isEmpty()?QString():"/"+phone+"/\n")+entry.value("meaning").toString();
+}
+QJsonArray dictionaryWords(const QString& text,int limit)
+{
+    QJsonArray words;QMap<QString,int> indices;
+    // Unicode letter/number guards avoid extracting English-looking fragments
+    // from accented words, identifiers, or mixed-script words.
+    static const QRegularExpression expression("(?<![\\p{L}\\p{N}_])[A-Za-z]+(?:['\\x{2019}-][A-Za-z]+)*(?![\\p{L}\\p{N}_])");
+    auto matches=expression.globalMatch(text);
+    while(matches.hasNext()){
+        auto match=matches.next();auto word=match.captured();auto key=word.toLower().replace(QChar(0x2019),'\'');
+        if(indices.contains(key)){auto index=indices.value(key);auto row=words[index].toObject();row["count"]=row["count"].toInt()+1;words[index]=row;continue;}
+        if(words.size()>=limit)continue;
+        indices[key]=int(words.size());words.append(QJsonObject{{"word",word},{"key",key},{"count",1},{"start",match.capturedStart()},{"length",match.capturedLength()}});
+    }
+    return words;
 }
 }

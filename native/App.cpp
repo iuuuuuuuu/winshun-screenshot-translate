@@ -110,7 +110,8 @@ App::App(ws::captureplugin::Protocol& protocol,QString appDir,QJsonObject initia
         {"sourceText",""},{"translatedText",""},{"status",""},{"provider",""},{"mode","clip"}});
     QObject::connect(&m_wordBackend,&Backend::invoked,this,&App::wordAction);
     m_panelBackend.update({{"chinese",m_chinese},{"dark",m_dark},{"sourceText",""},{"source","auto"},{"target","auto"},
-        {"translatedText",""},{"definition",""},{"status",""},{"loading",false},{"autoTranslate",true},{"explain",true}});
+        {"translatedText",""},{"definition",""},{"status",""},{"loading",false},{"autoTranslate",true},{"explain",true},
+        {"panelMode","auto"},{"panelPage","translate"},{"lookupRows",QVariantList()}});
     QObject::connect(&m_panelBackend,&Backend::invoked,this,&App::panelAction);
     m_followSelection.setInterval(450);
     QObject::connect(&m_followSelection,&QTimer::timeout,this,[this]{readSelection(true);});
@@ -791,7 +792,7 @@ void App::showPanel(const QString& text)
         m_panel.window->setPosition(area.center()-QPoint(m_panel.window->width()/2,m_panel.window->height()/2));
     }
     m_panelBackend.update({{"menuLeft",area.left()},{"menuRight",area.right()},{"menuTop",area.top()},{"menuBottom",area.bottom()}});
-    if(!text.isEmpty())m_panelBackend.update({{"sourceText",text}});
+    if(!text.isEmpty())panelAction("input",text);
     m_panel.window->show();m_panel.window->requestActivate();
 }
 void App::panelAction(const QString& name,const QVariant& value)
@@ -804,29 +805,62 @@ void App::panelAction(const QString& name,const QVariant& value)
     if(name=="settings"){showSettings();return;}
     if(name=="copy"){QGuiApplication::clipboard()->setText(m_panelBackend.values.value(value.toString()).toString());return;}
     if(name=="translate"){translatePanel();return;}
+    if(name=="panelMode"){
+        if(!QStringList{"auto","translate","lookup"}.contains(value.toString()))return;
+        m_panelBackend.update({{"panelMode",value}});translatePanel(true);return;
+    }
     if(name=="menu")return;
     if(!QStringList{"input","source","target","autoTranslate","explain"}.contains(name))return;
     if(m_panelCancel)m_panelCancel->store(true);++m_panelEpoch;
     m_panelBackend.update({{name=="input"?"sourceText":name,value},{"loading",false},{"status",""},{"definitionStatus",""},
-        {"translatedText",""},{"definition",""},{"provider",""},{"definitionProvider",""},{"detected",""}});
+        {"translatedText",""},{"definition",""},{"provider",""},{"definitionProvider",""},{"detected",""},
+        {"lookupRows",QVariantList()},{"lookupMessage",""},{"lookupText",""},{"translationText",""},{"lookupTotal",0},{"lookupFound",0},{"lookupTruncated",false}});
 }
-void App::translatePanel()
+void App::translatePanel(bool reuse)
 {
     auto text=m_panelBackend.values.value("sourceText").toString().trimmed();
     if(m_panelCancel)m_panelCancel->store(true);m_panelCancel=token();auto cancel=m_panelCancel;auto epoch=++m_panelEpoch;
-    if(text.isEmpty()){m_panelBackend.update({{"loading",false}});return;}
+    auto mode=m_panelBackend.values.value("panelMode").toString();auto words=dictionaryWords(text,2);
+    bool lookup=mode=="lookup"||(mode=="auto"&&dictionaryText(text)&&words.size()==1&&words[0].toObject().value("count").toInt()==1);
+    m_panelBackend.update({{"panelPage",lookup?"lookup":"translate"},{"loading",false},{"status",""}});
+    if(text.isEmpty())return;
     if(text.size()>10000){m_panelBackend.update({{"status","一次最多输入 10,000 个字符"},{"loading",false}});return;}
+    const bool cachedTranslation=reuse&&!lookup&&m_panelBackend.values.value("translationText").toString()==text;
+    if(reuse&&lookup&&m_panelBackend.values.value("lookupText").toString()==text)return;
+    if(cachedTranslation&&(!m_panelBackend.values.value("explain").toBool()||m_panelBackend.values.value("definitionStatus")!="正在查询释义…"))return;
+    if(lookup){
+        auto services=m_services;auto settings=m_settings;
+        m_panelBackend.update({{"loading",true},{"lookupRows",QVariantList()},{"lookupMessage",""},{"lookupTotal",0},{"lookupFound",0}});
+        auto publish=[this,cancel,epoch](QJsonObject data){
+            if(cancel->load()||epoch!=m_panelEpoch)return;
+            QStringList copied;for(auto value:data.value("rows").toArray()){
+                auto row=value.toObject();if(!row.value("meaning").toString().isEmpty())copied<<row.value("word").toString()+"\n"+row.value("meaning").toString();
+            }
+            m_panelBackend.update({{"lookupRows",data.value("rows").toArray().toVariantList()},{"lookupTotal",data.value("total").toInt()},
+                {"lookupFound",data.value("found").toInt()},{"lookupTruncated",data.value("truncated").toBool()},{"lookupMessage",data.value("message").toString()},{"lookupCopy",copied.join("\n\n")}});
+        };
+        auto original=m_panelBackend.values.value("sourceText").toString();
+        background([this,services,settings,original,cancel,publish]{
+            return services->lookupWords(settings,original,cancel,[this,publish](QJsonObject data){QMetaObject::invokeMethod(this,[publish,data]{publish(data);},Qt::QueuedConnection);});
+        },[this,cancel,epoch,text,publish](QJsonObject data,QString error){
+            if(cancel->load()||epoch!=m_panelEpoch)return;
+            publish(data);m_panelBackend.update({{"loading",false},{"status",error},{"lookupText",error.isEmpty()?text:QString()}});
+        });return;
+    }
     auto source=m_panelBackend.values.value("source").toString();auto target=targetFor(text,m_panelBackend.values.value("target").toString());
     auto settings=m_settings;auto services=m_services;
-    m_panelBackend.update({{"loading",true},{"status","正在翻译…"},{"translatedText",""},{"definition",""},{"definitionStatus",""},
+    if(!cachedTranslation){
+      m_panelBackend.update({{"loading",true},{"status","正在翻译…"},{"translatedText",""},{"definition",""},{"definitionStatus",""},
         {"provider",""},{"definitionProvider",""},{"detected",source=="auto"?detect(text):source},{"actualTarget",target}});
-    background([services,settings,text,source,target,cancel]{return services->translate(settings,{text},source,target,cancel).json({text});},
-        [this,cancel,epoch](QJsonObject data,QString error){
+      background([services,settings,text,source,target,cancel]{return services->translate(settings,{text},source,target,cancel).json({text});},
+        [this,cancel,epoch,text](QJsonObject data,QString error){
             if(cancel->load()||epoch!=m_panelEpoch)return;
             m_panelBackend.update({{"loading",false},{"status",error},{"translatedText",data.value("translated").toString()},
-                {"provider",providerLabel(data)},{"providerNote",providerNote(data)},{"providerFallback",data.value("fallback").toBool()}});
+                {"provider",providerLabel(data)},{"providerNote",providerNote(data)},{"providerFallback",data.value("fallback").toBool()},
+                {"translationText",error.isEmpty()?text:QString()}});
             if(error.isEmpty())m_panelBackend.update({{"detected",data.value("sourceLanguage").toString()}});
         });
+    }
     if(m_panelBackend.values.value("explain").toBool()){
         settings["definition"]=true;settings["fallbackEnabled"]=true;
         // Prefer the offline dictionary for words, otherwise use the configured eligible service.

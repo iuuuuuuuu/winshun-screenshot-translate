@@ -128,6 +128,11 @@ class Server(http.server.BaseHTTPRequestHandler):
         elif path == "/youdao-dictionary":
             assert query["q"] == ["hello"]
             result = {"ec": {"word": [{"trs": [{"tr": [{"l": {"i": ["int. 你好"]}}]}]}]}}
+        elif path == "/word-dictionary":
+            word = query["q"][0]
+            result = {"ec": {"word": [{"ukphone": "nɒvəl", "usphone": "nɑvəl",
+                "trs": [{"tr": [{"l": {"i": ["n. 新词；&lt;例&gt;"]}}]}],
+                "wfs": [{"wf": {"name": "复数", "value": "novelwords"}}]}]}} if word == "novelword" else {}
         elif path == "/youdao":
             text = body["q"][0]
             signed_input = text if len(text) <= 20 else text[:10] + str(len(text)) + text[-10:]
@@ -196,7 +201,7 @@ def launch(program, args, data, output, initial=None, gpu=False):
         api("user32", "CloseDesktop", w.BOOL, w.HANDLE)(desktop)
 
 def main():
-    build = Path(tempfile.gettempdir()) / "winshun-st-native-048"
+    build = Path(tempfile.gettempdir()) / "winshun-st-native-049"
     if "--build" in sys.argv:
         build = Path(sys.argv[sys.argv.index("--build")+1])
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Server)

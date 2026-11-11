@@ -426,6 +426,63 @@ QJsonObject Translation::json(const QStringList& parts) const
     return {{"source",parts.join('\n')},{"translated",segments.join('\n')},{"segments",array(segments)},
         {"sourceLanguage",source},{"targetLanguage",target},{"provider",provider},{"preferredProvider",preferred},{"fallback",fallback},{"channelId",channelId},{"channelName",channelName},{"model",model}};
 }
+QJsonObject Services::lookupWords(const QJsonObject& settings,const QString& text,Cancel cancel,std::function<void(QJsonObject)> progress)
+{
+    if(text.size()>10000)fail("一次最多输入 10,000 个字符");
+    auto all=dictionaryWords(text,10000);QJsonArray rows;int found=0;
+    auto offline=profile("ecdict"),online=profile("youdao");
+    const bool local=offline.value("enabled").toBool(true)&&dictionaryAvailable(m_directory);
+    const bool network=online.value("enabled").toBool(true);
+    QString proxy=settings.value("proxy").toString().trimmed();if(proxy.isEmpty())proxy=field(online,"proxy");
+    // Official Youdao credentials configure translation, not the public word dictionary.
+    auto url=field(online,"appId").isEmpty()?endpoint(online):endpoints.value(providers.indexOf("youdao"));
+    auto snapshot=[&]{return QJsonObject{{"rows",rows},{"found",found},{"total",all.size()},{"truncated",all.size()>60}};};
+    for(int i=0;i<std::min(60,int(all.size()));++i){
+        if(cancel->load())fail("cancelled");
+        auto row=all[i].toObject();QJsonObject entry;
+        if(local)try{entry=dictionaryDetails(row.value("key").toString(),m_directory);}catch(const std::exception&){row["error"]="离线词库读取失败";}
+        if(!entry.isEmpty()){for(auto it=entry.begin();it!=entry.end();++it)row[it.key()]=it.value();++found;}
+        else row["status"]=network?"pending":"missing";
+        rows.append(row);
+    }
+    if(progress)progress(snapshot());
+    QElapsedTimer clock;clock.start();
+    for(int i=0;i<rows.size();++i){
+        if(cancel->load())fail("cancelled");
+        auto row=rows[i].toObject();if(row.value("status")!="pending")continue;
+        QString error;
+        try{
+            const int remaining=12000-int(clock.elapsed());if(remaining<=0)fail("在线查询超时，请重试");
+            Http http(proxy,cancel,std::min(4000,remaining));auto headers=browser();headers["Referer"]="https://dict.youdao.com/";
+            auto data=http.json(query(url,{{"q",row.value("key").toString()},{"le","en"},{"client","web"},{"keyfrom","webdict"},
+                {"dicts","{\"count\":99,\"dicts\":[[\"ec\"]]}"}}),{},headers).toObject();
+            QStringList meanings,phones,forms;
+            for(auto value:data.value("ec").toObject().value("word").toArray()){
+                auto word=value.toObject();
+                if(!word.value("ukphone").toString().isEmpty())phones<<"英 /"+word.value("ukphone").toString()+"/";
+                if(!word.value("usphone").toString().isEmpty())phones<<"美 /"+word.value("usphone").toString()+"/";
+                if(phones.isEmpty()&&!word.value("phone").toString().isEmpty())phones<<"/"+word.value("phone").toString()+"/";
+                for(auto row:word.value("trs").toArray())for(auto tr:row.toObject().value("tr").toArray())
+                    for(auto item:tr.toObject().value("l").toObject().value("i").toArray())
+                        if(item.isString()&&!item.toString().trimmed().isEmpty())meanings<<unescape(item.toString());
+                for(auto value:word.value("wfs").toArray()){
+                    auto form=value.toObject().value("wf").toObject();
+                    if(!form.value("value").toString().isEmpty())forms<<form.value("name").toString()+" "+form.value("value").toString();
+                }
+            }
+            meanings.removeDuplicates();
+            if(!meanings.isEmpty()){row["meaning"]=meanings.join('\n');row["pronunciation"]=phones.join(" · ");row["forms"]=forms.join(" · ");row["provider"]="有道";++found;}
+        }catch(const std::exception&){if(cancel->load())fail("cancelled");error="在线查询失败或超时，请重试";}
+        row["status"]=row.contains("meaning")?"found":"missing";
+        if(!error.isEmpty())row["error"]=error;
+        rows[i]=row;if(progress)progress(snapshot());
+    }
+    auto result=snapshot();
+    if(all.isEmpty())result["message"]="输入英文单词或英文句子，即可查看每个词的释义";
+    else if(!local&&!network)result["message"]="请在渠道设置中启用 ECDICT 并下载词库，或启用有道查词";
+    else if(!local)result["message"]="正在使用有道在线查词；下载 ECDICT 后可离线查词";
+    return result;
+}
 Translation Services::translate(const QJsonObject& settings,const QStringList& parts,const QString& source,
     const QString& target,Cancel cancel,QJsonObject draft)
 {

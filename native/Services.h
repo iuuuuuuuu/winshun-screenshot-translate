@@ -5,6 +5,7 @@
 #include <QMutex>
 #include <atomic>
 #include <memory>
+#include <functional>
 
 namespace st {
 inline const QStringList providers{"mymemory","google","edge","zvo","sogou","youdao","ecdict","microsoft","deepl","ai"};
@@ -41,6 +42,8 @@ public:
     QJsonArray queue(const QJsonObject& settings, const QJsonObject& drafts = {}, const QJsonObject& routing = {});
     QList<QJsonObject> candidates(const QJsonObject& profile, const QJsonObject& settings, const QJsonObject& routing = {});
     int today();
+    QJsonObject lookupWords(const QJsonObject& settings,const QString& text,Cancel cancel,
+        std::function<void(QJsonObject)> progress={});
     Translation translate(const QJsonObject& settings, const QStringList& parts,
         const QString& source, const QString& target, Cancel cancel, QJsonObject draft = {});
 private:
