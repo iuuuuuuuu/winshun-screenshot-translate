@@ -15,12 +15,24 @@ Window {
     property string provider: backend.state.provider
     property bool home: backend.state.home || false
     property bool automatic: backend.state.routingMode === "auto"
-    property bool dragging: false
+    readonly property bool dragging: queueRows.dragIndex >= 0
     property var queue: backend.state.queue || []
     function t(zh, en) { return chinese ? zh : en }
     function move(from, to) {
         to = Math.max(1, Math.min(queue.length - 1, to))
         if (from === to) return
+        if (automatic) {
+            const moved = queue[from]
+            if (moved.preferred) return
+            const neighbor = queue[to]
+            // Keep the measured health/speed score, and persist only the small
+            // user adjustment needed to place the row above/below its neighbor.
+            const score = neighbor.effectiveWeight !== undefined ? neighbor.effectiveWeight : neighbor.weight
+            const adjustment = Math.max(-10000, Math.min(10000,
+                score + (to < from ? 1 : -1) - moved.weight))
+            backend.action("adjustProviderWeight", {provider: moved.provider, adjustment: adjustment})
+            return
+        }
         backend.action("moveProvider", {provider: queue[from].provider,
             before: to < from ? queue[to].provider : to + 1 < queue.length ? queue[to + 1].provider : ""})
     }
@@ -95,6 +107,7 @@ Window {
             anchors.right: parent.right; anchors.rightMargin: 24
             anchors.bottom: footer.top; anchors.bottomMargin: 16
             clip: true
+            interactive: !window.dragging
             contentWidth: width; contentHeight: sheet.implicitHeight
             boundsBehavior: Flickable.StopAtBounds
             ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
@@ -148,9 +161,9 @@ Window {
                             text: !backend.state.fallbackEnabled
                                 ? window.t("自动降级已关闭。可先编排队列，再到 Win顺插件面板开启“自动降级”。", "Fallback is off. Arrange your queue, then enable automatic fallback in WinShun.")
                                 : (window.automatic
-                                    ? window.t("主渠道优先，其余按成功率和响应速度排序；测试与实际翻译都会更新权重。", "Preferred service first; backups are ranked by reliability and speed from tests and translations.")
-                                    : window.t("主渠道优先，失败后从上往下尝试。拖动左侧手柄或使用上下按钮排序。", "Preferred service first, then backups from top to bottom. Drag a handle or use the arrows."))
-                                    + window.t(" 冷却 ", " Cooldown: ") + backend.state.recoveryMinutes + window.t(" 分钟；保存后生效。", " min. Save to apply.")
+                                    ? window.t("主渠道固定优先；其余渠道按近期成功率和速度排序。拖动备选渠道可上调或下调它的权重。", "The preferred service stays first; backups are ranked by recent success and speed. Drag a backup up or down to boost or lower its weight.")
+                                    : window.t("主渠道由 Win顺插件面板中的翻译渠道设置并固定置顶；失败后从下方备选渠道依序尝试，可拖动手柄或使用按钮排序。", "The preferred service is set in WinShun's plugin panel and stays first; drag or use the arrows to order backups."))
+                                    + window.t(" 基础冷却 ", " Cooldown: ") + backend.state.recoveryMinutes + window.t(" 分钟，连续故障加倍，最长 7 天；保存后生效。", " min. Save to apply.")
                             color: Theme.subtext; font.pixelSize: 12
                         }
                     }
@@ -159,6 +172,42 @@ Window {
                     id: queueRows
                     objectName: "fallback-queue"
                     width: parent.width; spacing: 6
+                    readonly property int rowHeight: 66
+                    readonly property int rowStep: rowHeight + spacing
+                    property int dragIndex: -1
+                    property int dropIndex: -1
+                    property real dragOffset: 0
+                    property real pointerY: 0
+                    property real startY: 0
+                    property real startScroll: 0
+                    property bool pastThreshold: false
+                    function updateDrag() {
+                        const delta = pointerY - startY + scroll.contentY - startScroll
+                        if (!pastThreshold && Math.abs(delta) < Qt.styleHints.startDragDistance) return
+                        pastThreshold = true
+                        dragOffset = Math.max((1 - dragIndex) * rowStep,
+                            Math.min((window.queue.length - dragIndex - 1) * rowStep, delta))
+                        dropIndex = dragIndex + Math.round(dragOffset / rowStep)
+                    }
+                    function finishDrag(commit) {
+                        const from = dragIndex
+                        const to = dropIndex
+                        dragIndex = -1
+                        dropIndex = -1
+                        dragOffset = 0
+                        pastThreshold = false
+                        if (commit && from >= 0 && to >= 0) window.move(from, to)
+                    }
+                    Timer {
+                        interval: 24; repeat: true; running: window.dragging && queueRows.pastThreshold
+                        onTriggered: {
+                            const step = queueRows.pointerY < 30 ? -9 : queueRows.pointerY > scroll.height - 30 ? 9 : 0
+                            if (!step) return
+                            const maxScroll = Math.max(0, scroll.contentHeight - scroll.height)
+                            scroll.contentY = Math.max(0, Math.min(maxScroll, scroll.contentY + step))
+                            queueRows.updateDrag()
+                        }
+                    }
                     Repeater {
                         model: window.queue
                         Item {
@@ -166,59 +215,90 @@ Window {
                             required property var modelData
                             required property int index
                             objectName: "queue-row-" + modelData.provider
-                            width: queueRows.width; height: 66
-                            z: dragHandle.pressed ? 2 : 0
+                            width: queueRows.width; height: queueRows.rowHeight
+                            readonly property bool held: queueRows.dragIndex === index
+                            readonly property bool canDrag: !modelData.preferred && !backend.state.testing
+                            z: held ? 2 : 0
                             Rectangle {
                                 id: rowSurface
                                 width: parent.width; height: parent.height
-                                color: dragHandle.pressed ? Theme.chipActive : Theme.card
+                                y: {
+                                    const from = queueRows.dragIndex
+                                    const to = queueRows.dropIndex
+                                    if (queueRow.held) return queueRows.dragOffset
+                                    if (from < 0) return 0
+                                    if (queueRow.index > from && queueRow.index <= to) return -queueRows.rowStep
+                                    if (queueRow.index < from && queueRow.index >= to) return queueRows.rowStep
+                                    return 0
+                                }
+                                color: queueRow.held ? Theme.chipActive : Theme.card
                                 radius: Theme.cardRadius
-                                border.color: dragHandle.pressed ? Theme.accent : Theme.cardBorder
+                                border.color: queueRow.held ? Theme.accent : Theme.cardBorder
                                 Item {
-                                    x: 6; width: 28; height: parent.height
+                                    x: 0; width: 40; height: parent.height
+                                    // Keep the handle visible in both manual and automatic modes.
+                                    visible: true
                                     Glyph {
-                                        anchors.centerIn: parent; glyph: queueRow.modelData.preferred ? "\uE718" : "\uE76F"
-                                        size: 15; color: queueRow.modelData.preferred ? Theme.accent : Theme.faint
+                                        visible: queueRow.modelData.preferred
+                                        anchors.centerIn: parent; glyph: "\uE718"
+                                        size: 15; color: Theme.accent
                                     }
-                                    MouseArea {
-                                        id: dragHandle
-                                        objectName: "queue-drag-" + queueRow.modelData.provider
-                                        anchors.fill: parent; preventStealing: true
-                                        enabled: !window.automatic && !queueRow.modelData.preferred && !backend.state.testing
-                                        cursorShape: pressed ? Qt.ClosedHandCursor : Qt.OpenHandCursor
-                                        property real pointerY: 0
-                                        property real startY: 0
-                                        property real startScroll: 0
-                                        function updatePosition() {
-                                            rowSurface.y = Math.max((1 - queueRow.index) * 72,
-                                                Math.min((window.queue.length - queueRow.index - 1) * 72, pointerY - startY + scroll.contentY - startScroll))
-                                        }
-                                        onPressed: mouse => {
-                                            pointerY = mapToItem(scroll, mouse.x, mouse.y).y
-                                            startY = pointerY; startScroll = scroll.contentY; window.dragging = true
-                                        }
-                                        onPositionChanged: mouse => {
-                                            if (!pressed) return
-                                            pointerY = mapToItem(scroll, mouse.x, mouse.y).y; updatePosition()
-                                        }
-                                        onReleased: {
-                                            const from = queueRow.index
-                                            const to = from + Math.round(rowSurface.y / 72)
-                                            rowSurface.y = 0; window.dragging = false; window.move(from, to)
-                                        }
-                                        onCanceled: { rowSurface.y = 0; window.dragging = false }
-                                        Timer {
-                                            interval: 24; repeat: true; running: dragHandle.pressed
-                                            onTriggered: {
-                                                const step = dragHandle.pointerY < 30 ? -9 : dragHandle.pointerY > scroll.height - 30 ? 9 : 0
-                                                if (!step) return
-                                                scroll.contentY = Math.max(0, Math.min(scroll.contentHeight - scroll.height, scroll.contentY + step))
-                                                dragHandle.updatePosition()
+                                    Column {
+                                        visible: !queueRow.modelData.preferred
+                                        anchors.centerIn: parent; spacing: 3
+                                        opacity: queueRow.canDrag ? 1 : 0.45
+                                        Repeater {
+                                            model: 3
+                                            Row {
+                                                required property int index
+                                                spacing: 3
+                                                Repeater {
+                                                    model: 2
+                                                    Rectangle {
+                                                        width: 3; height: 3; radius: 1.5
+                                                        color: Theme.subtext
+                                                    }
+                                                }
                                             }
                                         }
                                     }
+                                    MouseArea {
+                                        objectName: "queue-drag-" + queueRow.modelData.provider
+                                        anchors.fill: parent
+                                        enabled: queueRow.canDrag
+                                        preventStealing: true
+                                        scrollGestureEnabled: false
+                                        cursorShape: pressed ? Qt.ClosedHandCursor : Qt.OpenHandCursor
+                                        function updatePointer(mouse) {
+                                            // Mapping the mouse event's local position takes the moved
+                                            // row origin into account and still yields the real pointer
+                                            // position in Flickable coordinates.
+                                            queueRows.pointerY = mapToItem(scroll, mouse.x, mouse.y).y
+                                        }
+                                        onPressed: mouse => {
+                                            scroll.cancelFlick()
+                                            queueRows.dragOffset = 0
+                                            updatePointer(mouse)
+                                            queueRows.startY = queueRows.pointerY
+                                            queueRows.startScroll = scroll.contentY
+                                            queueRows.dropIndex = queueRow.index
+                                            queueRows.dragIndex = queueRow.index
+                                        }
+                                        onPositionChanged: mouse => {
+                                            if (!pressed) return
+                                            updatePointer(mouse)
+                                            queueRows.updateDrag()
+                                        }
+                                        onReleased: mouse => {
+                                            updatePointer(mouse)
+                                            queueRows.updateDrag()
+                                            queueRows.finishDrag(true)
+                                        }
+                                        onCanceled: queueRows.finishDrag(false)
+                                    }
                                 }
                                 Column {
+                                    id: rowDescription
                                     x: 40; anchors.verticalCenter: parent.verticalCenter; spacing: 5
                                     width: parent.width - rowActions.width - 192
                                     Row {
@@ -247,7 +327,10 @@ Window {
                                     Text {
                                         anchors.right: parent.right; font.pixelSize: 11; color: Theme.faint
                                         text: (queueRow.modelData.elapsedMs !== undefined ? queueRow.modelData.elapsedMs + " ms · " : queueRow.modelData.latencyMs >= 0 ? queueRow.modelData.latencyMs + " ms · " : "")
-                                            + window.t("权重 ", "Weight ") + queueRow.modelData.weight
+                                            + window.t("权重 ", "Weight ") + (window.automatic && queueRow.modelData.effectiveWeight !== undefined
+                                                ? queueRow.modelData.effectiveWeight : queueRow.modelData.weight)
+                                            + (window.automatic && queueRow.modelData.weightAdjustment
+                                                ? " (" + (queueRow.modelData.weightAdjustment > 0 ? "+" : "") + queueRow.modelData.weightAdjustment + ")" : "")
                                             + (!queueRow.modelData.samples ? window.t("（初始）", " (initial)") : "")
                                     }
                                 }

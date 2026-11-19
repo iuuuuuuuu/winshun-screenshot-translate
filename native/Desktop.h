@@ -8,7 +8,7 @@
 #include <thread>
 #include <vector>
 namespace st {
-struct Block { QString text; QRectF box; double glyphHeight=16; };
+struct Block { QString text; QRectF box; double glyphHeight=16; int ocrLine=0; };
 QList<Block> groupWords(QList<Block> words);
 QList<Block> recognize(const QImage& image, Cancel cancel, bool grouped=true,
     double maxScale=2., bool retryEmpty=true);

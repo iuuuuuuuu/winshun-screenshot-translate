@@ -3,6 +3,7 @@
 #include <QJsonArray>
 #include <QStringList>
 #include <QMutex>
+#include <QCache>
 #include <atomic>
 #include <memory>
 #include <functional>
@@ -26,6 +27,7 @@ struct Translation {
     QJsonObject json(const QStringList& parts) const;
 };
 QString detect(const QString& text);
+QStringList sentenceParts(const QString& text, int maxChars=1200);
 QString targetFor(const QString& text, const QString& setting);
 bool validUrl(const QString& value);
 QByteArray crypt(const QByteArray& data, bool decrypt = false);
@@ -45,12 +47,17 @@ public:
     QJsonObject lookupWords(const QJsonObject& settings,const QString& text,Cancel cancel,
         std::function<void(QJsonObject)> progress={});
     Translation translate(const QJsonObject& settings, const QStringList& parts,
-        const QString& source, const QString& target, Cancel cancel, QJsonObject draft = {});
+        const QString& source, const QString& target, Cancel cancel, QJsonObject draft = {},
+        std::function<void(const Translation&,int,int)> progress = {});
 private:
+    Translation translateBatch(const QJsonObject& settings,const QStringList& parts,
+        const QString& source,const QString& target,Cancel cancel,QJsonObject draft,int workers=4);
     Translation route(const QJsonObject& profile, const QStringList& parts,
-        const QString& source, const QString& target, Cancel cancel, int budget);
+        const QString& source, const QString& target, Cancel cancel, int budget, int workers=4);
     void usage(const QString& text);
-    void recordOutcome(const QJsonObject& profile, bool success, qint64 elapsed, double recovery);
+    void recordOutcome(const QJsonObject& profile, bool success, qint64 elapsed, double recovery, const QString& error = {});
+    struct CachedTranslation { Translation result; qint64 expires; };
+    QCache<QByteArray,CachedTranslation> m_results{2*1024*1024};
     QString m_directory;
     QMutex m_lock;
     QJsonObject m_stored, m_health, m_routing;

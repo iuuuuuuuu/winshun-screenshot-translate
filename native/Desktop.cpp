@@ -24,6 +24,7 @@
 #include <QtMath>
 #include <QTimer>
 #include <QMap>
+#include <QTransform>
 #include <windowsx.h>
 #include <algorithm>
 #include <cmath>
@@ -88,6 +89,42 @@ bool inkBridges(const QImage& image,QRectF a,QRectF b)
         if(high-low>=48){++ink;blank=0;}else if(++blank>limit)return false;
     }return ink>=2;
 }
+QRect ocrInkBounds(const QImage& image,Cancel cancel)
+{
+    if(image.isNull())return {};
+    QList<int> border;
+    for(int x=0;x<image.width();x+=std::max(1,image.width()/80)){border<<qGray(image.pixel(x,0));border<<qGray(image.pixel(x,image.height()-1));}
+    for(int y=0;y<image.height();y+=std::max(1,image.height()/80)){border<<qGray(image.pixel(0,y));border<<qGray(image.pixel(image.width()-1,y));}
+    std::sort(border.begin(),border.end());int bg=border[border.size()/2],agree=0;
+    for(int value:border)agree+=std::abs(value-bg)<12;
+    if(agree<border.size()*.95)return image.rect();
+    int left=image.width(),right=-1,top=image.height(),bottom=-1;
+    auto gray=image.convertToFormat(QImage::Format_Grayscale8);
+    for(int y=0;y<gray.height();++y){
+        if(cancel->load())return {};
+        const auto row=gray.constScanLine(y);
+        for(int x=0;x<gray.width();++x)if(std::abs(int(row[x])-bg)>12){
+            left=std::min(left,x);right=std::max(right,x);top=std::min(top,y);bottom=std::max(bottom,y);
+        }
+    }
+    return right>=left?QRect(QPoint(left,top),QPoint(right,bottom)):QRect();
+}
+QImage ocrContrast(const QImage& source,int trimDivisor=1000)
+{
+    int histogram[256]{};int count=0;
+    for(int y=0;y<source.height();y+=3)for(int x=0;x<source.width();x+=3){++histogram[qGray(source.pixel(x,y))];++count;}
+    int low=0,high=255,sum=0;for(;low<255;++low){sum+=histogram[low];if(sum>std::max(1,count/trimDivisor))break;}
+    sum=0;for(;high>low;--high){sum+=histogram[high];if(sum>std::max(1,count/trimDivisor))break;}
+    int dark=0;for(int i=0;i<128;++i)dark+=histogram[i];
+    bool invert=dark>count*3/4;
+    if(high-low>20&&(invert||high-low<150)){
+        auto normalized=source.convertToFormat(QImage::Format_RGB32);
+        for(int y=0;y<normalized.height();++y){auto row=reinterpret_cast<QRgb*>(normalized.scanLine(y));
+            for(int x=0;x<normalized.width();++x){int v=std::clamp((qGray(row[x])-low)*255/(high-low),0,255);if(invert)v=255-v;row[x]=qRgb(v,v,v);}}
+        return normalized;
+    }
+    return {};
+}
 BITMAPINFO bitmapInfo(int width,int height)
 {
     BITMAPINFO bi{};bi.bmiHeader.biSize=sizeof(BITMAPINFOHEADER);bi.bmiHeader.biWidth=width;
@@ -121,7 +158,16 @@ QList<Block> groupWords(QList<Block> words)
         bool found=false;
         for(auto& row:rows){
             auto b=row[0].box;
-            if(std::min(b.bottom(),word.box.bottom())-std::max(b.top(),word.box.top())>=std::min(b.height(),word.box.height())*.5){
+            // Keep WinRT's native line membership, including rotated lines.
+            // Geometry is a fallback for synthetic/merged words without a line id.
+            if(word.ocrLine&&row[0].ocrLine){
+                if(word.ocrLine==row[0].ocrLine){row<<word;found=true;break;}
+                continue;
+            }
+            bool punctuation=std::all_of(word.text.begin(),word.text.end(),[](QChar c){return c.isPunct();});
+            bool baseline=punctuation&&word.box.top()>=b.top()-b.height()*.2&&word.box.bottom()<=b.bottom()+b.height()*.3&&
+                word.box.left()>=b.left()-b.height()&&word.box.left()<=row.last().box.right()+b.height()*1.5;
+            if(baseline||std::abs(b.center().y()-word.box.center().y())<=std::max(b.height(),word.box.height())*.45||std::min(b.bottom(),word.box.bottom())-std::max(b.top(),word.box.top())>=std::min(b.height(),word.box.height())*.5){
                 row<<word;found=true;break;
             }
         }if(!found)rows.append(QList<Block>{word});
@@ -146,7 +192,7 @@ QList<Block> groupWords(QList<Block> words)
             if(!run.text.isEmpty()&&w.box.x()-prev.box.right()>limit)flush();
             if(run.text.isEmpty())run=w;
             else{
-                if(!(cjk(run.text.back())&&cjk(w.text.front()))&&w.box.x()-prev.box.right()>std::max(1.,std::min(prev.box.height(),w.box.height())*.16))run.text+=" ";
+                if(!QString(",.!?:;，。！？：；、)]}）】》」』”’").contains(w.text.front())&&!(cjk(run.text.back())&&cjk(w.text.front()))&&w.box.x()-prev.box.right()>std::max(1.,std::min(prev.box.height(),w.box.height())*.16))run.text+=" ";
                 run.text+=w.text;run.box=run.box.united(w.box);
             }prev=w;
         }flush();
@@ -292,8 +338,39 @@ QList<Block> recognize(const QImage& source,Cancel cancel,bool grouped,double ma
         if(!engine&&available.Size())engine=OcrEngine::TryCreateFromLanguage(available.GetAt(0));
         if(!engine)throw std::runtime_error("Windows 未安装 OCR 语言包；请在 Windows 语言设置中安装");
         if(source.isNull()||cancel->load())return {};
+        if(retryEmpty&&(source.width()>640||source.height()>240)){
+            auto ink=ocrInkBounds(source,cancel);
+            if(cancel->load())return {};
+            auto crop=ink.adjusted(-12,-12,12,12).intersected(source.rect());
+            if(!ink.isEmpty()&&!crop.isEmpty()&&qint64(crop.width())*crop.height()<qint64(source.width())*source.height()/2){
+                auto found=recognize(source.copy(crop),cancel,false,maxScale,retryEmpty);
+                for(auto& word:found)word.box.translate(crop.topLeft());
+                if(!found.isEmpty()||cancel->load())return grouped?groupWords(found):found;
+            }
+        }
         const int maxSide=int(OcrEngine::MaxImageDimension());
-        const QImage* pixels=&source;
+        // Tile full captures with overlapping context instead of shrinking tiny glyphs.
+        // Pointer scans already refine a local phrase: preserve their established scan scale.
+        const int tile=std::min(1200,maxSide/3),margin=320;
+        if(retryEmpty&&maxScale>0&&(source.width()>tile||source.height()>tile)){
+            QList<Block> collected;
+            for(int y=0;y<source.height();y+=tile)for(int x=0;x<source.width();x+=tile){
+                if(cancel->load())return {};
+                QRect owner(x,y,std::min(tile,source.width()-x),std::min(tile,source.height()-y));
+                QRect crop=owner.adjusted(-margin,-margin,margin,margin).intersected(source.rect());
+                // Recursive crops use scale constrained to the OCR limit; disable retiling below.
+                auto found=recognize(source.copy(crop),cancel,false,-std::abs(maxScale),retryEmpty);
+                for(auto word:found){word.box.translate(crop.topLeft());
+                    const auto c=word.box.center();
+                    if(c.x()>=owner.x()&&c.x()<owner.x()+owner.width()&&c.y()>=owner.y()&&c.y()<owner.y()+owner.height())collected<<word;}
+            }
+            for(auto& word:collected)word.ocrLine=0;
+            return grouped?groupWords(collected):collected;
+        }
+        maxScale=std::abs(maxScale);
+        if(retryEmpty)maxScale=std::max(maxScale,2.);
+        const QImage* pixels=&source;QImage normalized;
+        if(retryEmpty){normalized=ocrContrast(source);if(!normalized.isNull())pixels=&normalized;}
         auto read=[&](OcrEngine reader,double requested,int padding){
             QList<Block> words;if(cancel->load())return words;
             double scale=std::min(requested,double(maxSide-2*padding)/std::max(source.width(),source.height()));
@@ -311,23 +388,78 @@ QList<Block> recognize(const QImage& source,Cancel cancel,bool grouped,double ma
             if(cancel->load())return words;
             auto result=reader.RecognizeAsync(bitmap).get();
             const double sx=double(scaled.width())/source.width(),sy=double(scaled.height())/source.height();
-            for(auto line:result.Lines())for(auto word:line.Words()){
-                auto r=word.BoundingRect();QRectF box((r.X-padding)/sx,(r.Y-padding)/sy,r.Width/sx,r.Height/sy);
+            // WinRT returns boxes in its deskewed coordinate system. Rotate them
+            // around the padded image center before mapping to screen pixels.
+            QTransform orientation;
+            if(auto angle=result.TextAngle()){
+                orientation.translate(image.width()/2.,image.height()/2.);
+                orientation.rotate(angle.Value());
+                orientation.translate(-image.width()/2.,-image.height()/2.);
+            }
+            int lineId=0;
+            for(auto line:result.Lines()){++lineId;for(auto word:line.Words()){
+                auto r=word.BoundingRect();auto physical=orientation.mapRect(QRectF(r.X,r.Y,r.Width,r.Height));
+                QRectF box((physical.x()-padding)/sx,(physical.y()-padding)/sy,physical.width()/sx,physical.height()/sy);
                 box=box.intersected(QRectF(source.rect()));
-                if(!box.isEmpty())words.append({from(word.Text()),box,r.Height/sy});
-            }return words;
+                if(!box.isEmpty())words.append({from(word.Text()),box,r.Height/sy,lineId});
+            }}return words;
         };
-        auto words=read(engine,maxScale,0);
+        const int border=retryEmpty?32:0;
+        auto words=read(engine,maxScale,border);
+        if(retryEmpty&&!words.isEmpty()&&!cancel->load()){
+            QList<double> heights;for(auto w:words)if(w.text.size()&&w.box.height()>3)heights<<w.box.height();
+            std::sort(heights.begin(),heights.end());
+            if(!heights.isEmpty()&&heights[heights.size()/2]<20){
+                auto alternative=read(engine,3.,32);
+                auto score=[](const QList<Block>& found){int count=0;for(const auto& w:found)for(auto c:w.text)if(c.isLetterOrNumber())count+=cjk(c)?2:1;return count;};
+                if(score(alternative)>score(words))words=alternative;
+            }
+        }
         // The CJK recognizer may drop a short Latin word entirely. Retry an
         // installed English recognizer, without changing the user's languages.
         OcrEngine english{nullptr};
         if(retryEmpty&&words.isEmpty()&&!cancel->load())for(auto lang:available)if(from(lang.LanguageTag()).startsWith("en")){
-            english=OcrEngine::TryCreateFromLanguage(lang);if(english){words=read(english,maxScale,0);break;}
+            english=OcrEngine::TryCreateFromLanguage(lang);if(english){words=read(english,maxScale,border);break;}
+        }
+        // A nonempty CJK pass can still fragment/drop Latin letters. Compare an English pass
+        // only for Latin-only captures; never replace mixed-script content with English OCR.
+        if(retryEmpty&&!words.isEmpty()&&!cancel->load()){
+            int latin=0,other=0;for(const auto& word:words)for(auto c:word.text){
+                if(c.isLetter()){if(c.script()==QChar::Script_Latin)++latin;else ++other;}}
+            if(latin>=3&&other==0&&!from(engine.RecognizerLanguage().LanguageTag()).startsWith("en")){
+                for(auto lang:available)if(from(lang.LanguageTag()).startsWith("en")){
+                    english=OcrEngine::TryCreateFromLanguage(lang);break;}
+                if(english){auto alternative=read(english,maxScale,border);
+                    int letters=0;for(const auto& word:alternative)for(auto c:word.text)if(c.isLetter())++letters;
+                    if(letters>=latin&&letters<=latin*1.5+8)words=alternative;
+                }
+            }
+        }
+        if(retryEmpty&&words.isEmpty()&&!cancel->load()&&source.width()<=640&&source.height()<=240){
+            // Very short labels can disappear when padding dilutes the text.
+            // Retry the original framing before escalating magnification.
+            words=read(engine,maxScale,0);
+            if(words.isEmpty()&&english&&!cancel->load())words=read(english,maxScale,0);
+            if(words.isEmpty()&&!normalized.isNull()&&!cancel->load()){
+                pixels=&source;words=read(engine,maxScale,0);
+                if(words.isEmpty()&&english&&!cancel->load())words=read(english,maxScale,0);
+                pixels=&normalized;
+            }
         }
         if(retryEmpty&&words.isEmpty()&&!cancel->load()&&source.width()<=640&&source.height()<=240){
             auto scale=std::max(maxScale,4.);
             words=read(engine,scale,32);
             if(words.isEmpty()&&english&&!cancel->load())words=read(english,scale,32);
+            if(words.isEmpty()&&!cancel->load()){
+                // Short antialiased labels may need stronger percentile stretching
+                // than sparse text. Restrict it to an otherwise empty small crop.
+                auto stronger=ocrContrast(source,100);
+                if(!stronger.isNull()){
+                    pixels=&stronger;words=read(engine,scale,32);
+                    if(words.isEmpty()&&english&&!cancel->load())words=read(english,scale,32);
+                    pixels=normalized.isNull()?&source:&normalized;
+                }
+            }
             if(words.isEmpty()&&!cancel->load()){
                 // ClearType's colored edge pixels can make a very short word
                 // disappear in the CJK recognizer, even after enlargement.
@@ -596,10 +728,19 @@ Block wrappedPhraseAt(const QList<Block>& words,QPointF point,const QImage* imag
 }
 Block recognizeAt(const QImage& image,Cancel cancel,QPointF point)
 {
-    auto words=recognize(image,cancel,false,2.,false);
-    if(cancel->load())return {};
-    auto layout=pointerLayout(words,point,&image);
-    return layout.restore(recognizeLineAt(layout.image,layout.words,cancel,layout.point));
+    auto read=[&](const QImage& pixels,bool recover){
+        auto words=recognize(pixels,cancel,false,2.,recover);
+        if(cancel->load())return Block();
+        auto layout=pointerLayout(words,point,&pixels);
+        return layout.restore(recognizeLineAt(layout.image,layout.words,cancel,layout.point));
+    };
+    auto original=read(image,false);if(cancel->load())return {};
+    auto corrected=ocrContrast(image);
+    if(corrected.isNull())return original;
+    auto recovered=read(corrected,true);if(cancel->load())return {};
+    // Keep the original phrase if the alternate image loses content.
+    if(recovered.text.size()>=original.text.size()&&!recovered.text.isEmpty())return recovered;
+    return original;
 }
 Selection selectionAt(POINT point,HWND target)
 {

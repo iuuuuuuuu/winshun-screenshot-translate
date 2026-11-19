@@ -5,7 +5,7 @@
     "zh": "截图翻译",
     "en": "Screenshot Translate"
   },
-  "version": "0.4.10",
+  "version": "0.4.19",
   "settingsWindow": true,
   "description": {
     "zh": "无需 Python 的原生截图、剪贴板、划词和鼠标指词翻译；支持可编辑原文、固定跟随、管理员选区及渠道自动降级。",
@@ -192,8 +192,15 @@
         "zh": "翻译渠道",
         "en": "Translation service"
       },
-      "default": "mymemory",
+      "default": "ecdict",
       "options": [
+        {
+          "value": "ecdict",
+          "title": {
+            "zh": "ECDICT",
+            "en": "ECDICT"
+          }
+        },
         {
           "value": "mymemory",
           "title": {
@@ -234,13 +241,6 @@
           "title": {
             "zh": "有道",
             "en": "Youdao"
-          }
-        },
-        {
-          "value": "ecdict",
-          "title": {
-            "zh": "ECDICT",
-            "en": "ECDICT"
           }
         },
         {
@@ -301,12 +301,12 @@
         "en": "Recovery interval (minutes)"
       },
       "hint": {
-        "zh": "1–1440 分钟。间隔到后，在下一次翻译中优先重试主渠道；修改地址、密钥或代理会立即重试",
-        "en": "1–1440 minutes. Retry the preferred service on the next translation after this interval; changed configuration retries immediately"
+        "zh": "基础恢复间隔。故障至少停用 1 小时，连续失败加倍，最长 7 天；限流至少 6 小时，认证失败至少 24 小时。修改配置或手动测试可立即重试。",
+        "en": "Base recovery interval. Failures pause at least 1 hour, doubling up to 7 days; rate limits pause 6 hours, authentication failures 24 hours. Changed configuration or manual tests retry immediately."
       },
-      "default": 10,
+      "default": 60,
       "min": 1,
-      "max": 1440
+      "max": 10080
     },
     {
       "key": "comparisonOrder",

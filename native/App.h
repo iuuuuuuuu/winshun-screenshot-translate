@@ -98,6 +98,7 @@ private:
     QTimer m_followSelection;
     Cancel m_wordCancel,m_selectionCancel;
     quint64 m_wordEpoch=0,m_selectionPendingEpoch=0;
+    int m_selectionAttempts=0;
     bool m_wordPinned=false,m_wordEditing=false,m_selectionReading=false,m_followBaseline=false,m_wordPlacementFrozen=false;
     DWORD m_wordOpened=0;
     QPoint m_wordAnchor,m_wordRequestPoint;

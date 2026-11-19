@@ -89,10 +89,22 @@ class Server(http.server.BaseHTTPRequestHandler):
         raw = self.rfile.read(int(self.headers.get("Content-Length", 0)))
         body = (urllib.parse.parse_qs(raw.decode()) if "urlencoded" in self.headers.get("Content-Type", "")
                 else json.loads(raw) if raw else {})
+        if path in ("/zvo-speed","/google-speed"):
+            time.sleep(.16)
+        if path == "/google-rate-speed":
+            self.send_response(429);self.end_headers();return
+        if path in ("/zvo-cancel-speed","/zvo-error-speed"):
+            first=json.loads(body["text"][0])[0]
+            if not first.startswith("Part 0 "):
+                if path == "/zvo-cancel-speed":time.sleep(3)
+                else:
+                    self.send_response(503);self.end_headers();return
         if path == "/blocked":
             threading.Event().wait(30)
             return
-        if path in ("/fail", "/queue-fail") or (path == "/zvo-recover" and counts[path] == 1):
+        if path in ("/auth-fail", "/rate-fail"):
+            self.send_response(401 if path == "/auth-fail" else 429);self.end_headers();return
+        if path in ("/fail", "/queue-fail", "/backoff-fail") or (path == "/zvo-recover" and counts[path] == 1):
             self.send_response(503); self.end_headers(); return
         if path == "/google-slow":
             time.sleep(.35)
@@ -257,6 +269,9 @@ def main():
             assert Profiles(data).get("openai")["apiKey"]=="native-fixture-key"
             assert counts.get("ai:bad") == 2 and not counts.get("ai:disabled"), counts
             assert counts.get("/fail") == 2, counts  # memory skips, elapsed recovery retries
+            assert counts.get("/zvo-cache") == 4, counts
+            assert counts.get("/zvo-cache-changed") == 1, counts
+            assert counts.get("/google-rate-speed") == 1, counts
             print((out/"stdout.jsonl").read_text(encoding="utf-8"))
         else:
             pointer_fixtures=[]
@@ -285,7 +300,7 @@ def main():
             assert keys==[["Alt+Shift+T","Alt+Shift+C","Alt+Shift+W","Alt+Shift+O"]],keys
             for flag in ("wordRealEditSelection","wordClipboard","wordPinnedSelection","wordCancellation","wordMouseOcr","wordMousePhraseOcr","wordMouseSpacingOcr","wordOutsideDismiss",
                          "wordDefaultEditable","wordEditableClipboard","wordEditableSelection","wordEditableOcr","wordEditingPausesFollow","wordMouseMixedOcr","wordMouseWrappedOcr",
-                         "wordIsolatedSelection","wordSelectionTimeoutRecovery","wordSelectionReplacement","wordMoveRendering","wordRetryStable","wordRetryTarget",
+                         "wordIsolatedSelection","wordSelectionTimeoutRecovery","wordSelectionReplacement","wordSelectionAutomaticRetry","wordMoveRendering","wordRetryStable","wordRetryTarget",
                          "actualProviderLabels","providerFallbackAppearance","wordAutoTranslateOnBlur","wordRestoreHoverOnly","wordExplicitPinOnly","dictionaryDownloadUi",
                          "wordAdaptiveGeometry","textAdaptiveGeometry"):
                 assert report[flag], report

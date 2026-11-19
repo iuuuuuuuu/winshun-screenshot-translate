@@ -404,17 +404,34 @@ void Probe::run(App& app,const QJsonObject& params)
         check(app.m_config.window->findChild<QQuickItem*>("test-all")->isVisible(),"test all is visible on home");
         auto queueIds=[&]{QStringList ids;for(auto v:app.m_configBackend.values.value("queue").toList())ids<<v.toMap().value("provider").toString();return ids;};
         auto originalQueue=queueIds();check(originalQueue.size()==providers.size()&&originalQueue.first()=="zvo","home shows every service with preferred first");
+        report["queueOriginal"]=QJsonArray::fromStringList(originalQueue);
         app.m_config.window->grabWindow().save(out+"/settings-home-initial.png");
         auto moved=originalQueue[2];
+        auto dragHandle=visualItem(app.m_config.window->contentItem(),"queue-drag-"+moved);
+        check(dragHandle&&dragHandle->isVisible()&&dragHandle->isEnabled(),"manual backup drag handle is visible and enabled");
         click(app.m_config.window,visualItem(app.m_config.window->contentItem(),"queue-up-"+moved));
+        pump(50);
+        report["queueAfterArrow"]=QJsonArray::fromStringList(queueIds());
         check(queueIds()[1]==moved,"move up changes backup order");
         dragQueue(app.m_config.window,visualItem(app.m_config.window->contentItem(),"queue-drag-"+moved),80);
+        pump(50);
+        report["queueAfterDrag"]=QJsonArray::fromStringList(queueIds());
         check(queueIds()==originalQueue,"drag restores actual backup order");
         report["manualQueueControls"]=true;
         auto modes=app.m_config.window->findChild<QQuickItem*>("routing-modes");
         click(app.m_config.window,visualItem(modes,"choice-1"));
         check(app.m_routingDraft.value("mode")=="auto","automatic mode is selectable");
         check(!visualItem(app.m_config.window->contentItem(),"queue-up-"+moved)->isVisible(),"auto order cannot be manually changed");
+        dragHandle=visualItem(app.m_config.window->contentItem(),"queue-drag-"+moved);
+        check(dragHandle&&dragHandle->isVisible()&&dragHandle->property("enabled").toBool(),"automatic mode keeps backup drag handle visible and draggable");
+        auto autoBefore=queueIds();auto autoMoved=autoBefore[2];
+        dragQueue(app.m_config.window,visualItem(app.m_config.window->contentItem(),"queue-drag-"+autoMoved),80);pump(50);
+        auto autoAfter=queueIds();
+        report["autoQueueBeforeDrag"]=QJsonArray::fromStringList(autoBefore);
+        report["autoQueueAfterDrag"]=QJsonArray::fromStringList(autoAfter);
+        report["autoWeightAdjustments"]=app.m_routingDraft.value("adjustments");
+        check(autoAfter!=autoBefore&&autoAfter.indexOf(autoMoved)>autoBefore.indexOf(autoMoved),"automatic drag lowers backup weight and changes ranking");
+        check(app.m_routingDraft.value("adjustments").toObject().contains(autoMoved),"automatic drag persists explicit weight adjustment");
         app.configAction("routingMode","manual");pump(30);
         app.m_config.window->grabWindow().save(out+"/settings.png");
         app.configSelect("ai");pump(30);
@@ -486,7 +503,9 @@ void Probe::run(App& app,const QJsonObject& params)
         report["activeMemory"]=memory();
         auto preferred=app.m_settings.value("provider");app.configSelect("deepl");app.configAction("save",{});
         check(app.m_settings.value("provider")==preferred,"save doesn't switch preferred provider");
-        check(app.m_services->routing().value("mode")=="auto","saved mode drives translation services");
+        check(app.m_services->routing().value("mode")=="auto"&&app.m_config.window&&app.m_config.window->isVisible(),"save persists mode and keeps settings open");
+        check(app.m_configBackend.values.value("message").toString()==(app.m_chinese?"配置已保存":"Settings saved"),"save confirmation is visible");
+        app.configAction("close",{});
         app.showSettings();pump(30);check(app.m_configBackend.values.value("home").toBool()&&app.m_routingDraft.value("mode")=="auto","reopening keeps saved mode and starts on home");
         app.configAction("routingMode","manual");app.configAction("close",{});
         check(app.m_services->routing().value("mode")=="auto","cancel does not save routing edits");
@@ -737,13 +756,15 @@ void Probe::run(App& app,const QJsonObject& params)
         auto retryReads=std::make_shared<std::atomic_int>(0);
         auto retryTargets=std::make_shared<std::atomic_bool>(true);
         auto originalTarget=HWND(quintptr(0x1234)); // used only by the injected reader
+        app.m_mouse=[] {return QPoint(400,180);};
         app.m_readSelection=[retryReads,retryTargets,originalTarget](POINT point,HWND target,Cancel){
             int attempt=retryReads->fetch_add(1);
-            if(attempt>0&&(target!=originalTarget||point.x!=400||point.y!=180))retryTargets->store(false);
-            return attempt<4?Selection{}:Selection{"Settings",QRect(540,220,100,30)};
+            if(attempt>=3&&(target!=originalTarget||point.x!=400||point.y!=180))retryTargets->store(false);
+            return attempt<6?Selection{}:Selection{"Settings",QRect(540,220,100,30)};
         };
         app.textFlow("jsel");
         check(until([&]{return !app.m_wordBackend.values["loading"].toBool();}),"empty selection displays retry");
+        check(retryReads->load()==3,"empty selection exhausts two automatic reads");
         app.m_selectionTarget=originalTarget;
         auto retryPosition=app.m_word.window->position();
         auto retryAnchor=app.m_wordAnchor;
@@ -758,7 +779,9 @@ void Probe::run(App& app,const QJsonObject& params)
             check(until([&]{return !app.m_wordBackend.values["loading"].toBool();}),"retry completes");
             check(app.m_word.window->position()==retryPosition&&app.m_wordAnchor==retryAnchor,"repeated retry preserves original position and anchor");
         }
-        check(retryReads->load()==5&&retryTargets->load()&&app.m_wordSource=="Settings","retry keeps original HWND and pointer until selection becomes available");
+        if(retryReads->load()!=7||!retryTargets->load()||app.m_wordSource!="Settings")
+            throw std::runtime_error(QString("retry target invariant reads=%1 target=%2 source=%3")
+                .arg(retryReads->load()).arg(retryTargets->load()).arg(app.m_wordSource).toStdString());
         app.m_word.window->grabWindow().save(out+"/word-retry-stable.png");
         report["wordRetryStable"]=true;report["wordRetryTarget"]=true;
         app.closeWord();app.m_mouse=[] {return QPoint(400,180);};
@@ -779,11 +802,22 @@ void Probe::run(App& app,const QJsonObject& params)
         check(until([&]{return app.m_wordBackend.values["translatedText"].toString()=="设置";}),"reopened selection starts after cancelled read without another hotkey");
         check(readCancelled->load()&&readAttempts->load()==2&&!app.m_selectionReading,"only the latest selection read completes");
         report["wordSelectionReplacement"]=true;app.closeWord();
+        auto firstRead=std::make_shared<std::atomic_int>(0);
+        app.m_readSelection=[firstRead](POINT,HWND,Cancel){
+            if(firstRead->fetch_add(1)==0)return Selection{};
+            return Selection{"Settings",QRect(540,220,100,30)};
+        };
+        app.m_settings["selectionHotkey"]="Alt+Shift+S";
+        app.dispatch({},"hotkey",{{"key","Alt+Shift+S"}});
+        check(app.m_word.window->isVisible()&&app.m_wordBackend.values["loading"].toBool(),"single selection hotkey starts a fresh request");
+        check(until([&]{return !app.m_wordBackend.values["loading"].toBool()&&app.m_wordBackend.values["translatedText"].toString()=="设置";}),
+            "transient first selection miss retries automatically on the same hotkey");
+        check(firstRead->load()==2,"selection recovers on the second read without a second hotkey");
+        report["wordSelectionAutomaticRetry"]=true;app.closeWord();
         auto selectedIndex=std::make_shared<std::atomic_int>(0);
         app.m_readSelection=[selectedIndex](POINT,HWND,Cancel){
             return Selection{selectedIndex->load()==0?"Hello + 100%":"Settings",QRect(540,220,100,30)};
         };
-        app.m_settings["selectionHotkey"]="Alt+Shift+S";
         app.dispatch({},"hotkey",{{"key","Alt+Shift+S"}});
         check(app.m_word.window->flags().testFlag(Qt::WindowDoesNotAcceptFocus),"reopening selection popup restores passive initial focus");
         check(until([&]{return !app.m_wordBackend.values["loading"].toBool();}),"selection popup translation");
@@ -1108,6 +1142,15 @@ void Probe::run(App& app,const QJsonObject& params)
         check(app.m_panelBackend.values.value("translatedText").toString().isEmpty(),"manual mode does not auto-submit");
         click(app.m_panel.window,app.m_panel.window->findChild<QQuickItem*>("panel-submit"));
         check(until([&]{return !app.m_panelBackend.values.value("translatedText").toString().isEmpty();}),"panel translate button works");
+        app.panelAction("sentenceMode",true);QString document;
+        for(int i=0;i<500;++i)document+=QString("Sentence %1 remains intact. ").arg(i);
+        app.panelAction("input",document);app.translatePanel();
+        check(until([&]{return !app.m_panelBackend.values.value("loading").toBool();},25000),"long document finishes");
+        check(app.m_panelBackend.values.value("status").toString().isEmpty(),"long document no length error");
+        auto longSentenceRows=app.m_panelBackend.values.value("sentenceRows").toList();
+        check(longSentenceRows.size()==500&&longSentenceRows.last().toMap().value("translated").toString().contains("Sentence 499"),"all sentence pairs rendered including document tail");
+        pump(60);app.m_panel.window->grabWindow().save(out+"/panel-long-sentences.png");
+        app.panelAction("sentenceMode",false);
         // A cancelled request must never replace the newer input's result.
         app.m_settings["provider"]="mymemory";typeDraft(app.m_panel.window,"stale blocked text","panel-input");
         app.translatePanel();pump(80);auto pendingPanel=app.m_panelCancel;
@@ -1174,7 +1217,9 @@ void Probe::run(App& app,const QJsonObject& params)
         report["panelChineseCandidates"]=true;report["panelSynonyms"]=true;report["panelCandidateNavigation"]=true;
         app.panelAction("panelMode","translate");
         panelInput->setProperty("text",QString(10001,'x'));app.translatePanel();
-        check(app.m_panelBackend.values.value("status").toString().contains("10,000"),"panel limits oversized input");
+        check(until([&]{return !app.m_panelBackend.values.value("loading").toBool();},10000),"unpunctuated long input finishes");
+        check(app.m_panelBackend.values.value("status").toString().isEmpty()&&app.m_panelBackend.values.value("translatedText").toString().count('x')==10001,"unpunctuated input preserves every character beyond old limit");
+        report["panelLongDocument"]=true;report["panelSentencePairs"]=500;report["panelLongCharacters"]=document.size();
         app.panelAction("input","");app.translatePanel();check(!app.m_panelBackend.values.value("loading").toBool(),"empty panel stops work");
         app.m_settings["provider"]="mymemory";app.panelAction("explain",false);typeDraft(app.m_panel.window,"close while blocked","panel-input");
         app.translatePanel();pump(80);auto closingPanel=app.m_panelCancel;
@@ -1202,7 +1247,12 @@ void Probe::run(App& app,const QJsonObject& params)
         check(app.m_configBackend.values.value("aiTests").toList().isEmpty(),"editing AI settings clears stale model tests");
         app.configAction("enabled",QVariantMap{{"provider","google"},{"enabled",false}});app.configAction("home",{});pump(30);
         for(auto row:app.m_configBackend.values.value("queue").toList())if(row.toMap().value("provider")=="google")check(!row.toMap().value("enabled").toBool(),"disabled provider visible in queue");
+        check(app.m_config.window&&app.m_config.window->isVisible(),"settings remain open before saving");
+        app.configAction("save",{});
+        check(app.m_config.window&&app.m_config.window->isVisible(),"save keeps settings open for confirmation");
+        check(app.m_configBackend.values.value("message").toString()==(app.m_chinese?"配置已保存":"Settings saved"),"save displays an inline confirmation");
         app.configAction("close",{});report["translationPanel"]=true;report["aiChannelControls"]=true;
+        report["settingsSaveKeepsOpen"]=true;report["settingsSaveConfirmation"]=true;
         pump(200);report["closedMemory"]=memory();
         report["passed"]=true;code=0;
     }catch(const std::exception& e){report["passed"]=false;report["error"]=QString::fromUtf8(e.what());}

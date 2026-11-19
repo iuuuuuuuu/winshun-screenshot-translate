@@ -10,6 +10,8 @@
 #include <QThread>
 #include <QElapsedTimer>
 #include <QPainter>
+#include <QFontMetrics>
+#include <QDir>
 #include <thread>
 #include <cstdio>
 #include <stdexcept>
@@ -87,6 +89,14 @@ void checkPhrases()
         for(auto word:scaled)
             check(st::phraseAt(scaled,word.box.center()).text=="hi,i ma you ba by","actual spaces between short words survive");
     }
+    QList<st::Block> skewed{{"Rotate",{10,30,55,18},18,1},{"text",{72,23,40,18},18,1},
+        {"correctly.",{120,12,85,18},18,1}};
+    auto row=st::groupWords(skewed);
+    check(row.size()==1&&row.front().text=="Rotate text correctly.","native OCR line retains reading order across tilted boxes");
+    skewed.append({"Other column",{320,24,120,18},18,2});
+    row=st::groupWords(skewed);
+    check(row.size()==2&&row.front().text=="Rotate text correctly."&&row.back().text=="Other column","native OCR lines never swallow another column");
+    check(st::groupWords({{"Read",{10,10,40,20},20,1},{".",{52,28,3,3},3,1}}).front().text=="Read.","native baseline punctuation stays attached");
     QList<st::Block> longLine;
     for(int i=0;i<100;++i)longLine.append({QString("word%1").arg(i),QRectF(i*65,0,60,20),20});
     auto local=st::phraseAt(longLine,{50*65+20,10});
@@ -133,6 +143,101 @@ int main(int argc,char** argv)
     QGuiApplication app(argc,argv);
     try{
         auto args=app.arguments();
+        if(args.contains("--ocr-suite")){
+            auto out=args.value(args.indexOf("--ocr-suite")+1);QDir().mkpath(out);
+            QJsonArray reports;
+            auto run=[&](QString name,QImage image,QString expected,QPointF pointer=QPointF(-1,-1)){
+                image.save(out+"/"+name+".png");QList<st::Block> words;st::Block pointed;std::exception_ptr error;
+                QElapsedTimer clock;clock.start();
+                std::thread worker([&]{try{
+                    words=st::recognize(image,std::make_shared<std::atomic_bool>(false),true);
+                    if(pointer.x()>=0)pointed=st::recognizeAt(image,std::make_shared<std::atomic_bool>(false),pointer);
+                }catch(...){error=std::current_exception();}});worker.join();if(error)std::rethrow_exception(error);
+                QStringList text;bool geometry=true;for(auto word:words){text<<word.text;geometry=geometry&&QRectF(image.rect()).contains(word.box);}
+                double inkCoverage=-1;
+                if(name.startsWith("rotated")){
+                    int ink=0,covered=0;
+                    for(int y=0;y<image.height();++y)for(int x=0;x<image.width();++x)if(qGray(image.pixel(x,y))<128){
+                        ++ink;for(const auto& word:words)if(word.box.adjusted(-1,-1,1,1).contains(QPointF(x,y))){++covered;break;}
+                    }
+                    inkCoverage=ink?double(covered)/ink:0;
+                    if(inkCoverage<.85||text.join(" ")!=expected)throw std::runtime_error("rotated OCR geometry or reading order");
+                }
+                if(name=="wide-tile-boundary"&&text.join(" ").count("BoundaryText1234567890")!=1)
+                    throw std::runtime_error("wide tile boundary loses or repeats identifier");
+                if(!geometry)throw std::runtime_error("OCR box outside source image");
+                reports.append(QJsonObject{{"name",name},{"expected",expected},{"actual",text.join(QChar(10))},{"pointer",pointed.text},{"ms",clock.elapsed()},{"geometry",geometry},{"inkCoverage",inkCoverage}});
+            };
+            for(auto text:{QString("Please translate this sentence accurately."),QString("这是中文说明，hello world 是需要翻译的英文。")}){
+                bool chinese=text.startsWith("这");
+                for(int size:{11,14,18})for(int contrast:{0,1,2}){
+                    QFont font(chinese?"Microsoft YaHei UI":"Segoe UI");font.setPixelSize(size);QFontMetrics metrics(font);
+                    QImage image(metrics.horizontalAdvance(text)+36,metrics.height()+32,QImage::Format_RGB32);
+                    image.fill(contrast==1?QColor(32,32,32):Qt::white);
+                    QPainter painter(&image);painter.setFont(font);painter.setPen(contrast==0?QColor(30,30,30):contrast==1?QColor(170,170,170):QColor(205,205,205));
+                    painter.drawText(16,16+metrics.ascent(),text);painter.end();
+                    run(QString("%1-%2-%3").arg(chinese?"mixed":"latin").arg(size).arg(contrast),image,text,QPointF(22,16+metrics.ascent()/2.));
+                }
+            }
+            for(int margin:{0,2,12}){
+                QString text="Screenshot translation 2026";QFont font("Segoe UI");font.setPixelSize(13);QFontMetrics metrics(font);
+                QImage image(metrics.horizontalAdvance(text)+margin*2,metrics.height()+margin*2,QImage::Format_RGB32);image.fill(Qt::white);
+                QPainter p(&image);p.setFont(font);p.setPen(Qt::black);p.drawText(margin,margin+metrics.ascent(),text);p.end();
+                run(QString("edge-%1").arg(margin),image,text);
+            }
+            QImage sparse(1200,800,QImage::Format_RGB32);sparse.fill(QColor(30,30,30));
+            {QPainter p(&sparse);QFont f("Segoe UI");f.setPixelSize(11);p.setFont(f);p.setPen(QColor(100,100,100));p.drawText(30,40,"Sparse small text");}
+            run("sparse-dark",sparse,"Sparse small text");
+            QImage boundary(3300,100,QImage::Format_RGB32);boundary.fill(Qt::white);
+            {QPainter p(&boundary);QFont f("Segoe UI");f.setPixelSize(15);p.setFont(f);p.setPen(Qt::black);p.drawText(1440,40,"LongIdentifierCrossingBoundary1234567890");}
+            run("tile-boundary",boundary,"LongIdentifierCrossingBoundary1234567890");
+            QImage tiled(3300,100,QImage::Format_RGB32);tiled.fill(Qt::white);
+            {QPainter p(&tiled);QFont f("Segoe UI");f.setPixelSize(18);p.setFont(f);p.setPen(Qt::black);
+                p.drawText(16,40,"Start");p.drawText(1120,40,"BoundaryText1234567890");p.drawText(3120,40,"Finish");}
+            run("wide-tile-boundary",tiled,"Start BoundaryText1234567890 Finish");
+            QImage blank(500,120,QImage::Format_RGB32);blank.fill(QColor(65,65,65));run("blank-dark",blank,"");
+            for(int size:{12,17,24}){
+                QImage document(720,220,QImage::Format_RGB32);document.fill(Qt::white);
+                QPainter p(&document);QFont f("Segoe UI");f.setPixelSize(size);p.setFont(f);p.setPen(Qt::black);
+                p.drawText(20,45,"Read the first row.");
+                p.drawText(20,85,"Keep the next row.");
+                p.drawText(400,45,"Separate column.");
+                p.drawText(400,85,"Another label.");p.end();
+                run(QString("columns-%1").arg(size),document,"Read the first row.\nSeparate column.\nKeep the next row.\nAnother label.");
+            }
+            for(int degrees:{-5,5}){
+                QImage rotated(600,130,QImage::Format_RGB32);rotated.fill(Qt::white);
+                QPainter p(&rotated);QFont f("Segoe UI");f.setPixelSize(24);p.setFont(f);p.setPen(Qt::black);
+                p.translate(300,65);p.rotate(degrees);p.drawText(-250,8,"Rotate text and retain its position.");p.end();
+                run(QString("rotated-%1").arg(degrees),rotated,"Rotate text and retain its position.");
+            }
+            for(int size:{12,16}){
+                QImage label(1000,500,QImage::Format_RGB32);label.fill(QColor(28,28,28));
+                QPainter p(&label);QFont f("Segoe UI");f.setPixelSize(size);p.setFont(f);p.setPen(QColor(110,110,110));
+                p.drawText(120,130,"Settings: 12345 / Version 2.0");p.end();
+                run(QString("sparse-label-%1").arg(size),label,"Settings: 12345 / Version 2.0");
+            }
+            QImage white(600,400,QImage::Format_RGB32);white.fill(Qt::white);run("blank-light",white,"");
+            std::puts(QJsonDocument(QJsonObject{{"cases",reports}}).toJson(QJsonDocument::Compact).constData());return 0;
+        }
+        if(args.contains("--speed")){
+            QTemporaryDir data;st::Services service(data.path());
+            auto base=args.value(args.indexOf("--speed")+1);
+            auto fresh=[] {return std::make_shared<std::atomic_bool>(false);};
+            service.save({{"zvo",QJsonObject{{"endpoint",base+"/zvo-speed"}}}});
+            QJsonObject settings{{"provider","zvo"},{"fallbackEnabled",false}};
+            QStringList sentences;for(int i=0;i<160;++i)sentences<<QString("Sentence %1 remains intact.").arg(i);
+            QElapsedTimer timer;timer.start();qint64 first=-1;
+            auto result=service.translate(settings,sentences,"en","zh",fresh(),{},[&](const st::Translation&,int,int){if(first<0)first=timer.elapsed();});
+            auto elapsed=timer.elapsed();timer.restart();
+            auto repeated=service.translate(settings,sentences,"en","zh",fresh());auto repeat=timer.elapsed();
+            if(result.segments!=repeated.segments||!result.segments.last().contains("159"))throw std::runtime_error("benchmark result ordering");
+            auto google=service.profile("google");google["endpoint"]=base+"/google-speed";
+            timer.restart();auto paragraph=service.translate({}, {sentences.join(" ")},"en","zh",fresh(),google);
+            if(!paragraph.segments.first().contains("159"))throw std::runtime_error("paragraph tail lost");
+            std::puts(QJsonDocument(QJsonObject{{"passed",true},{"sentences",160},{"firstMs",first},{"totalMs",elapsed},
+                {"repeatMs",repeat},{"paragraphMs",timer.elapsed()}}).toJson(QJsonDocument::Compact).constData());return 0;
+        }
         if(args.contains("--ocr-image")){
             QImage image(args.value(args.indexOf("--ocr-image")+1));
             if(image.isNull())throw std::runtime_error("OCR diagnostic image unavailable");
@@ -166,6 +271,8 @@ int main(int argc,char** argv)
             std::puts("{\"passed\":true,\"githubDictionaryDownload\":true,\"sha256Verified\":true,\"offlineLookup\":true}");return 0;
         }
         checkPhrases();
+        if(st::canonicalProvider("")!="ecdict"||st::canonicalProvider("mymemory")!="mymemory")
+            throw std::runtime_error("ECDICT is the missing-setting default; explicit provider selection is preserved");
         checkWrappedPhrases();
         if(st::detect("你好世界")!="zh"||st::targetFor("Hello","auto")!="zh")throw std::runtime_error("language");
         QTemporaryDir dir;st::Services services(dir.path());
@@ -195,6 +302,16 @@ int main(int argc,char** argv)
             QImage blank(60,25,QImage::Format_RGB32);blank.fill(Qt::white);QList<st::Block> empty;
             std::thread blankReader([&]{empty=st::recognize(blank,freshCancel());});blankReader.join();
             if(!empty.isEmpty())throw std::runtime_error("blank screenshot must stay empty");
+            QImage tall(480,3700,QImage::Format_RGB32);tall.fill(QColor(35,35,35));
+            {QPainter painter(&tall);QFont font("Arial",18);painter.setFont(font);painter.setPen(QColor(190,190,190));
+                painter.drawText(30,50,"First sentence");painter.drawText(30,1620,"Middle sentence");painter.drawText(30,3650,"Final sentence");}
+            QList<st::Block> tallWords;std::exception_ptr tallError;
+            std::thread tallReader([&]{try{tallWords=st::recognize(tall,freshCancel(),false);}catch(...){tallError=std::current_exception();}});tallReader.join();
+            if(tallError)std::rethrow_exception(tallError);
+            QString tallText;int finals=0;for(const auto& word:tallWords){tallText+=word.text+" ";if(word.text.contains("Final",Qt::CaseInsensitive))++finals;
+                if(!QRectF(tall.rect()).contains(word.box))throw std::runtime_error("tile OCR geometry outside image");}
+            if(!tallText.contains("First",Qt::CaseInsensitive)||!tallText.contains("Middle",Qt::CaseInsensitive)||finals!=1)
+                throw std::runtime_error(("dark tall OCR retains all tiles without duplicates: "+tallText).toStdString());
             // Existing saved providers migrate once, keeping both DPAPI secrets
             // and the selected provider's endpoint/model. Legacy backups remain.
             QTemporaryDir oldDir;st::Services old(oldDir.path());
@@ -295,6 +412,55 @@ int main(int argc,char** argv)
             if(proxyResult.segments!=QStringList{"你好 + 100%"})throw std::runtime_error("explicit HTTP proxy");
             auto unicode=services.translate(QJsonObject{}, {QString(600,QChar(0x6c49))},"zh","en",freshCancel(),chunked);
             if(unicode.segments.size()!=1||unicode.segments[0].count(QChar(0x6c49))!=600)throw std::runtime_error("UTF-8 chunks");
+            QString longText;for(int i=0;i<600;++i)longText+=QString("Sentence %1 stays complete. ").arg(i);
+            auto split=st::sentenceParts(longText);if(split.size()!=600||split.last()!="Sentence 599 stays complete.")throw std::runtime_error("sentence segmentation and tail preservation");
+            int updates=0;auto longDraft=services.profile("zvo");longDraft["endpoint"]=base+"/zvo";
+            auto longResult=services.translate({}, {longText},"en","zh",freshCancel(),longDraft,[&](const st::Translation& partial,int done,int total){
+                if(done<=0||done>total||partial.segments.size()!=1)throw std::runtime_error("long text progress");++updates;
+            });
+            if(updates<2||!longResult.segments[0].contains("Sentence 599 stays complete."))throw std::runtime_error("unlimited document complete");
+            auto emoji=QString::fromUtf8("😀").repeated(1300);auto unicodeParts=st::sentenceParts(emoji);
+            if(unicodeParts.join("")!=emoji)throw std::runtime_error("sentence split must preserve surrogate pairs");
+            auto stopLong=freshCancel();bool longCancelled=false;int beforeCancel=0;
+            try{services.translate({}, {longText},"en","zh",stopLong,longDraft,[&](const st::Translation&,int,int){++beforeCancel;stopLong->store(true);});}catch(...){longCancelled=true;}
+            if(!longCancelled||beforeCancel!=1)throw std::runtime_error("cancel long document between batches");
+            // Cache identity follows provider, configuration, languages and purpose.
+            QTemporaryDir cacheDir;st::Services cachedService(cacheDir.path());
+            cachedService.save({{"zvo",QJsonObject{{"endpoint",base+"/zvo-cache"}}}});
+            QJsonObject cacheSettings{{"provider","zvo"},{"fallbackEnabled",false}};
+            auto cacheFirst=cachedService.translate(cacheSettings,{"cache text"},"en","zh",freshCancel());
+            auto cacheSecond=cachedService.translate(cacheSettings,{"cache text"},"en","zh",freshCancel());
+            if(cacheFirst.segments!=cacheSecond.segments)throw std::runtime_error("cache content mismatch");
+            cachedService.translate(cacheSettings,{"cache text"},"en","fr",freshCancel());
+            cachedService.translate(cacheSettings,{"cache text"},"de","zh",freshCancel());
+            auto cacheProbe=cachedService.profile("zvo");
+            cachedService.translate(cacheSettings,{"cache text"},"en","zh",freshCancel(),cacheProbe);
+            auto stopCache=freshCancel();stopCache->store(true);bool cacheAborted=false;
+            try{cachedService.translate(cacheSettings,{"cache text"},"en","zh",stopCache);}catch(...){cacheAborted=true;}
+            if(!cacheAborted)throw std::runtime_error("cache hit ignores cancellation");
+            cachedService.save({{"zvo",QJsonObject{{"endpoint",base+"/zvo-cache-changed"}}}});
+            cachedService.translate(cacheSettings,{"cache text"},"en","zh",freshCancel());
+            // The healthy first batch publishes before blocked workers; cancellation joins them promptly.
+            QTemporaryDir concurrentDir;st::Services concurrent(concurrentDir.path());
+            concurrent.save({{"zvo",QJsonObject{{"endpoint",base+"/zvo-cancel-speed"}}}});
+            QStringList parallelText;for(int i=0;i<80;++i)parallelText<<QString("Part %1 stays in order.").arg(i);
+            auto cancelParallel=freshCancel();QElapsedTimer parallelClock;parallelClock.start();
+            std::thread cancelWorker([cancelParallel]{QThread::msleep(300);cancelParallel->store(true);});
+            bool parallelAborted=false;int published=0;
+            try{concurrent.translate(cacheSettings,parallelText,"en","zh",cancelParallel,{},[&](const st::Translation&,int,int){++published;});}catch(...){parallelAborted=true;}
+            cancelWorker.join();
+            if(!parallelAborted||published!=1||parallelClock.elapsed()>1500)throw std::runtime_error("parallel cancellation joins workers and preserves first batch");
+            // Any failed later batch must preserve only the already published ordered prefix.
+            concurrent.save({{"zvo",QJsonObject{{"endpoint",base+"/zvo-error-speed"}}}});
+            bool partialFailed=false;int donePrefix=0;
+            try{concurrent.translate(cacheSettings,parallelText,"en","zh",freshCancel(),{},[&](const st::Translation& result,int done,int){
+                donePrefix=done;if(!result.segments[done-1].contains(QString::number(done-1)))throw std::runtime_error("partial ordering");
+            });}catch(...){partialFailed=true;}
+            if(!partialFailed||donePrefix!=16)throw std::runtime_error("failed later batch preserves ordered prefix");
+            // A rate-limited Google endpoint must receive one attempt, not every client variation.
+            auto rateGoogle=services.profile("google");rateGoogle["endpoint"]=base+"/google-rate-speed";
+            bool rateFailed=false;try{services.translate({}, {"rate limit text"},"en","zh",freshCancel(),rateGoogle);}catch(...){rateFailed=true;}
+            if(!rateFailed)throw std::runtime_error("rate limit unexpectedly succeeds");
             auto markup=services.translate(QJsonObject{},{"<button>&"},"en","zh",freshCancel(),chunked);
             if(markup.segments!=QStringList{"<button>&"})throw std::runtime_error("HTML entities");
             auto cancelled=std::make_shared<std::atomic_bool>(false);
@@ -320,6 +486,30 @@ int main(int argc,char** argv)
             recovered.save({{"mymemory",QJsonObject{{"endpoint",base+"/mymemory"}}}});
             auto primary=recovered.translate(settings,{"Hello + 100%"},"en","zh",fresh());
             if(primary.fallback||primary.provider!="mymemory")throw std::runtime_error("config reset health");
+            // Unconfigured keys in the primary and backup must be skipped, not
+            // reported as the final failure when another service was attempted.
+            QTemporaryDir keyFallbackDir;st::Services keyFallback(keyFallbackDir.path());
+            QJsonObject keyProfiles;
+            for(const auto& provider:st::providers)keyProfiles[provider]=QJsonObject{{"enabled",false}};
+            keyProfiles["deepl"]=QJsonObject{{"enabled",true}};
+            keyProfiles["microsoft"]=QJsonObject{{"enabled",true}};
+            keyProfiles["zvo"]=QJsonObject{{"endpoint",base+"/zvo"}};
+            QJsonObject keyRouting{{"mode","manual"},{"order",QJsonArray{"zvo","microsoft"}}};
+            keyFallback.save(keyProfiles,keyRouting);
+            QJsonObject keySettings{{"provider","deepl"},{"fallbackEnabled",true}};
+            auto keyBackup=keyFallback.translate(keySettings,{"Hello + 100%"},"en","zh",fresh());
+            if(!keyBackup.fallback||keyBackup.provider!="zvo")throw std::runtime_error("unconfigured primary does not block configured fallback");
+            keyProfiles["zvo"]=QJsonObject{{"endpoint",base+"/queue-fail"}};
+            keyFallback.save({{"zvo",keyProfiles["zvo"].toObject()}},keyRouting);
+            auto keyError=[&]{
+                try{keyFallback.translate(keySettings,{"hello"},"en","zh",fresh());}
+                catch(const std::exception& e){return QString::fromUtf8(e.what());}
+                return QString();
+            };
+            if(!keyError().contains("HTTP 503"))throw std::runtime_error("unconfigured backup does not mask request error");
+            if(!keyError().contains("冷却"))throw std::runtime_error("unconfigured backup does not mask cooldown");
+            keySettings["fallbackEnabled"]=false;
+            if(!keyError().contains("未配置 API 密钥"))throw std::runtime_error("unconfigured primary is explicit when fallback is off");
             // Exercise the actual routing path, not just the displayed order.
             QTemporaryDir queueDir;st::Services queued(queueDir.path());
             QJsonObject manual{{"mode","manual"},{"order",QJsonArray{"google","zvo","ecdict","google","unknown"}}};
@@ -333,8 +523,15 @@ int main(int argc,char** argv)
             auto ranked=queued.queue(settings);
             if(ranked[0].toObject().value("provider")!="mymemory"||ranked[1].toObject().value("provider")!="zvo")throw std::runtime_error("auto queue respects preferred and latency");
             if(queued.translate(settings,{"Hello + 100%"},"en","zh",fresh()).provider!="zvo")throw std::runtime_error("automatic weights drive fallback");
+            automatic["adjustments"]=QJsonObject{{"google",1000}};queued.save({},automatic);
+            auto boosted=queued.queue(settings);
+            if(boosted[0].toObject().value("provider")!="mymemory"||boosted[1].toObject().value("provider")!="google"||
+                boosted[1].toObject().value("effectiveWeight").toInt()<=boosted[2].toObject().value("effectiveWeight").toInt())
+                throw std::runtime_error("automatic user adjustment changes backup ranking but keeps primary first");
+            if(queued.translate(settings,{"Hello + 100%"},"en","zh",fresh()).provider!="google")throw std::runtime_error("automatic drag weight drives actual fallback");
             st::Services queueReopened(queueDir.path());
-            if(queueReopened.routing().value("mode")!="auto"||queueReopened.translate(settings,{"hello"},"en","zh",fresh()).provider!="zvo")throw std::runtime_error("weights and queue survive restart");
+            if(queueReopened.routing().value("mode")!="auto"||queueReopened.routing().value("adjustments").toObject().value("google").toInt()!=1000||
+                queueReopened.translate(settings,{"hello"},"en","zh",fresh()).provider!="google")throw std::runtime_error("weights, manual adjustments and queue survive restart");
             queueReopened.save({},manual);
             if(queueReopened.translate(settings,{"hello"},"en","zh",fresh()).provider!="google")throw std::runtime_error("manual order ignores automatic score");
             auto queueEntry=[](const QJsonArray& values,const QString& provider){for(auto v:values)if(v.toObject().value("provider")==provider)return v.toObject();return QJsonObject();};
@@ -358,6 +555,18 @@ int main(int argc,char** argv)
             if(!queueEntry(queueReopened.queue(settings,{{"zvo",failedProbe}}),"zvo").value("cooling").toBool())throw std::runtime_error("test failure enters cooldown");
             queueReopened.translate({}, {"hello"},"en","zh",fresh(),failedProbe);
             if(queueEntry(queueReopened.queue(settings,{{"zvo",failedProbe}}),"zvo").value("cooling").toBool())throw std::runtime_error("successful probe clears the same configuration cooldown");
+            auto alwaysFail=queueReopened.profile("zvo");alwaysFail["endpoint"]=base+"/backoff-fail";
+            try{queueReopened.translate({}, {"hello"},"en","zh",fresh(),alwaysFail);}catch(...){}
+            auto firstWait=queueEntry(queueReopened.queue(settings,{{"zvo",alwaysFail}}),"zvo").value("retrySeconds").toInt();
+            try{queueReopened.translate({}, {"hello"},"en","zh",fresh(),alwaysFail);}catch(...){}
+            auto secondWait=queueEntry(queueReopened.queue(settings,{{"zvo",alwaysFail}}),"zvo").value("retrySeconds").toInt();
+            if(firstWait<3595||secondWait<7195)throw std::runtime_error("persistent exponential outage backoff");
+            for(auto path:{"/auth-fail","/rate-fail"}){
+                auto denied=alwaysFail;denied["endpoint"]=base+path;
+                try{queueReopened.translate({}, {"hello"},"en","zh",fresh(),denied);}catch(...){}
+                int wait=queueEntry(queueReopened.queue(settings,{{"zvo",denied}}),"zvo").value("retrySeconds").toInt();
+                if(wait<(QString(path)=="/auth-fail"?86395:21595))throw std::runtime_error("authentication and quota disable periods");
+            }
             // Multi-endpoint/model routing uses real requests, encryption and reopened state.
             QTemporaryDir aiDir;st::Services multi(aiDir.path());
             auto model=[](QString name,bool enabled=true){return QJsonObject{{"name",name},{"enabled",enabled}};};
@@ -393,7 +602,7 @@ int main(int argc,char** argv)
             aiRecovered.save({{"google",QJsonObject{{"enabled",false},{"endpoint",base+"/google"}}}});
             bool noEnabled=false;try{aiRecovered.translate(aiSettings,{"hello"},"auto","zh",fresh());}catch(const std::exception&){noEnabled=true;}
             if(!noEnabled)throw std::runtime_error("all-disabled queue must not send requests");
-            std::puts(QJsonDocument(QJsonObject{{"passed",true},{"fixtureRoutes",QJsonArray::fromStringList(routes)},
+            std::puts(QJsonDocument(QJsonObject{{"passed",true},{"translationCache",true},{"cacheLanguageIsolation",true},{"cacheDiagnosticBypass",true},{"parallelCancellation",true},{"orderedPartialFailure",true},{"singleRateLimitAttempt",true},{"longDocumentTail",true},{"sentenceProgress",true},{"longDocumentCancellation",true},{"unicodeSentenceBoundaries",true},{"exponentialBackoff",true},{"authQuotaDisablePeriods",true},{"darkTallOcrTiles",true},{"fixtureRoutes",QJsonArray::fromStringList(routes)},
                 {"chineseDictionaryCandidates",true},{"offlineReverseDictionary",true},{"senseGroupedSynonyms",true},{"wordTokenizer",true},{"structuredDictionary",true},{"youdaoWordFallback",true},{"progressiveWordLookup",true},{"wordLookupLimits",true},{"wordLookupCancellation",true},{"multiAiFallback",true},{"aiModelCooldown",true},{"aiModelRecovery",true},{"aiChannelEncryption",true},{"disabledProviders",true},{"aiExplanation",true},{"dpapi",true},{"smallScreenshotOcr",true},{"aiMigration",true},{"offlineDictionary",true},{"dictionaryFallback",true},{"dictionaryDownload",true},{"dictionaryIntegrity",true},{"youdaoSignature",true},{"sogouEncoding",true},
                 {"persistentFallback",true},{"recovery",true},{"cancel",true},{"httpProxy",true},{"pointerPhrases",true},
                 {"manualQueue",true},{"automaticWeights",true},{"persistentQueue",true},{"diagnosticsHealth",true},{"neutralCancellationAndMisses",true}}).toJson(QJsonDocument::Compact).constData());
@@ -413,7 +622,12 @@ int main(int argc,char** argv)
                 QJsonObject settings{{"provider",p},{"fallbackEnabled",false},{"proxy",args.contains("--proxy")?args.value(args.indexOf("--proxy")+1):QString()}};
                 QJsonObject result{{"provider",p}};
                 try{
+                    QElapsedTimer timing;timing.start();
                     auto data=services.translate(settings,{p=="youdao"||p=="ecdict"?"hello":"Hello world. How are you?"},"en","zh",std::make_shared<std::atomic_bool>(false));
+                    result["elapsedMs"]=timing.elapsed();timing.restart();
+                    auto repeat=services.translate(settings,{p=="youdao"||p=="ecdict"?"hello":"Hello world. How are you?"},"en","zh",std::make_shared<std::atomic_bool>(false));
+                    result["repeatMs"]=timing.elapsed();
+                    if(repeat.segments!=data.segments)throw std::runtime_error("live cache mismatch");
                     result["status"]="success";result["translation"]=data.segments.join('\n');
                 }catch(const std::exception& e){result["status"]="unavailable";result["error"]=QString::fromUtf8(e.what());}
                 routes.append(result);
