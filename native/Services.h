@@ -66,5 +66,6 @@ private:
     bool m_usageValid = true;
     QString m_edgeToken,m_edgeProxy;
     qint64 m_edgeExpiry=0;
+    qint64 m_recoveryProbeAfter=0;
 };
 }

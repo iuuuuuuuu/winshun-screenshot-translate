@@ -16,6 +16,7 @@
 #include <QMutexLocker>
 #include <QRegularExpression>
 #include <QSaveFile>
+#include <QSet>
 #include <QTextBoundaryFinder>
 #include <QTextDocument>
 #include <QTextDocumentFragment>
@@ -49,6 +50,44 @@ double retryTime(const QJsonObject& health,double recovery)
 {
     if(health.value("failedAt").toDouble()<=0)return 0;
     return std::max(health.value("retryAt").toDouble(),health.value("failedAt").toDouble()+recovery);
+}
+QString failureKind(const QString& error)
+{
+    if(error.contains("HTTP 401")||error.contains("HTTP 403"))return "auth";
+    if(error.contains("HTTP 429")||error.contains("额度"))return "quota";
+    if(error.contains("HTTP 4"))return "request";
+    if(error.contains("超时")||error.contains("无法连接")||error.contains("无法解析"))return "network";
+    return "service";
+}
+QString failureSummary(const QString& error)
+{
+    const auto status=QRegularExpression("HTTP \\d{3}").match(error);
+    if(status.hasMatch())return status.captured();
+    if(error.contains("超时"))return "网络请求超时";
+    if(error.contains("额度"))return "服务额度已用完";
+    if(error.contains("无法连接")||error.contains("无法解析"))return "网络连接失败，请检查网络或代理";
+    if(error.contains("证书"))return "HTTPS 证书验证失败";
+    return "服务响应异常";
+}
+double recoveryProbeTime(const QJsonObject& health)
+{
+    const auto kind=health.value("failureKind").toString();
+    if(kind=="auth"||kind=="quota"||kind=="request")return 0;
+    // Keep bad channels out of normal routing for a long time. Only when all
+    // alternatives fail, allow one bounded probe after 1, 2, 4, then 5 minutes.
+    // Version-2 health has no category; let one probe classify an old outage.
+    const double delay=std::min(300.0,60*std::pow(2.0,std::clamp(health.value("consecutiveFailures").toInt(1)-1,0,3)));
+    return std::max(health.value("failedAt").toDouble()+delay,health.value("probeAfter").toDouble());
+}
+int healthWeight(const QJsonObject& health)
+{
+    if(!health.value("samples").toInt())return 50;
+    const double latency=health.value("latencyMs").toDouble(-1);
+    const double rate=std::clamp(health.value("successRate").toDouble(.75),0.0,1.0);
+    const int measured=int(std::round(80*rate+20*(latency<0?.5:1000/(1000+latency))));
+    // An expired cooldown is permission to retry, not evidence of recovery.
+    // Keep a recently failing endpoint behind a proven backup in auto mode.
+    return std::max(0,measured-(health.value("failedAt").toDouble()>0?20:0));
 }
 QString field(const QJsonObject& p, const char* k) { return p.value(k).toString().trimmed(); }
 QJsonArray array(const QStringList& values) { return QJsonArray::fromStringList(values); }
@@ -431,13 +470,14 @@ QJsonArray Services::queue(const QJsonObject& settings,const QJsonObject& drafts
         const auto problem=configurationProblem(config);const int samples=h.value("samples").toInt();
         const double latency=h.value("latencyMs").toDouble(-1);
         const double rate=std::clamp(h.value("successRate").toDouble(.75),0.0,1.0);
-        const int weight=samples?int(std::round(80*rate+20*(latency<0?.5:1000/(1000+latency)))):50;
+        const int weight=healthWeight(h);
         const int adjustment=policy.value("adjustments").toObject().value(p).toInt();
         const double retryAt=retryTime(h,recovery);
         const bool cooling=retryAt>now;
         rows<<QJsonObject{{"provider",p},{"name",names.value(providers.indexOf(p))},{"preferred",p==preferred},
             {"enabled",config.value("enabled").toBool(true)},{"configured",problem.isEmpty()},{"problem",problem},{"cooling",cooling},{"retrySeconds",std::max(0,int(retryAt-now))},
             {"weight",weight},{"weightAdjustment",adjustment},{"effectiveWeight",weight+adjustment},{"latencyMs",int(latency)},{"samples",samples},{"successRate",int(std::round(rate*100))},{"checkedAt",h.value("checkedAt")},
+            {"detail",h.value("lastError")},{"recoveryProbe",cooling&&recoveryProbeTime(h)>0},{"probeSeconds",std::max(0,int(recoveryProbeTime(h)-now))},
             {"status",!config.value("enabled").toBool(true)?"disabled":!problem.isEmpty()?"skipped":cooling?"cooling":samples?(h.value("lastSuccess").toBool()?"success":"failed"):"idle"}};
     }
     if(policy.value("mode")=="auto")std::stable_sort(rows.begin(),rows.end(),[](const auto& a,const auto& b){
@@ -463,8 +503,7 @@ QList<QJsonObject> Services::candidates(const QJsonObject& profile,const QJsonOb
     }
     QJsonObject policy,health;{QMutexLocker lock(&m_lock);policy=routing.isEmpty()?m_routing:routing;health=m_health;}
     if(policy.value("mode")=="auto")std::stable_sort(rows.begin(),rows.end(),[&](const auto& a,const auto& b){
-        auto score=[&](const auto& p){auto h=health.value(fingerprint(p)).toObject();if(!h.value("samples").toInt())return 50.0;
-            return 80*std::clamp(h.value("successRate").toDouble(.75),0.0,1.0)+20*1000/(1000+h.value("latencyMs").toDouble(1000));};
+        auto score=[&](const auto& p){return healthWeight(health.value(fingerprint(p)).toObject());};
         return score(a)>score(b);
     });return rows;
 }
@@ -477,6 +516,7 @@ void Services::recordOutcome(const QJsonObject& p,bool success,qint64 elapsed,do
     if(success){
         h["latencyMs"]=h.contains("latencyMs")?.7*h.value("latencyMs").toDouble()+.3*elapsed:double(elapsed);
         h.remove("failedAt");h.remove("retryAt");h.remove("consecutiveFailures");
+        h.remove("failureKind");h.remove("lastError");h.remove("probeAfter");
     }else{
         const int failures=std::min(16,h.value("consecutiveFailures").toInt()+1);
         double delay=std::min(604800.0,std::max(3600.0,recovery)*std::pow(2.0,failures-1));
@@ -484,6 +524,7 @@ void Services::recordOutcome(const QJsonObject& p,bool success,qint64 elapsed,do
         else if(error.contains("HTTP 429")||error.contains("额度"))delay=std::max(delay,21600.0);
         h["consecutiveFailures"]=failures;h["failedAt"]=double(QDateTime::currentSecsSinceEpoch());
         h["retryAt"]=h["failedAt"].toDouble()+delay;
+        h["failureKind"]=failureKind(error);h["lastError"]=failureSummary(error);
     }
     m_health[id]=h;
     try{atomicJson(m_directory+"/service-health.json",{{"version",2},{"services",m_health}});}catch(...){}
@@ -709,8 +750,10 @@ Translation Services::translateBatch(const QJsonObject& settings,const QStringLi
     QString firstIdentity,last,unsupported,unavailable;
     bool skipped=false,cooling=false;
     double recovery=std::clamp(settings.value("fallbackRecoveryMinutes").toDouble(60),1.0,10080.0)*60;
-    QElapsedTimer total;total.start();int attempted=0;
-    for(auto p:choices){
+    QElapsedTimer total;total.start();int attempted=0;QSet<QString> tried;
+    const bool wordInput=target=="zh"&&(source=="en"||source=="auto")&&
+        std::all_of(parts.begin(),parts.end(),[](const auto& text){return dictionaryText(text);});
+    for(int pass=0;pass<(fallback?2:1);++pass)for(auto p:choices){
         if(cancel->load())fail("cancelled");
         p["proxy"]=settings.value("proxy").toString().trimmed();p["definition"]=definition;
         auto problem=configurationProblem(p);
@@ -719,28 +762,49 @@ Translation Services::translateBatch(const QJsonObject& settings,const QStringLi
             skipped=true;if(!fallback)fail(problem);continue;
         }
         auto id=fingerprint(p);if(firstIdentity.isEmpty())firstIdentity=id;
+        const auto provider=field(p,"provider");
+        if(fallback&&!wordInput&&(provider=="ecdict"||(provider=="youdao"&&field(p,"appId").isEmpty()))){
+            unsupported="当前内容需要整句翻译渠道；ECDICT 和免密钥有道仅支持查词";skipped=true;continue;
+        }
+        auto cacheKey=QCryptographicHash::hash(QJsonDocument(QJsonArray{id,source,target,definition,array(parts)}).toJson(QJsonDocument::Compact),QCryptographicHash::Sha256);
+        Translation result;bool cached=false;
         {
             QMutexLocker lock(&m_lock);
-            if(draft.isEmpty()&&retryTime(m_health.value(id).toObject(),recovery)>QDateTime::currentSecsSinceEpoch()){
-                cooling=true;skipped=true;continue;
-            }
-        }
-        const bool ai=field(p,"provider")=="ai";
-        const int totalBudget=ai?18000:12000;
-        int budget=std::min(ai?12000:field(p,"provider")=="edge"?6000:4000,int(totalBudget-total.elapsed()));
-        if(budget<=0)break;
-        ++attempted;QElapsedTimer attempt;attempt.start();
-        try{
-            auto cacheKey=QCryptographicHash::hash(QJsonDocument(QJsonArray{id,source,target,definition,array(parts)}).toJson(QJsonDocument::Compact),QCryptographicHash::Sha256);
-            Translation result;bool cached=false;
-            if(draft.isEmpty()){
-                QMutexLocker lock(&m_lock);
-                if(auto entry=m_results.object(cacheKey)){
-                    if(entry->expires>QDateTime::currentMSecsSinceEpoch()){result=entry->result;cached=true;}
-                    else m_results.remove(cacheKey);
-                }
+            if(draft.isEmpty())if(auto entry=m_results.object(cacheKey)){
+                if(entry->expires>QDateTime::currentMSecsSinceEpoch()){result=entry->result;cached=true;}
+                else m_results.remove(cacheKey);
             }
             if(!cached){
+                const auto now=QDateTime::currentSecsSinceEpoch();auto h=m_health.value(id).toObject();
+                const bool blocked=draft.isEmpty()&&retryTime(h,recovery)>now;
+                if(pass==0&&blocked){cooling=true;skipped=true;continue;}
+                if(pass==1){
+                    const double probeAt=recoveryProbeTime(h);
+                    if(!blocked||tried.contains(id)||probeAt<=0||probeAt>now||m_recoveryProbeAfter>now)continue;
+                    // Claim before I/O: concurrent batches and repeated clicks
+                    // cannot probe the same outage in a tight loop.
+                    m_recoveryProbeAfter=now+60;h["probeAfter"]=double(now+60);m_health[id]=h;
+                    try{atomicJson(m_directory+"/service-health.json",{{"version",2},{"services",m_health}});}catch(...){}
+                }
+            }
+        }
+        const bool ai=provider=="ai";
+        int requestBudget=ai?12000:6000;
+        // A fallback inherits the primary's batch (up to 16 OCR blocks).
+        // Per-text APIs need enough time for each bounded wave of requests.
+        if(provider=="mymemory"||provider=="google"||provider=="sogou"||provider=="youdao"){
+            int work=0;
+            for(const auto& part:parts)work+=provider=="mymemory"?std::max(1,int((part.toUtf8().size()+499)/500)):1;
+            const int parallel=(provider=="mymemory"||provider=="google")?workers:1;
+            requestBudget=std::min(18000,6000*((work+parallel-1)/parallel));
+        }
+        const int totalBudget=std::max(18000,requestBudget+6000);
+        int budget=std::min(requestBudget,int(totalBudget-total.elapsed()));
+        if(budget<=0&&!cached)break;
+        ++attempted;QElapsedTimer attempt;attempt.start();
+        try{
+            if(!cached){
+                tried.insert(id);
                 result=route(p,parts,source,target,cancel,budget,workers);
                 if(cancel->load())fail("cancelled");
                 if(draft.isEmpty()){
@@ -760,11 +824,12 @@ Translation Services::translateBatch(const QJsonObject& settings,const QStringLi
             if(cancel->load())fail("cancelled");unsupported=QString::fromUtf8(e.what());if(!fallback)throw;
         }catch(const std::exception& e){
             if(cancel->load())fail("cancelled");
-            last=QString::fromUtf8(e.what());recordOutcome(p,false,attempt.elapsed(),recovery,last);if(!fallback)throw;
+            auto error=QString::fromUtf8(e.what());recordOutcome(p,false,attempt.elapsed(),recovery,error);
+            last=names.value(providers.indexOf(provider))+"："+error;if(!fallback)throw;
         }
     }
     if(!last.isEmpty())fail(last);
-    if(cooling)fail("可用翻译渠道正在冷却，请查看队列中的恢复时间");
+    if(cooling)fail("翻译渠道暂时失败，正在冷却；网络恢复后会自动试探可恢复渠道，也可在设置中点击测试立即重试");
     if(!unsupported.isEmpty())fail(unsupported);
     if(attempted)fail("翻译超时");
     if(!unavailable.isEmpty())fail(QString("没有可用的已配置翻译渠道（%1）；请配置主渠道密钥或选择已配置的备用渠道").arg(unavailable));
@@ -833,7 +898,7 @@ Translation Services::route(const QJsonObject& p,const QStringList& parts,const 
     }else if(provider=="mymemory"||provider=="google"){
         QElapsedTimer batchClock;batchClock.start();
         auto one=[&](const QString& part)->QString{
-            Http http(field(p,"proxy"),cancel,std::max(1,budget-int(batchClock.elapsed())));
+            Http http(field(p,"proxy"),cancel,std::max(1,std::min(6000,budget-int(batchClock.elapsed()))));
             if(provider=="mymemory"){
                 QString src=code(source=="auto"?detect(part):source,"zh-CN");
                 if(src==destination)return part;
@@ -847,13 +912,19 @@ Translation Services::route(const QJsonObject& p,const QStringList& parts,const 
                 for(auto c:chunks){
                     usage(c);
                     auto d=http.json(query(url,{{"q",c},{"langpair",src+"|"+destination}})).toObject();
-                    if(d.value("responseStatus").toInt()!=200)fail("MyMemory 暂不可用或今日额度已用完");
+                    const int status=d.value("responseStatus").toVariant().toInt();
+                    if(status!=200){
+                        const auto detail=d.value("responseDetails").toString();
+                        if(status==429||d.value("quotaFinished").toBool()||detail.contains("QUOTA",Qt::CaseInsensitive)||detail.contains("DAILY",Qt::CaseInsensitive))
+                            fail("MyMemory HTTP 429：今日额度已用完");
+                        fail(QString("MyMemory 服务暂时失败（HTTP %1）").arg(status?status:502));
+                    }
                     translated<<unescape(d.value("responseData").toObject().value("translatedText").toString());
                 }return translated.join('\n');
             }else{
                 QStringList urls{url};if(field(p,"endpoint").isEmpty())urls<<"https://translate.google.com/translate_a/single";
                 QString failure;
-                for(auto client:{"dict-chrome-ex","chrome-extension","gtx"}){
+                for(auto client:{"gtx","dict-chrome-ex","chrome-extension"}){
                     for(auto ep:urls){
                         try{
                             auto d=http.json(query(ep,{{"client",client},{"sl",origin},{"tl",destination},{"dt","t"},{"q",part}}),{},browser()).toArray();
@@ -866,18 +937,30 @@ Translation Services::route(const QJsonObject& p,const QStringList& parts,const 
                 }fail(failure);
             }
         };
-        std::vector<QString> outputs(parts.size());std::atomic_int next{0};std::mutex errorsLock;QString error;
+        QStringList requests;QList<int> owners;
+        for(int index=0;index<parts.size();++index){
+            if(provider!="mymemory"){requests<<parts[index];owners<<index;continue;}
+            QString chunk;int bytes=0;
+            for(auto cp:parts[index].toUcs4()){
+                auto ch=QString::fromUcs4(&cp,1);int size=ch.toUtf8().size();
+                if(bytes+size>500){requests<<chunk;owners<<index;chunk.clear();bytes=0;}
+                chunk+=ch;bytes+=size;
+            }
+            requests<<chunk;owners<<index;
+        }
+        std::vector<QString> outputs(requests.size());std::atomic_int next{0};std::mutex errorsLock;QString error;
         std::vector<std::thread> workers;
-        for(int i=0;i<std::min(workerLimit,int(parts.size()));++i)workers.emplace_back([&]{
+        for(int i=0;i<std::min(workerLimit,int(requests.size()));++i)workers.emplace_back([&]{
             for(;;){
-                int index=next.fetch_add(1);if(index>=parts.size())return;
-                try{outputs[index]=one(parts[index]);}
-                catch(const std::exception& e){std::lock_guard lock(errorsLock);if(error.isEmpty())error=QString::fromUtf8(e.what());next=parts.size();return;}
+                int index=next.fetch_add(1);if(index>=requests.size())return;
+                try{outputs[index]=one(requests[index]);}
+                catch(const std::exception& e){std::lock_guard lock(errorsLock);if(error.isEmpty())error=QString::fromUtf8(e.what());next=requests.size();return;}
             }
         });
         for(auto& worker:workers)worker.join();
         if(!error.isEmpty())fail(error);
-        for(auto text:outputs)result.segments<<text;
+        for(int i=0;i<parts.size();++i)result.segments<<QString();
+        for(int i=0;i<outputs.size();++i){auto& text=result.segments[owners[i]];if(!text.isEmpty())text+='\n';text+=outputs[i];}
     }else if(provider=="microsoft"||provider=="edge"){
         QMap<QByteArray,QByteArray> headers;
         bool bing=false;
@@ -931,7 +1014,11 @@ Translation Services::route(const QJsonObject& p,const QStringList& parts,const 
             {"text",QString::fromUtf8(QJsonDocument(array(parts)).toJson(QJsonDocument::Compact))}};
         if(!key.isEmpty())body["key"]=key;
         auto d=http.json(url,body,{},true).toObject();
-        if(d.value("result").toInt()!=1)fail("translate.js 暂不可用或被限流");
+        if(d.value("result").toInt()!=1){
+            auto info=d.value("info").toString();
+            if(info.contains("limit",Qt::CaseInsensitive)||info.contains("频繁")||info.contains("额度"))fail("translate.js HTTP 429：服务限流");
+            fail("translate.js 服务暂时失败");
+        }
         result.segments=strings(d.value("text"));
     }else if(provider=="deepl"){
         if(field(p,"endpoint").isEmpty()&&!key.endsWith(":fx"))url="https://api.deepl.com";

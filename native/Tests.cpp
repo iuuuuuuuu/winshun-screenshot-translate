@@ -9,6 +9,7 @@
 #include <QTimer>
 #include <QThread>
 #include <QElapsedTimer>
+#include <QDateTime>
 #include <QPainter>
 #include <QFontMetrics>
 #include <QDir>
@@ -535,6 +536,75 @@ int main(int argc,char** argv)
             queueReopened.save({},manual);
             if(queueReopened.translate(settings,{"hello"},"en","zh",fresh()).provider!="google")throw std::runtime_error("manual order ignores automatic score");
             auto queueEntry=[](const QJsonArray& values,const QString& provider){for(auto v:values)if(v.toObject().value("provider")==provider)return v.toObject();return QJsonObject();};
+            // A temporary outage must recover without removing health files or
+            // requiring a settings-page test, even with dictionary-only backups.
+            QTemporaryDir rescueDir;st::Services rescue(rescueDir.path());QJsonObject rescueProfiles;
+            for(const auto& provider:st::providers)rescueProfiles[provider]=QJsonObject{{"enabled",false}};
+            rescueProfiles["zvo"]=QJsonObject{{"enabled",true},{"endpoint",base+"/zvo-emergency"}};
+            rescueProfiles["youdao"]=QJsonObject{{"enabled",true},{"endpoint",base+"/youdao-dictionary"}};
+            rescue.save(rescueProfiles);
+            QJsonObject rescueSettings{{"provider","ecdict"},{"fallbackEnabled",true}};
+            const QString rescueText="Please translate this complete sentence, even when the main service is down.";
+            auto rescueError=[&](st::Services& service,const QJsonObject& config,const QString& text){
+                try{service.translate(config,{text},"en","zh",fresh());}catch(const std::exception& e){return QString::fromUtf8(e.what());}
+                return QString();
+            };
+            if(!rescueError(rescue,rescueSettings,rescueText).contains("HTTP 503")||
+               !rescueError(rescue,rescueSettings,rescueText).contains("冷却"))throw std::runtime_error("temporary outage starts with bounded cooldown");
+            auto ageFailures=[&](const QString& folder){
+                QFile file(folder+"/service-health.json");if(!file.open(QIODevice::ReadOnly))throw std::runtime_error("health fixture missing");
+                auto doc=QJsonDocument::fromJson(file.readAll()).object();file.close();auto states=doc["services"].toObject();
+                for(auto it=states.begin();it!=states.end();++it){auto h=it.value().toObject();
+                    if(h["failedAt"].toDouble()>0){h["failedAt"]=double(QDateTime::currentSecsSinceEpoch()-600);h.remove("probeAfter");it.value()=h;}}
+                st::atomicJson(folder+"/service-health.json",{{"version",2},{"services",states}});
+            };
+            ageFailures(rescueDir.path());st::Services noFallback(rescueDir.path());
+            auto offSettings=rescueSettings;offSettings["provider"]="zvo";offSettings["fallbackEnabled"]=false;
+            if(!rescueError(noFallback,offSettings,rescueText).contains("冷却"))throw std::runtime_error("recovery honors fallback disabled");
+            st::Services restored(rescueDir.path());
+            auto rescued=restored.translate(rescueSettings,{rescueText},"en","zh",fresh());
+            if(rescued.provider!="zvo"||!rescued.fallback||queueEntry(restored.queue(rescueSettings),"zvo")["cooling"].toBool())
+                throw std::runtime_error("all unavailable routes recover via one eligible probe");
+            // A failure for new text must not discard usable cached translations.
+            rescueError(restored,rescueSettings,"fail after cache!");
+            if(restored.translate(rescueSettings,{rescueText},"en","zh",fresh()).segments!=rescued.segments)
+                throw std::runtime_error("cache remains usable during an outage");
+            for(const auto& path:{"/mymemory-temporary","/mymemory-quota","/auth-fail"}){
+                QTemporaryDir failureDir;st::Services failure(failureDir.path());auto profiles=rescueProfiles;
+                profiles["zvo"]=QJsonObject{{"enabled",false}};profiles["youdao"]=QJsonObject{{"enabled",false}};
+                profiles["mymemory"]=QJsonObject{{"enabled",true},{"endpoint",base+path}};failure.save(profiles);
+                rescueError(failure,rescueSettings,rescueText);
+                auto health=queueEntry(failure.queue(rescueSettings),"mymemory");
+                bool temporary=QString(path)=="/mymemory-temporary";
+                if(health["recoveryProbe"].toBool()!=temporary||health["detail"].toString().isEmpty())
+                    throw std::runtime_error("classify temporary failures separately from authentication and quotas");
+                ageFailures(failureDir.path());st::Services reopenedFailure(failureDir.path());
+                auto error=rescueError(reopenedFailure,rescueSettings,rescueText);
+                if(temporary?!error.contains("HTTP 503"):!error.contains("冷却"))throw std::runtime_error("hard cooldown cannot be bypassed by automatic recovery");
+                if(!rescueError(reopenedFailure,rescueSettings,rescueText).contains("冷却"))throw std::runtime_error("failed recovery probe backs off again");
+            }
+            QTemporaryDir wavesDir;st::Services waves(wavesDir.path());auto waveProfiles=rescueProfiles;
+            waveProfiles["zvo"]=QJsonObject{{"enabled",false}};waveProfiles["youdao"]=QJsonObject{{"enabled",false}};
+            waveProfiles["mymemory"]=QJsonObject{{"enabled",true},{"endpoint",base+"/mymemory-wave"}};waves.save(waveProfiles);
+            QStringList waveText;for(int i=0;i<16;++i)waveText<<QString("Sentence %1 is part of a screenshot.").arg(i);
+            auto waveResult=waves.translate(rescueSettings,waveText,"en","zh",fresh());
+            if(waveResult.provider!="mymemory"||waveResult.segments.size()!=16||!waveResult.segments[15].contains("Sentence 15"))
+                throw std::runtime_error("dictionary primary fallback grants per-text service enough waves");
+            waves.save({{"zvo",QJsonObject{{"endpoint",base+"/queue-fail"},{"enabled",true}}}});
+            try{waves.translate({}, {rescueText},"en","zh",fresh(),waves.profile("zvo"));}catch(...){}
+            QFile rankedHealth(wavesDir.path()+"/service-health.json");rankedHealth.open(QIODevice::ReadOnly);
+            auto rankedStates=QJsonDocument::fromJson(rankedHealth.readAll()).object()["services"].toObject();rankedHealth.close();
+            for(auto it=rankedStates.begin();it!=rankedStates.end();++it){auto h=it.value().toObject();
+                // A recovering established service retains its older mixed history.
+                if(h["provider"].toString()=="mymemory"){h["samples"]=52;h["successRate"]=.57;h["latencyMs"]=2500;}
+                if(h["failedAt"].toDouble()>0){h["failedAt"]=double(QDateTime::currentSecsSinceEpoch()-7200);h["retryAt"]=0;}it.value()=h;}
+            st::atomicJson(wavesDir.path()+"/service-health.json",{{"version",2},{"services",rankedStates}});
+            st::Services rankedRecovery(wavesDir.path());rankedRecovery.save({},{{"mode","auto"}});
+            auto healthy=queueEntry(rankedRecovery.queue(rescueSettings),"mymemory"),retryable=queueEntry(rankedRecovery.queue(rescueSettings),"zvo");
+            if(retryable["cooling"].toBool()||healthy["effectiveWeight"].toInt()<=retryable["effectiveWeight"].toInt())
+                throw std::runtime_error("expired failure does not outrank a proven slower backup");
+            auto client=waves.profile("google");client["enabled"]=true;client["endpoint"]=base+"/google-client";
+            if(waves.translate({}, {rescueText},"en","zh",fresh(),client).segments.isEmpty())throw std::runtime_error("Google prefers working public client");
             auto beforeMiss=queueEntry(queueReopened.queue(settings),"ecdict");
             try{queueReopened.translate({}, {"zznotawordtest"},"en","zh",fresh(),queueReopened.profile("ecdict"));}catch(...){}
             auto afterMiss=queueEntry(queueReopened.queue(settings),"ecdict");
@@ -615,6 +685,25 @@ int main(int argc,char** argv)
             auto words=services.lookupWords({},"hello beautiful running",std::make_shared<std::atomic_bool>(false));
             std::puts(QJsonDocument(words).toJson(QJsonDocument::Compact).constData());
             if(words.value("found").toInt()!=3)throw std::runtime_error("live Youdao word lookup unavailable");
+        }else if(args.contains("--live-fallback")){
+            if(sharedDir.isEmpty())throw std::runtime_error("isolated live profile directory required");
+            st::Services live(sharedDir);
+            QJsonArray routes;bool passed=true;
+            QJsonObject settings{{"provider","ecdict"},{"fallbackEnabled",true},
+                {"proxy",args.contains("--proxy")?args.value(args.indexOf("--proxy")+1):QString()}};
+            QList<QStringList> texts{{"Hello world. How are you?"},{"今天的天气不错，我们一起出去走走吧。"}};
+            QStringList screenshot;for(int i=0;i<12;++i)screenshot<<QString("This is sentence %1 in a screenshot.").arg(i+1);texts<<screenshot;
+            int index=0;
+            for(const auto& parts:texts){
+                QJsonObject row{{"case",++index}};QElapsedTimer clock;clock.start();
+                try{auto result=live.translate(settings,parts,"auto",index==2?"en":"zh",std::make_shared<std::atomic_bool>(false));
+                    row["provider"]=result.provider;row["fallback"]=result.fallback;row["segments"]=result.segments.size();
+                    row["translation"]=result.segments.join('\n');row["passed"]=result.segments.size()==parts.size();passed&=row["passed"].toBool();
+                }catch(const std::exception& e){row["passed"]=false;row["error"]=QString::fromUtf8(e.what());passed=false;}
+                row["elapsedMs"]=clock.elapsed();routes<<row;
+            }
+            std::puts(QJsonDocument(QJsonObject{{"passed",passed},{"fallback",routes}}).toJson(QJsonDocument::Compact).constData());
+            return passed?0:1;
         }else if(args.contains("--live")){
             QJsonArray routes;
             auto live=args.contains("--live-providers")?args.value(args.indexOf("--live-providers")+1).split(','):QStringList{"google","edge","zvo","mymemory","sogou","youdao","ecdict"};

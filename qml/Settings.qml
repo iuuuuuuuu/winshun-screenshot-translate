@@ -41,6 +41,9 @@ Window {
         if (row.status === "running") return t("测试中", "Testing")
         if (row.status === "waiting") return t("等待中", "Queued")
         if (!row.configured) return row.provider === "ecdict" ? t("未下载", "Not downloaded") : t("待配置", "Configure")
+        if (row.cooling && row.recoveryProbe) return row.probeSeconds > 0
+            ? t("恢复检查 ", "Recovery in ") + Math.ceil(row.probeSeconds / 60) + t(" 分钟", " min")
+            : t("可尝试恢复", "Recovery ready")
         if (row.cooling) return t("冷却 ", "Retry in ") + Math.ceil(row.retrySeconds / 60) + t(" 分钟", " min")
         if (row.status === "success") return t("可用", "Available")
         if (row.status === "failed") return t("待重试", "Retry ready")
@@ -311,9 +314,9 @@ Window {
                                     }
                                     Text {
                                         width: parent.width; elide: Text.ElideRight; textFormat: Text.PlainText
-                                        text: (queueRow.modelData.detail || queueRow.modelData.problem
+                                        text: ((queueRow.modelData.recoveryProbe ? window.t("无可用备用时自动恢复 · ", "Auto recovery if backups fail · ") : "") + (queueRow.modelData.detail || queueRow.modelData.problem
                                             || (queueRow.modelData.provider === "ecdict" ? window.t("离线英汉词典 · 未收录会继续尝试", "Offline dictionary · misses fall through")
-                                                : queueRow.modelData.samples ? window.t("已记录最近表现", "Recent performance recorded") : window.t("测试后显示连接结果和耗时", "Test to see connectivity and latency"))).replace(/\s+/g, " ")
+                                                : queueRow.modelData.samples ? window.t("已记录最近表现", "Recent performance recorded") : window.t("测试后显示连接结果和耗时", "Test to see connectivity and latency")))).replace(/\s+/g, " ")
                                         color: Theme.subtext; font.pixelSize: 12
                                     }
                                 }

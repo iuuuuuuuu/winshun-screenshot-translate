@@ -12,6 +12,7 @@ import hashlib
 import os
 from pathlib import Path
 import subprocess
+import shutil
 import sys
 import tempfile
 import threading
@@ -64,9 +65,10 @@ class Server(http.server.BaseHTTPRequestHandler):
     def log_message(self, *_):
         pass
     def do_GET(self):
-        self.respond()
+        try:self.respond()
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):pass  # expected cancellation fixtures
     def do_POST(self):
-        self.respond()
+        self.do_GET()
     def respond(self):
         path = urllib.parse.urlsplit(self.path).path
         counts[path] = counts.get(path, 0) + 1
@@ -91,6 +93,16 @@ class Server(http.server.BaseHTTPRequestHandler):
                 else json.loads(raw) if raw else {})
         if path in ("/zvo-speed","/google-speed"):
             time.sleep(.16)
+        if path == "/mymemory-wave":
+            time.sleep(1.1)
+        if path == "/google-client" and query.get("client") != ["gtx"]:
+            self.send_response(403);self.end_headers();return
+        if path in ("/mymemory-temporary", "/mymemory-quota"):
+            result={"responseStatus":503 if path.endswith("temporary") else 429,
+                    "responseDetails":"Temporarily unavailable" if path.endswith("temporary") else "DAILY QUOTA EXCEEDED"}
+            self.send_response(200);self.end_headers();self.wfile.write(json.dumps(result).encode());return
+        if path == "/zvo-emergency" and (counts[path] == 1 or json.loads(body["text"][0])[0] == "fail after cache!"):
+            self.send_response(503);self.end_headers();return
         if path == "/google-rate-speed":
             self.send_response(429);self.end_headers();return
         if path in ("/zvo-cancel-speed","/zvo-error-speed"):
@@ -249,6 +261,16 @@ def main():
                 if key in sys.argv:options.extend([key,sys.argv[sys.argv.index(key)+1]])
             launch(build/"native_tests.exe",["--ocr-image",str(source),*options],data,out)
             print((out/"stdout.jsonl").read_text(encoding="utf-8"))
+        elif "--live-fallback" in sys.argv:
+            (data/"services.json").write_text('{"version":2,"profiles":{}}')
+            if "--profile-data" in sys.argv:
+                original=Path(sys.argv[sys.argv.index("--profile-data")+1]).resolve()
+                for name in ("services.json","service-health.json"):
+                    if (original/name).exists():shutil.copy2(original/name,data/name)
+            options=["--live-fallback"]
+            if "--proxy" in sys.argv:options += ["--proxy",sys.argv[sys.argv.index("--proxy")+1]]
+            launch(build/"native_tests.exe",options,data,out)
+            print(json.dumps(json.loads((out/"stdout.jsonl").read_text(encoding="utf-8")),ensure_ascii=True))
         elif "--live" in sys.argv:
             (data/"services.json").write_text('{"version":2,"profiles":{}}')
             options=[]
@@ -272,6 +294,9 @@ def main():
             assert counts.get("/zvo-cache") == 4, counts
             assert counts.get("/zvo-cache-changed") == 1, counts
             assert counts.get("/google-rate-speed") == 1, counts
+            assert counts.get("/zvo-emergency") == 3, counts  # failure, one recovery, new-text failure; cache still works
+            assert counts.get("/mymemory-temporary") == 2 and counts.get("/mymemory-quota") == 1, counts
+            assert counts.get("/mymemory-wave") == 16 and counts.get("/google-client") == 1, counts
             print((out/"stdout.jsonl").read_text(encoding="utf-8"))
         else:
             pointer_fixtures=[]
