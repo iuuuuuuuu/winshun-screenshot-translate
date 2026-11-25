@@ -101,7 +101,7 @@ App::App(ws::captureplugin::Protocol& protocol,QString appDir,QJsonObject initia
     QString dir=qEnvironmentVariable("WS_DATA_DIR",initial.value("dataDir").toString());
     if(dir.isEmpty())dir=qEnvironmentVariable("LOCALAPPDATA")+"/WinShun/plugins/iuuuuuuuu.screenshot-translate.data";
     m_services=std::make_shared<Services>(dir);
-    m_settings["selectionIconEnabled"]=m_services->routing().value("selectionIconEnabled").toBool(true);
+    loadSelectionSettings();
     m_services->migrateAi(m_settings);
     m_settings["provider"]=canonicalProvider(m_settings.value("provider").toString());
     m_pinBackend.update({{"comparison",false},{"fullText",false},{"ready",false},{"loading",false},{"status",""},
@@ -227,7 +227,7 @@ void App::defaults(const QJsonObject& settings)
         {"wordOcrHotkey","Alt+Shift+O"}};
     for(auto it=settings.begin();it!=settings.end();++it)m_settings[it.key()]=it.value();
     if(m_services){m_services->migrateAi(m_settings);m_settings["provider"]=canonicalProvider(m_settings.value("provider").toString());}
-    if(m_services)m_settings["selectionIconEnabled"]=m_services->routing().value("selectionIconEnabled").toBool(true);
+    if(m_services)loadSelectionSettings();
 }
 void App::appearance(const QJsonObject& params)
 {
@@ -516,8 +516,14 @@ void App::ensureRaw()
         QMetaObject::invokeMethod(this,[this,point,timestamp,flags]{selectionGesture(point,timestamp,flags);},Qt::QueuedConnection);
     });
 }
+void App::loadSelectionSettings()
+{
+    const auto routing=m_services->routing();
+    for(const auto key:{"selectionIconEnabled","selectionIconForeignOnly","selectionIconDefaultLanguage"})m_settings[key]=routing.value(key);
+}
 void App::updateSelectionMonitor()
 {
+    hideSelectionIcon();
     startSelectionPrimer();
     if(m_settings.value("selectionIconEnabled").toBool(true))ensureRaw();
     else{hideSelectionIcon();m_iconPressed=false;if(!m_pin&&(!m_word.window||!m_word.window->isVisible()))m_raw.reset();}
@@ -583,13 +589,20 @@ void App::readIconSelection()
     if(m_iconReading||m_selectionReading){m_iconDelay.start(100);return;}
     m_iconReading=true;m_iconCancel=token();auto cancel=m_iconCancel;auto epoch=m_iconEpoch;
     auto reader=m_readSelection;auto at=m_iconPoint;auto target=m_iconTarget;
-    background([reader,at,target,cancel]{return reader(POINT{at.x(),at.y()},target,cancel);},
+    const auto language=selectionDefaultLanguage(m_settings.value("selectionIconDefaultLanguage").toString("auto"),
+        m_settings.value("target").toString("auto"),m_chinese?"zh":"en");
+    const bool foreignOnly=m_settings.value("selectionIconForeignOnly").toBool(true);
+    background([reader,at,target,cancel,language,foreignOnly]{
+            auto selection=reader(POINT{at.x(),at.y()},target,cancel);
+            if(cancel->load()||!selectionIconAllowed(selection.text,language,foreignOnly))return Selection{};
+            return selection;
+        },
         [this,epoch,cancel,target,at](Selection selection,QString error){
             m_iconReading=false;
             auto pending=m_selectionPendingEpoch;
             if(pending&&pending==m_wordEpoch){m_selectionPendingEpoch=0;readSelection();return;}
             if(cancel->load()||epoch!=m_iconEpoch||!error.isEmpty()||selection.text.trimmed().isEmpty()||
-                m_selector||m_wordPinned||m_wordEditing||
+                !m_settings.value("selectionIconEnabled").toBool(true)||m_selector||m_wordPinned||m_wordEditing||
                 GetAncestor(m_foreground(),GA_ROOT)!=GetAncestor(target,GA_ROOT))return;
             m_iconSelection=selection;
             // Text ranges are returned in document order, regardless of drag
@@ -1281,8 +1294,12 @@ void App::configAction(const QString& name,const QVariant& value)
         else if(name=="cancelDictionary"){
             if(m_dictionaryCancel)m_dictionaryCancel->store(true);
         }
-        else if(name=="selectionIconEnabled"){
-            m_routingDraft["selectionIconEnabled"]=value.toBool();publishTests();
+        else if(name=="selectionIconEnabled"||name=="selectionIconForeignOnly"){
+            m_routingDraft[name]=value.toBool();publishTests();
+        }
+        else if(name=="selectionIconDefaultLanguage"){
+            if(!QStringList{"auto","zh","en","ja","ko","fr","de","es","ru"}.contains(value.toString()))return;
+            m_routingDraft[name]=value.toString();publishTests();
         }
         else if(name=="routingMode"){
             if(value.toString()!="manual"&&value.toString()!="auto")return;
@@ -1311,7 +1328,7 @@ void App::configAction(const QString& name,const QVariant& value)
             if(name=="appId")m_configBackend.update({{"endpointHint",value.toString().trimmed().isEmpty()?"https://dict.youdao.com/jsonapi":"https://openapi.youdao.com/api"}});
         }else if(name=="save"){
             m_services->save(m_drafts,m_routingDraft);m_cache.clear();
-            m_settings["selectionIconEnabled"]=m_services->routing().value("selectionIconEnabled").toBool(true);updateSelectionMonitor();
+            loadSelectionSettings();updateSelectionMonitor();
             publishTests();
             const auto saved=m_chinese?QString("配置已保存"):QString("Settings saved");
             m_configBackend.update({{"message",saved}});
@@ -1405,6 +1422,10 @@ void App::publishTests()
     m_configBackend.update({{"aiTests",aiTests},{"testResults",rows},{"testing",m_testRunning>0||!m_testQueue.isEmpty()},{"batch",m_batch},
         {"queue",queue},{"routingMode",m_routingDraft.value("mode").toString("manual")},{"readyCount",ready},{"coolingCount",cooling},{"unconfiguredCount",unconfigured},
         {"selectionIconEnabled",m_routingDraft.value("selectionIconEnabled").toBool(true)},
+        {"selectionIconForeignOnly",m_routingDraft.value("selectionIconForeignOnly").toBool(true)},
+        {"selectionIconDefaultLanguage",m_routingDraft.value("selectionIconDefaultLanguage").toString("auto")},
+        {"selectionIconResolvedLanguage",selectionDefaultLanguage(m_routingDraft.value("selectionIconDefaultLanguage").toString("auto"),
+            m_settings.value("target").toString("auto"),m_chinese?"zh":"en")},
         {"fallbackEnabled",m_settings.value("fallbackEnabled").toBool(true)},{"recoveryMinutes",std::clamp(m_settings.value("fallbackRecoveryMinutes").toDouble(60),1.0,10080.0)},
         {"message",m_batch?QString("已测试 %1/%2").arg(completed).arg(total):m_tests.contains(m_configProvider)?m_tests.at(m_configProvider).value("detail").toString():QString()}});
 }

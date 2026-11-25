@@ -4,6 +4,8 @@
 #include <windows.h>
 #include <wincrypt.h>
 #include <winhttp.h>
+#include <elscore.h>
+#include <elssrvc.h>
 #include <QCryptographicHash>
 #include <QDate>
 #include <QDateTime>
@@ -118,7 +120,11 @@ QJsonObject normalizedRouting(const QJsonObject& value)
     for(auto p:defaults)if(!order.contains(p))order<<p;
     QJsonObject adjustments;const auto stored=value.value("adjustments").toObject();
     for(auto p:providers){const int adjustment=std::clamp(stored.value(p).toInt(),-10000,10000);if(adjustment)adjustments[p]=adjustment;}
-    return {{"mode",value.value("mode").toString()=="auto"?"auto":"manual"},{"order",array(order)},{"adjustments",adjustments},{"selectionIconEnabled",value.value("selectionIconEnabled").toBool(true)}};
+    const auto language=value.value("selectionIconDefaultLanguage").toString("auto");
+    return {{"mode",value.value("mode").toString()=="auto"?"auto":"manual"},{"order",array(order)},{"adjustments",adjustments},
+        {"selectionIconEnabled",value.value("selectionIconEnabled").toBool(true)},
+        {"selectionIconForeignOnly",value.value("selectionIconForeignOnly").toBool(true)},
+        {"selectionIconDefaultLanguage",QStringList{"auto","zh","en","ja","ko","fr","de","es","ru"}.contains(language)?language:"auto"}};
 }
 QString endpoint(const QJsonObject& p)
 {
@@ -363,6 +369,51 @@ QString detect(const QString& text)
 QString targetFor(const QString& text,const QString& setting)
 {
     return QStringList{"zh","en","ja","ko","fr","de","es","ru"}.contains(setting)?setting:(detect(text)=="zh"?"en":"zh");
+}
+QString selectionDefaultLanguage(const QString& setting,const QString& target,const QString& locale)
+{
+    const QStringList languages{"zh","en","ja","ko","fr","de","es","ru"};
+    if(languages.contains(setting))return setting;
+    if(languages.contains(target))return target;
+    return locale.startsWith("en")?"en":"zh";
+}
+bool selectionIconAllowed(const QString& text,const QString& defaultLanguage,bool foreignOnly)
+{
+    if(!foreignOnly)return !text.trimmed().isEmpty();
+    // Bound language analysis only; the complete selection is still translated.
+    // Sample across long selections so their tail is represented too.
+    QString sample=text.size()<=2048?text:text.left(680)+" "+text.mid(text.size()/2-340,680)+" "+text.right(680);
+    int latin=0,letters=0;
+    for(QChar c:sample){letters+=c.isLetter();latin+=c.isLetter()&&c.script()==QChar::Script_Latin;}
+    if(!letters)return false;
+    auto language=detect(sample);
+    if(language=="en"&&latin*2<letters)return true; // another script, not English
+    if(language=="en"&&latin*2>=letters){
+        // Windows ELS distinguishes Latin-script languages locally. No service
+        // request, key or network access is needed just to decide on an icon.
+        MAPPING_ENUM_OPTIONS options{};options.Size=sizeof options;
+        auto guid=ELS_GUID_LANGUAGE_DETECTION;options.pGuid=&guid;options.OnlineService=OFFLINE_SERVICES;
+        MAPPING_SERVICE_INFO* services=nullptr;DWORD count=0;
+        if(SUCCEEDED(MappingGetServices(&options,&services,&count))&&services){
+            if(count){
+                MAPPING_PROPERTY_BAG bag{};bag.Size=sizeof bag;
+                sample=sample.normalized(QString::NormalizationForm_C);
+                if(SUCCEEDED(MappingRecognizeText(services,reinterpret_cast<LPCWSTR>(sample.utf16()),DWORD(sample.size()),0,nullptr,&bag))){
+                    if(bag.dwRangesCount&&bag.prgResultRanges){
+                        const auto& range=bag.prgResultRanges[0];
+                        if(range.pData&&range.dwDataSize>=sizeof(wchar_t)){
+                            const auto names=QString::fromWCharArray(static_cast<const wchar_t*>(range.pData),int(range.dwDataSize/sizeof(wchar_t)));
+                            const auto first=names.section(QChar(0),0,0).section('-',0,0).toLower();
+                            if(!first.isEmpty()&&first!="und")language=first;
+                        }
+                    }
+                    MappingFreePropertyBag(&bag);
+                }
+            }
+            MappingFreeServices(services);
+        }
+    }
+    return language!=defaultLanguage;
 }
 QByteArray crypt(const QByteArray& data,bool decrypt)
 {

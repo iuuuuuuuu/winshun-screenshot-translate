@@ -62,6 +62,7 @@ private:
     void placeWord();
     void ensureRaw();
     void updateSelectionMonitor();
+    void loadSelectionSettings();
     void startSelectionPrimer();
     void selectionGesture(POINT point,DWORD timestamp,USHORT flags);
     void readIconSelection();

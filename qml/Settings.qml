@@ -15,6 +15,11 @@ Window {
     property string provider: backend.state.provider
     property bool home: backend.state.home || false
     property bool automatic: backend.state.routingMode === "auto"
+    property bool iconOptionsOpen: false
+    readonly property var iconLanguageCodes: ["auto", "zh", "en", "ja", "ko", "fr", "de", "es", "ru"]
+    readonly property var iconLanguageLabels: chinese
+        ? ["跟随设置", "中文", "英文", "日文", "韩文", "法文", "德文", "西班牙文", "俄文"]
+        : ["Follow settings", "Chinese", "English", "Japanese", "Korean", "French", "German", "Spanish", "Russian"]
     readonly property bool dragging: queueRows.dragIndex >= 0
     property var queue: backend.state.queue || []
     function t(zh, en) { return chinese ? zh : en }
@@ -104,6 +109,15 @@ Window {
                     highlighted: !!backend.state.selectionIconEnabled
                     onClicked: backend.action("selectionIconEnabled", !backend.state.selectionIconEnabled)
                 }
+                FlatButton {
+                    objectName: "selection-icon-options"
+                    visible: window.home && backend.state.selectionIconForeignOnly !== undefined
+                    enabled: !!backend.state.selectionIconEnabled
+                    text: window.t("显示条件：", "Show for: ") + (backend.state.selectionIconForeignOnly
+                        ? window.t("非默认语种", "Other languages") : window.t("所有语种", "All languages"))
+                    textPixelSize: 13; highlighted: window.iconOptionsOpen
+                    onClicked: { window.iconOptionsOpen = !window.iconOptionsOpen; scroll.contentY = 0 }
+                }
             }
             Item { width: 1; height: 4 }
             ChoiceTabs {
@@ -133,6 +147,38 @@ Window {
                 objectName: "settings-home"
                 visible: window.home
                 width: scroll.width; spacing: 14
+                Rectangle {
+                    visible: window.iconOptionsOpen && !!backend.state.selectionIconEnabled
+                    width: parent.width; height: iconOptions.implicitHeight + 32
+                    radius: Theme.cardRadius; color: Theme.card; border.color: Theme.cardBorder
+                    Column {
+                        id: iconOptions
+                        x: 16; y: 16; width: parent.width - 32; spacing: 10
+                        Text { text: window.t("划词图标显示条件", "Selection icon visibility"); color: Theme.text; font.pixelSize: 17; font.weight: Font.DemiBold }
+                        ChoiceTabs {
+                            objectName: "selection-icon-modes"
+                            width: parent.width
+                            labels: [window.t("仅非默认语种（默认）", "Other languages (default)"), window.t("所有语种", "All languages")]
+                            current: backend.state.selectionIconForeignOnly ? 0 : 1
+                            onActivated: index => backend.action("selectionIconForeignOnly", index === 0)
+                        }
+                        Text { text: window.t("默认语种", "Default language"); color: Theme.text; font.pixelSize: 13 }
+                        ChoiceTabs {
+                            objectName: "selection-icon-languages"
+                            width: parent.width; labels: window.iconLanguageLabels
+                            current: Math.max(0, window.iconLanguageCodes.indexOf(backend.state.selectionIconDefaultLanguage))
+                            enabled: !!backend.state.selectionIconForeignOnly; opacity: enabled ? 1 : 0.5
+                            onActivated: index => backend.action("selectionIconDefaultLanguage", window.iconLanguageCodes[index])
+                        }
+                        Text {
+                            width: parent.width; wrapMode: Text.Wrap; font.pixelSize: 12; color: Theme.subtext
+                            text: window.t("当前默认语种：", "Current default: ")
+                                + window.iconLanguageLabels[Math.max(1, window.iconLanguageCodes.indexOf(backend.state.selectionIconResolvedLanguage))]
+                                + window.t("。跟随设置时采用目标语言；目标为自动时采用界面语言。按主要语种判断；仅非默认语种模式下，纯数字和符号不显示图标。保存后生效，快捷键不受影响。",
+                                    ". Follow settings uses the target language, or the interface language when target is automatic. Uses the main language. Other-languages mode also hides numbers and symbols. Save to apply. Hotkeys are unaffected.")
+                        }
+                    }
+                }
                 Rectangle {
                     width: parent.width; height: overview.implicitHeight + 32
                     radius: Theme.cardRadius; color: Theme.card; border.color: Theme.cardBorder

@@ -406,6 +406,33 @@ int main(int argc,char** argv)
         checkWrappedPhrases();
         checkScreenshotLayout();
         if(st::detect("你好世界")!="zh"||st::targetFor("Hello","auto")!="zh")throw std::runtime_error("language");
+        if(st::selectionDefaultLanguage("auto","en","zh")!="en"||st::selectionDefaultLanguage("auto","auto","zh")!="zh"||
+            st::selectionDefaultLanguage("auto","auto","en-US")!="en"||st::selectionDefaultLanguage("ja","en","zh")!="ja")
+            throw std::runtime_error("selection default language follows explicit override, target, then interface");
+        for(const auto& test:QList<QPair<QString,QString>>{{"这是一段中文说明。","zh"},{"這是一段繁體中文說明。","zh"},
+            {"Please translate this sentence accurately.","en"},{"Ceci est un texte écrit en français pour vérifier la langue.","fr"},
+            {"Dies ist ein deutscher Text zum Testen der Spracherkennung.","de"},{"Este es un texto en español para comprobar el idioma.","es"},
+            {"これは日本語の文章です。","ja"},{"이것은 한국어 문장입니다.","ko"},{"Это предложение написано на русском языке.","ru"}}){
+            if(st::selectionIconAllowed(test.first,test.second)||!st::selectionIconAllowed(test.first,test.second=="zh"?"en":"zh"))
+                throw std::runtime_error(("selection language filtering: "+test.second).toStdString());
+        }
+        if(st::selectionIconAllowed("12345 … !? 😀","zh")||st::selectionIconAllowed("  ","zh",false)||
+            !st::selectionIconAllowed("中文","zh",false)||!st::selectionIconAllowed("مرحبا بالعالم","en")||
+            st::selectionIconAllowed(QString(200000,QChar(0x4e2d)),"zh"))throw std::runtime_error("neutral, all-language and long selection filtering");
+        if(st::selectionIconAllowed("这是一段中文说明，hello world 是其中的英文词语，请按主要语种判断。","zh")||
+            st::selectionIconAllowed("中文：This is an English paragraph explaining how the selection language preference works.","en"))
+            throw std::runtime_error("mixed selections follow their main language");
+        {
+            QTemporaryDir settingsDir;st::Services settings(settingsDir.path());
+            if(!settings.routing().value("selectionIconForeignOnly").toBool()||settings.routing().value("selectionIconDefaultLanguage")!="auto")
+                throw std::runtime_error("fresh settings default to foreign selection only");
+            settings.save({},{{"selectionIconForeignOnly",false},{"selectionIconDefaultLanguage","en"}});
+            st::Services reopenedSettings(settingsDir.path());
+            if(reopenedSettings.routing().value("selectionIconForeignOnly").toBool(true)||reopenedSettings.routing().value("selectionIconDefaultLanguage")!="en")
+                throw std::runtime_error("selection language preferences survive restart");
+            reopenedSettings.save({},{{"selectionIconDefaultLanguage","invalid"}});
+            if(reopenedSettings.routing().value("selectionIconDefaultLanguage")!="auto")throw std::runtime_error("invalid default language is normalized");
+        }
         QTemporaryDir dir;st::Services services(dir.path());
         auto sharedDir=qEnvironmentVariable("WS_DATA_DIR");
         if(app.arguments().contains("--endpoint")&&!sharedDir.isEmpty()){

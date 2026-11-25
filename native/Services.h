@@ -29,6 +29,8 @@ struct Translation {
     QJsonObject json(const QStringList& parts) const;
 };
 QString detect(const QString& text);
+QString selectionDefaultLanguage(const QString& setting,const QString& target,const QString& locale);
+bool selectionIconAllowed(const QString& text,const QString& defaultLanguage,bool foreignOnly=true);
 QStringList sentenceParts(const QString& text, int maxChars=1200);
 QString targetFor(const QString& text, const QString& setting);
 bool validUrl(const QString& value);

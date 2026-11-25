@@ -363,6 +363,8 @@ def main():
                          "actualProviderLabels","providerFallbackAppearance","wordAutoTranslateOnBlur","wordRestoreHoverOnly","wordExplicitPinOnly","dictionaryDownloadUi",
                          "wordAdaptiveGeometry","textAdaptiveGeometry"):
                 assert report[flag], report
+            for flag in ("selectionIconLanguageSettings", "selectionIconLanguageFilter"):
+                assert report[flag], report
             for request in (200,201,202):assert responses[request]["items"]==[],responses
             assert responses[203]["items"][0]["title"]=="你好 + 100%",responses[203]
             print(json.dumps({k:report[k] for k in ("passed","qtVersion","pythonLoaded","uiRenderer","hostRenderer",

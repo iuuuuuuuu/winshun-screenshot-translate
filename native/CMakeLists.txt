@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(ScreenshotTranslate VERSION 0.4.28 LANGUAGES CXX)
+project(ScreenshotTranslate VERSION 0.4.29 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_AUTOMOC ON)
 find_package(Qt6 6.12 REQUIRED COMPONENTS Core Gui Qml Quick)
@@ -25,7 +25,7 @@ target_include_directories(ScreenshotTranslateApp PRIVATE vendor/capture vendor/
 target_compile_options(ScreenshotTranslateApp PRIVATE /Zi)
 target_link_options(ScreenshotTranslateApp PRIVATE /DEBUG /MAP)
 target_link_libraries(ScreenshotTranslateApp PRIVATE Qt6::Gui Qt6::Quick Qt6::Qml
-    windowsapp ole32 oleaut32 user32 gdi32 imm32 crypt32 dwmapi shell32 winhttp psapi)
+    windowsapp ole32 oleaut32 user32 gdi32 imm32 crypt32 dwmapi shell32 winhttp psapi elscore)
 set(shared_qml)
 foreach(name Theme FlatButton InputBox ChoiceTabs ToolButton ServiceRow LanguageMenu ServiceTip)
     configure_file("${CMAKE_CURRENT_SOURCE_DIR}/../qml/WinShun/${name}.qml" "${CMAKE_CURRENT_BINARY_DIR}/shared/${name}.qml" COPYONLY)
@@ -59,7 +59,7 @@ if(BUILD_NATIVE_TESTS)
     qt_add_executable(native_tests Tests.cpp Services.cpp Dictionary.cpp Http.cpp Desktop.cpp
         vendor/capture/PinWindow.cpp vendor/capture/PinTools.cpp vendor/capture/Geometry.cpp vendor/capture/SmartRedact.cpp)
     target_include_directories(native_tests PRIVATE vendor/capture)
-    target_link_libraries(native_tests PRIVATE Qt6::Gui windowsapp ole32 oleaut32 user32 gdi32 imm32 crypt32 winhttp)
+    target_link_libraries(native_tests PRIVATE Qt6::Gui windowsapp ole32 oleaut32 user32 gdi32 imm32 crypt32 winhttp elscore)
 endif()
 
 # The dictionary is an optional Release asset, never a runtime dependency of
