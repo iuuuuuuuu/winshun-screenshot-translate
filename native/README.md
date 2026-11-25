@@ -1,4 +1,4 @@
-# 截图翻译 0.4.26：原生版构建与验证
+# 截图翻译 0.4.27：原生版构建与验证
 
 弹窗交互回归：`python -B native/test_native.py --build <build-or-stage> --runtime <WinShun> --word-popup --output <report-dir>`。覆盖原文三行省略、点击展开编辑、独立滚动与固定收起按钮、收起提交、手动渠道切换、保留旧译文、全局设置不变及原生圆角。精确 AI 模型选择和禁用模型保护由 `--core` 回归覆盖。
 
@@ -22,7 +22,7 @@ Firefox 选区回归：`python -B native/test_selection_firefox.py --driver <gec
 ## 安装和回退
 
 在 WinShun 设置 → 插件 → 从压缩包安装，选择
-`iuuuuuuuu.screenshot-translate-0.4.26.wsplugin`。运行时不检查或启动 Python。
+`iuuuuuuuu.screenshot-translate-0.4.27.wsplugin`。运行时不检查或启动 Python。
 包内包括启动器、应用 DLL、少量 Visual C++ 依赖、许可和文档；DLL 内包含 QML 控件与授权图标字体。
 现有渠道、热键、代理、偏好和 DPAPI 密钥格式保持兼容，不迁移或删除用户的数据目录。
 

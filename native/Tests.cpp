@@ -139,6 +139,65 @@ void checkWrappedPhrases()
     check(st::wrappedPhraseAt(labels,{30,20}).text=="Settings","stacked short UI labels stay separate");
     check(st::wrappedPhraseAt(spaced,{150,48}).text.isEmpty(),"blank between paragraphs does not select a phrase");
 }
+void checkScreenshotLayout()
+{
+    auto check=[](bool yes,const char* message){if(!yes)throw std::runtime_error(message);};
+    for(bool dark:{false,true}){
+        QImage image(400,300,QImage::Format_RGB32);image.fill(dark?QColor(30,30,30):Qt::white);
+        QPainter paint(&image);QFont font("Segoe UI");font.setPixelSize(18);paint.setFont(font);
+        QList<st::Block> words;
+        for(int row=0;row<5;++row){
+            int top=20+row*45;paint.setPen(QPen(dark?QColor(160,170,180):QColor(90,100,110),2));
+            paint.drawRect(QRect(20,top,18,18));
+            // Deliberately different OCR guesses for equally graphical marks.
+            if(row==4){
+                words.append({"〈",QRectF(19,top-1,9,20),20});
+                words.append({"〉",QRectF(30,top-1,9,20),20});
+            }else words.append({QStringList{"旧","中","0","O"}[row],QRectF(19,top-1,20,20),20});
+            paint.setPen(dark?Qt::white:Qt::black);paint.drawText(52,top+17,"Settings");
+            words.append({"Settings",QRectF(52,top,70,20),20});
+            paint.drawText(145,top+17,"7");words.append({"7",QRectF(145,top,10,20),20});
+        }
+        paint.end();auto cleaned=st::filterUiIcons(image,words);
+        check(cleaned.size()==10,"graphical prefixes excluded while numeric badges remain");
+        for(int row=0;row<5;++row)check(cleaned[row*2].text=="Settings"&&cleaned[row*2+1].text=="7","icon filtering preserves label order and counts");
+        auto translated=st::translatedImage(image,st::groupWords(cleaned),{"设置 7","设置 7","设置 7","设置 7","设置 7"},dark);
+        for(int row=0;row<5;++row)check(translated.copy(18,18+row*45,24,24)==image.copy(18,18+row*45,24,24),"translation does not paint over excluded icons");
+        auto numbered=words.mid(0,12);
+        for(int row=0;row<4;++row){
+            numbered[row*3].text=QStringList{"0","1","12","A"}[row];
+            numbered[row*3].box.setWidth(row==2?20:10);
+        }
+        check(st::filterUiIcons(image,numbered).size()==numbered.size(),"coloured list numbers and letter prefixes remain");
+        // A real short prefix can have exactly the same geometry as an icon.
+        // With text-coloured ink it must not disappear, even in aligned rows.
+        {QPainter p(&image);p.setPen(QPen(dark?Qt::white:Qt::black,2));
+            for(int row=0;row<5;++row)p.drawRect(QRect(20,20+row*45,18,18));}
+        auto preserved=st::filterUiIcons(image,words);
+        if(preserved.size()!=words.size()){
+            image.save(QCoreApplication::applicationDirPath()+"/prefix-fixture.png");
+            QStringList actual;for(auto w:preserved)actual<<w.text;
+            throw std::runtime_error((QString("same-colour prefixes dark=%1: ").arg(dark)+actual.join(" / ")).toStdString());
+        }
+        check(st::filterUiIcons(image,words.mid(0,2)).size()==2,"isolated mixed-language prefix is not classified from text alone");
+    }
+    for(int size:{11,18,36}){
+        QImage source(400,120,QImage::Format_RGB32);source.fill(Qt::white);
+        QFont font("Segoe UI");font.setPixelSize(size);QFontMetricsF metrics(font);
+        QRectF ink=metrics.tightBoundingRect("Settings").translated(20,65);
+        {QPainter p(&source);p.setPen(Qt::black);p.setFont(font);p.drawText(QPointF(20,65),"Settings");}
+        auto blocks=st::groupWords({{"Settings",ink,ink.height()}});
+        check(std::abs(blocks.first().fontPixels-size)<=2,"source font estimate follows original glyph size");
+        check(st::translatedImage(source,blocks,{"Settings"},false)==source,"unchanged text keeps original typography and nearby symbols");
+        QList<ws::capture::RedactLine> selectable;
+        const auto output=st::translatedImage(source,blocks,{"设置"},false,&selectable);
+        QRect inkBounds;
+        for(int y=0;y<output.height();++y)for(int x=0;x<output.width();++x)if(qGray(output.pixel(x,y))<100)inkBounds=inkBounds.united(QRect(x,y,1,1));
+        check(inkBounds.height()>=size*.7&&inkBounds.height()<=size*1.2,"translation tracks small and large original fonts without fixed clamps");
+        check(std::abs(inkBounds.top()-ink.top())<=2,"translated ink aligns with source ink");
+        check(!selectable.isEmpty()&&selectable.first().text=="设置","new font layout retains selectable translated text");
+    }
+}
 }
 int main(int argc,char** argv)
 {
@@ -253,6 +312,18 @@ int main(int argc,char** argv)
             for(auto word:words)found.append(QJsonObject{{"text",word.text},
                 {"box",QJsonArray{word.box.x(),word.box.y(),word.box.width(),word.box.height()}},
                 {"phrase",st::phraseAt(words,word.box.center()).text}});
+            const auto blocks=st::groupWords(words);QJsonArray grouped;
+            for(const auto& block:blocks)grouped.append(QJsonObject{{"text",block.text},{"fontPixels",block.fontPixels},
+                {"box",QJsonArray{block.box.x(),block.box.y(),block.box.width(),block.box.height()}}});
+            if(args.contains("--ocr-preview")){
+                const auto path=args.value(args.indexOf("--ocr-preview")+1);
+                QFile translations(path+".json");QStringList segments;
+                if(translations.open(QIODevice::ReadOnly)){
+                    const auto mapping=QJsonDocument::fromJson(translations.readAll()).object();
+                    for(const auto& block:blocks)segments<<mapping.value(block.text).toString(block.text);
+                }else for(const auto& block:blocks)segments<<block.text;
+                st::translatedImage(image,blocks,segments,false).save(path+".png");
+            }
             QJsonArray pointed;
             if(args.contains("--ocr-points")){
                 std::thread reader([&]{try{
@@ -264,7 +335,7 @@ int main(int argc,char** argv)
                     }
                 }catch(...){error=std::current_exception();}});reader.join();if(error)std::rethrow_exception(error);
             }
-            std::puts(QJsonDocument(QJsonObject{{"words",found},{"pointed",pointed}}).toJson(QJsonDocument::Compact).constData());return 0;
+            std::puts(QJsonDocument(QJsonObject{{"words",found},{"blocks",grouped},{"pointed",pointed}}).toJson(QJsonDocument::Compact).constData());return 0;
         }
         if(args.contains("--dictionary-download")){
             QTemporaryDir data;
@@ -276,6 +347,7 @@ int main(int argc,char** argv)
         if(st::canonicalProvider("")!="ecdict"||st::canonicalProvider("mymemory")!="mymemory")
             throw std::runtime_error("ECDICT is the missing-setting default; explicit provider selection is preserved");
         checkWrappedPhrases();
+        checkScreenshotLayout();
         if(st::detect("你好世界")!="zh"||st::targetFor("Hello","auto")!="zh")throw std::runtime_error("language");
         QTemporaryDir dir;st::Services services(dir.path());
         auto sharedDir=qEnvironmentVariable("WS_DATA_DIR");

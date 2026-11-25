@@ -16,6 +16,7 @@
 #include <QElapsedTimer>
 #include <QFile>
 #include <QFont>
+#include <QFontMetricsF>
 #include <QPainter>
 #include <QRegularExpression>
 #include <QTextDocument>
@@ -26,6 +27,7 @@
 #include <QtMath>
 #include <QTimer>
 #include <QMap>
+#include <QSet>
 #include <QTransform>
 #include <windowsx.h>
 #include <algorithm>
@@ -81,6 +83,35 @@ QList<Block> scriptWords(const QList<Block>& words)
     }return result;
 }
 bool numeric(const QString& s) { return QRegularExpression("^\\d+(?:[.,]\\d+)*(?:[%+])?$").match(s.trimmed()).hasMatch(); }
+double sourceFontPixels(const Block& word)
+{
+    if(word.fontPixels>0)return word.fontPixels;
+    if(word.text.isEmpty())return word.glyphHeight;
+    bool han=false;for(auto c:word.text)han|=cjk(c);
+    QFont font(han?"Microsoft YaHei UI":"Segoe UI");font.setPixelSize(100);
+    const auto ink=QFontMetricsF(font).tightBoundingRect(word.text);
+    double estimate=ink.height()>0?word.glyphHeight*100./ink.height():word.glyphHeight;
+    // A mistaken capital (j -> J) can remove the measured descender. Width
+    // provides a conservative upper bound without forcing one font size.
+    if(word.text.size()>=4&&!word.text.contains('\n')&&ink.width()>0)
+        estimate=std::min(estimate,word.box.width()*115./ink.width());
+    return std::clamp(estimate,6.,256.);
+}
+struct InkTone { QColor foreground; int background=0; bool valid=false; };
+InkTone inkTone(const QImage& image,QRectF area)
+{
+    const auto box=area.toAlignedRect().intersected(image.rect());if(box.isEmpty())return {};
+    QList<int> border;
+    for(int x=box.left();x<=box.right();++x){border<<qGray(image.pixel(x,box.top()))<<qGray(image.pixel(x,box.bottom()));}
+    std::sort(border.begin(),border.end());const int bg=border[border.size()/2];
+    QList<QRgb> ink;
+    for(int y=box.top();y<=box.bottom();++y)for(int x=box.left();x<=box.right();++x){
+        const auto pixel=image.pixel(x,y);if(std::abs(qGray(pixel)-bg)>40)ink<<pixel;
+    }
+    if(ink.size()<4)return {};
+    std::sort(ink.begin(),ink.end(),[bg](QRgb a,QRgb b){return std::abs(qGray(a)-bg)>std::abs(qGray(b)-bg);});
+    return {QColor(ink[ink.size()/10]),bg,true};
+}
 bool inkBridges(const QImage& image,QRectF a,QRectF b)
 {
     double h=std::max(a.height(),b.height());
@@ -154,6 +185,78 @@ QImage capture(const QRect& area)
     SelectObject(dc,old);DeleteObject(dib);DeleteDC(dc);ReleaseDC(nullptr,screen);
     if(image.isNull())throw std::runtime_error("无法读取屏幕");return image;
 }
+QList<Block> filterUiIcons(const QImage& image,const QList<Block>& words)
+{
+    // A recognizer can call a person/grid/tag icon a Chinese character or 0.
+    // Require both graphical layout evidence and a different ink colour from
+    // its label. Never strip a prefix merely because its text looks unusual.
+    struct Candidate { QList<int> indices; QRectF box; int label=-1; };
+    QList<Candidate> candidates;QSet<int> claimed;
+    auto symbol=[](const Block& w){
+        if(w.text.isEmpty()||w.text.size()>3)return false;
+        for(auto c:w.text)if(c.isLetter()&&!cjk(c)&&w.text.size()>1)return false;
+        return true;
+    };
+    QList<int> symbols,labels;
+    for(int i=0;i<words.size();++i){
+        if(symbol(words[i]))symbols<<i;
+        int letters=0;for(auto c:words[i].text)letters+=c.isLetter();if(letters>=2)labels<<i;
+    }
+    if(symbols.size()<3||labels.size()<3)return words;
+    for(int i=0;i<words.size();++i){
+        if(claimed.contains(i)||!symbol(words[i]))continue;
+        Candidate candidate{{i},words[i].box};
+        for(int j:symbols){
+            if(i==j||claimed.contains(j))continue;
+            auto b=words[j].box,a=candidate.box;double h=std::max(a.height(),b.height());
+            if(b.left()<a.left()||b.left()-a.right()>h*.4||b.right()>a.left()+h*1.8||
+                std::abs(a.center().y()-b.center().y())>h*.3)continue;
+            candidate.indices<<j;candidate.box=a.united(b);
+        }
+        const auto a=candidate.box;const double h=a.height();
+        if(h<5||a.width()<h*.5||a.width()>h*1.8)continue;
+        // Real list numbers and single-letter prefixes are narrower than a
+        // square pictogram. In particular, never discard multi-digit counts.
+        if(candidate.indices.size()==1){
+            const auto text=words[i].text;
+            if(numeric(text)&&(text.size()!=1||a.width()<h*.85))continue;
+            if(text.size()==1&&text.front().script()==QChar::Script_Latin&&a.width()<h*.85)continue;
+        }
+        double nearest=1e9;
+        for(int j:labels){
+            if(candidate.indices.contains(j))continue;
+            const auto b=words[j].box;const double gap=b.left()-a.right();
+            if(gap<h*.25||gap>h*1.6||gap>=nearest||h<b.height()*.65||h>b.height()*1.9||
+                std::abs(a.center().y()-b.center().y())>std::max(h,b.height())*.5)continue;
+            candidate.label=j;nearest=gap;
+        }
+        if(candidate.label<0)continue;
+        for(auto index:candidate.indices)claimed.insert(index);
+        candidates<<candidate;
+    }
+    QSet<int> excluded;
+    for(const auto& candidate:candidates){
+        const auto a=candidate.box,b=words[candidate.label].box;
+        int peers=0;
+        for(const auto& other:candidates){
+            if(other.indices==candidate.indices)continue;
+            const auto c=other.box,d=words[other.label].box;const double h=std::max(a.height(),c.height());
+            bool column=std::abs(a.center().x()-c.center().x())<h*.4&&std::abs(b.left()-d.left())<h*.45&&
+                std::abs(a.center().y()-c.center().y())>h*1.4&&std::abs(a.center().y()-c.center().y())<h*18;
+            bool row=std::abs(a.center().y()-c.center().y())<h*.4&&std::abs(a.center().x()-c.center().x())>h*2;
+            if(column||row)++peers;
+        }
+        if(peers<2)continue;
+        const auto icon=inkTone(image,a.adjusted(-1,-1,1,1)),text=inkTone(image,b.adjusted(-1,-1,1,1));
+        if(!icon.valid||!text.valid||std::abs(icon.background-text.background)>35)continue;
+        // ClearType adds coloured fringes even to black text. Compare ink
+        // luminance, not the largest RGB channel, to preserve real prefixes.
+        const int difference=std::abs(qGray(icon.foreground.rgb())-qGray(text.foreground.rgb()));
+        if(difference<24)continue;
+        for(auto index:candidate.indices)excluded.insert(index);
+    }
+    QList<Block> result;for(int i=0;i<words.size();++i)if(!excluded.contains(i))result<<words[i];return result;
+}
 QList<Block> groupWords(QList<Block> words)
 {
     std::sort(words.begin(),words.end(),[](auto& a,auto& b){return a.box.y()==b.box.y()?a.box.x()<b.box.x():a.box.y()<b.box.y();});
@@ -181,25 +284,23 @@ QList<Block> groupWords(QList<Block> words)
     for(auto row:rows){
         std::sort(row.begin(),row.end(),[](auto& a,auto& b){return a.box.x()<b.box.x();});
         QList<double> heights;for(auto w:row)heights<<w.box.height();std::sort(heights.begin(),heights.end());
-        double h=heights[heights.size()/2],limit=std::max(14.,h*1.2);int gaps=0,latin=0,han=0;
+        double h=heights[heights.size()/2],limit=std::max(14.,h*1.2);
+        QList<Block> blocks;Block run;Block prev;QList<double> fontSizes;
+        auto flush=[&]{if(!run.text.isEmpty()){
+            run.glyphHeight=h;
+            if(!fontSizes.isEmpty()){std::sort(fontSizes.begin(),fontSizes.end());run.fontPixels=fontSizes[fontSizes.size()/2];}
+            blocks<<run;run={};fontSizes.clear();
+        }};
         for(int i=0;i<row.size();++i){
-            if(i&&row[i].box.x()-row[i-1].box.right()>limit)++gaps;
-            for(auto c:row[i].text){latin+=(c.unicode()<128&&c.isLetter());han+=cjk(c);}
-        }
-        bool navigation=gaps>=2&&latin>han*3;
-        QList<Block> blocks;Block run;Block prev;
-        auto flush=[&]{if(!run.text.isEmpty()){run.glyphHeight=h;blocks<<run;run={};}};
-        for(int i=0;i<row.size();++i){
-            auto w=row[i];bool symbol=!QRegularExpression("[A-Za-z]").match(w.text).hasMatch();
-            bool square=(w.box.width()>=h*.65&&w.box.width()<=h*1.6)||QRegularExpression("^[0丿丨]+$").match(w.text).hasMatch();
-            if(navigation&&square&&symbol&&w.text.size()<=3&&i+1<row.size()&&
-                QRegularExpression("^[A-Za-z]").match(row[i+1].text).hasMatch()&&(!i||w.box.x()-row[i-1].box.right()>h)){flush();continue;}
+            auto w=row[i];
             if(!run.text.isEmpty()&&w.box.x()-prev.box.right()>limit)flush();
             if(run.text.isEmpty())run=w;
             else{
                 if(!QString(",.!?:;，。！？：；、)]}）】》」』”’").contains(w.text.front())&&!(cjk(run.text.back())&&cjk(w.text.front()))&&w.box.x()-prev.box.right()>std::max(1.,std::min(prev.box.height(),w.box.height())*.16))run.text+=" ";
                 run.text+=w.text;run.box=run.box.united(w.box);
-            }prev=w;
+            }
+            if(std::any_of(w.text.begin(),w.text.end(),[](QChar c){return c.isLetter();}))fontSizes<<sourceFontPixels(w);
+            prev=w;
         }flush();
         if(blocks.size()==1){
             auto b=blocks[0];
@@ -407,7 +508,7 @@ QList<Block> recognize(const QImage& source,Cancel cancel,bool grouped,double ma
                 QRectF box((physical.x()-padding)/sx,(physical.y()-padding)/sy,physical.width()/sx,physical.height()/sy);
                 box=box.intersected(QRectF(source.rect()));
                 if(!box.isEmpty())words.append({from(word.Text()),box,r.Height/sy,lineId});
-            }}return words;
+            }}return filterUiIcons(source,words);
         };
         const int border=retryEmpty?32:0;
         auto words=read(engine,maxScale,border);
@@ -1086,7 +1187,7 @@ QImage translatedImage(const QImage& source,const QList<Block>& blocks,const QSt
     if(selectable)selectable->clear();
     QImage result=source.convertToFormat(QImage::Format_RGB32);QPainter p(&result);p.setRenderHint(QPainter::TextAntialiasing);
     for(int i=0;i<std::min(blocks.size(),segments.size());++i){
-        auto block=blocks[i];if(numeric(block.text)){
+        auto block=blocks[i];if(numeric(block.text)||(segments[i]==block.text&&!block.text.contains('\n'))){
             if(selectable){
                 ws::capture::RedactLine line;auto r=block.box;line.quad={r.topLeft(),r.topRight(),r.bottomRight(),r.bottomLeft()};line.text=block.text;
                 for(int j=0;j<line.text.size();++j)line.chars<<qMakePair(j,float((j+.5)/line.text.size()));
@@ -1110,28 +1211,40 @@ QImage translatedImage(const QImage& source,const QList<Block>& blocks,const QSt
         }
         std::sort(samples.begin(),samples.end(),[](QRgb a,QRgb b){return qGray(a)<qGray(b);});QColor background(samples[samples.size()/2]);
         p.fillRect(box,background);p.setPen(qGray(background.rgb())>140?QColor("#1B1B1B"):QColor("#F5F5F5"));
-        QFont font("Microsoft YaHei UI");int size=std::clamp(qRound(block.glyphHeight*.95),14,28);QRect bounds;
-        for(;size>=12;--size){font.setPixelSize(size);p.setFont(font);bounds=p.boundingRect(cell,Qt::TextWordWrap|Qt::AlignLeft|Qt::AlignTop,segments[i]);if(bounds.height()<=cell.height()&&bounds.width()<=cell.width())break;}
-        font.setPixelSize(std::max(12,size));p.setFont(font);
-        p.save();p.setClipRect(cell);
-        p.fillRect(QRect(cell.topLeft(),QSize(std::min(bounds.width(),cell.width()),std::min(bounds.height(),cell.height()))),background);
+        QFont font("Microsoft YaHei UI");
+        const int originalSize=std::clamp(qRound(sourceFontPixels(block)),6,256);
+        const int minimumSize=std::min(originalSize,12);
         // Draw and select from the very same glyph layout; never OCR the
         // translated picture again (that loses punctuation and small letters).
-        QTextLayout layout(segments[i],font);QTextOption option;option.setWrapMode(QTextOption::WrapAtWordBoundaryOrAnywhere);
-        layout.setTextOption(option);layout.beginLayout();qreal y=0;
-        while(true){
-            auto line=layout.createLine();if(!line.isValid())break;
-            line.setLineWidth(cell.width());line.setPosition(QPointF(0,y));y+=line.height();
+        QTextLayout layout;QTextOption option;option.setWrapMode(QTextOption::WrapAtWordBoundaryOrAnywhere);
+        layout.setTextOption(option);layout.setText(segments[i]);QPointF origin;
+        for(int size=originalSize;size>=minimumSize;--size){
+            font.setPixelSize(size);layout.clearLayout();layout.setFont(font);
+            const QFontMetricsF metrics(font);
+            // OCR rectangles enclose visible ink, not the font's ascent/leading.
+            // Align that ink with the original instead of adding another top gap.
+            const auto ink=metrics.tightBoundingRect(segments[i].section('\n',0,0));
+            origin={block.box.left(),block.box.top()-metrics.ascent()-ink.top()};
+            layout.beginLayout();qreal y=0,width=0;
+            while(true){
+                auto line=layout.createLine();if(!line.isValid())break;
+                line.setLineWidth(std::max(1.,cell.right()+1-origin.x()));line.setPosition(QPointF(0,y));
+                y+=line.height();width=std::max(width,line.naturalTextWidth());
+            }
+            layout.endLayout();
+            if(origin.y()+y-metrics.descent()<=cell.bottom()+1&&width<=cell.width())break;
         }
-        layout.endLayout();layout.draw(&p,cell.topLeft());
+        p.save();p.setClipRect(cell);
+        p.fillRect(layout.boundingRect().translated(origin).intersected(cell),background);
+        layout.draw(&p,origin);
         if(selectable)for(int j=0;j<layout.lineCount();++j){
-            auto line=layout.lineAt(j);QRectF rect=line.naturalTextRect().translated(cell.topLeft());rect=rect.intersected(cell);
+            auto line=layout.lineAt(j);QRectF rect=line.naturalTextRect().translated(origin);rect=rect.intersected(cell);
             if(rect.isEmpty())continue;
             ws::capture::RedactLine pick;pick.text=segments[i].mid(line.textStart(),line.textLength());
             pick.quad={rect.topLeft(),rect.topRight(),rect.bottomRight(),rect.bottomLeft()};
             QTextBoundaryFinder graphemes(QTextBoundaryFinder::Grapheme,pick.text);int begin=0;
             for(int end=graphemes.toNextBoundary();end>=0;end=graphemes.toNextBoundary()){
-                auto middle=(line.cursorToX(line.textStart()+begin)+line.cursorToX(line.textStart()+end))/2+cell.x();
+                auto middle=(line.cursorToX(line.textStart()+begin)+line.cursorToX(line.textStart()+end))/2+origin.x();
                 for(int k=begin;k<end;++k)pick.chars<<qMakePair(k,float((middle-rect.x())/rect.width()));
                 begin=end;
             }

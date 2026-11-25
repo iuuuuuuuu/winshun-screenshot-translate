@@ -279,7 +279,7 @@ def main():
         if "--ocr-image" in sys.argv:
             source=Path(sys.argv[sys.argv.index("--ocr-image")+1]).resolve()
             options=[]
-            for key in ("--ocr-scale","--ocr-points"):
+            for key in ("--ocr-scale","--ocr-points","--ocr-preview"):
                 if key in sys.argv:options.extend([key,sys.argv[sys.argv.index(key)+1]])
             launch(build/"native_tests.exe",["--ocr-image",str(source),*options],data,out)
             print((out/"stdout.jsonl").read_text(encoding="utf-8"))
