@@ -102,7 +102,7 @@ Window {
                 }
             }
             ListScrollBar { parent: resultCard; anchors.top: translationScroll.top; anchors.bottom: translationScroll.bottom; anchors.right: parent.right; flickable: backend.state.sentenceMode ? sentences : translationScroll }
-            Text { id: providerLabel; x: 16; anchors.bottom: parent.bottom; anchors.bottomMargin: 12; width: parent.width-32; elide: Text.ElideRight; text: backend.state.provider || ""; color: backend.state.providerFallback ? Theme.caution : Theme.subtext; font.pixelSize: 11
+            Text { id: providerLabel; x: 16; anchors.bottom: parent.bottom; anchors.bottomMargin: 12; width: parent.width-32; elide: Text.ElideRight; text: backend.state.provider || ""; color: Theme.subtext; font.pixelSize: 11
                 HoverHandler { id: providerHover }
                 HoverTip { target: providerHover.hovered ? providerLabel : null; text: backend.state.providerNote || "" }
             }
@@ -186,7 +186,7 @@ Window {
             TextEdit { id: definition; objectName: "panel-definition"; width: parent.width; height: Math.max(definitionScroll.height,contentHeight); readOnly: true; selectByMouse: true; wrapMode: TextEdit.Wrap; textFormat: TextEdit.PlainText; color: Theme.text; font.pixelSize: 15; text: backend.state.definition || backend.state.definitionStatus || panel.t("词语显示词义与用法；句子可由已配置的 AI 渠道解释。","Words show meanings and usage; configured AI services can explain sentences.") }
         }
         ListScrollBar { parent: definitions; anchors.top: definitionScroll.top; anchors.bottom: definitionScroll.bottom; anchors.right: parent.right; flickable: definitionScroll }
-        Text { x: 16; anchors.bottom: parent.bottom; anchors.bottomMargin: 7; width: parent.width-32; elide: Text.ElideRight; text: backend.state.definitionProvider || ""; color: backend.state.definitionFallback ? Theme.caution : Theme.subtext; font.pixelSize: 11 }
+        Text { x: 16; anchors.bottom: parent.bottom; anchors.bottomMargin: 7; width: parent.width-32; elide: Text.ElideRight; text: backend.state.definitionProvider || ""; color: Theme.subtext; font.pixelSize: 11 }
     }
     Item {
         id: footer; x: 22; anchors.bottom: parent.bottom; anchors.bottomMargin: 14; width: parent.width-44; height: 38

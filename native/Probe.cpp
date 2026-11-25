@@ -197,10 +197,13 @@ void Probe::run(App& app,const QJsonObject& params)
             auto meaning=word->findChild<QQuickItem*>("word-meaning");
             auto translationScroll=word->findChild<QQuickItem*>("word-scroll");
             auto toggle=word->findChild<QQuickItem*>("word-source-toggle");
+            check(!toggle->isVisible(),"short source has no expand control");
+            app.m_wordBackend.update({{"sourceText","First line\nSecond line\nThird line"}});pump(180);
+            check(preview->property("lineCount").toInt()==3&&!toggle->isVisible(),"exactly three source lines have no expand control");
             const auto longText=QString("This is selected source text. Click it to expand and edit.\n").repeated(50);
             const auto translation=QString("这里优先显示译文。原文默认三行，点击展开后可编辑。\n").repeated(40);
             app.m_wordSource=longText;app.m_wordBackend.update({{"sourceText",longText},{"translatedText",translation}});pump(250);
-            check(!word->property("sourceExpanded").toBool()&&preview->property("lineCount").toInt()==3&&preview->property("truncated").toBool(),"source preview is three lines with ellipsis");
+            check(!word->property("sourceExpanded").toBool()&&preview->property("lineCount").toInt()==3&&preview->property("truncated").toBool()&&toggle->isVisible(),"long source preview is three lines with ellipsis and expand control");
             check(meaning->property("text").toString()==translation&&!source->isVisible(),"full translation retained beside collapsed source");
             word->grabWindow().save(out+"/word-collapsed.png");
             click(word,preview);pump(180);
@@ -212,8 +215,10 @@ void Probe::run(App& app,const QJsonObject& params)
             check(sourceScroll->height()<=180&&translationScroll->height()>sourceScroll->height(),"translation retains more space than expanded source");
             word->grabWindow().save(out+"/word-expanded.png");click(word,toggle);pump(180);
             check(!word->property("sourceExpanded").toBool()&&sourceScroll->property("contentY").toDouble()==0,"fixed collapse button folds and resets source scrolling");
-            click(word,preview);typeDraft(word,"Settings");click(word,toggle);
-            check(until([&]{return !app.m_wordBackend.values["loading"].toBool()&&app.m_wordSource=="Settings";}),"collapsing saves edited source and translates");pump(180);
+            click(word,preview);typeDraft(word,"Settings");pump(180);
+            check(!toggle->isVisible()&&source->hasActiveFocus(),"shortened source keeps editing without a collapse control");
+            key(word,Qt::Key_Return);
+            check(until([&]{return !app.m_wordBackend.values["loading"].toBool()&&app.m_wordSource=="Settings";}),"short source still submits and translates");pump(180);
             const auto oldTranslation=app.m_wordBackend.values["translatedText"].toString();
             click(word,word->findChild<QQuickItem*>("word-provider-button"));pump(50);
             auto menu=word->findChild<QQuickWindow*>("word-provider-menu");
@@ -1310,12 +1315,12 @@ void Probe::run(App& app,const QJsonObject& params)
             check(until([&]{return !app.m_wordBackend.values.value("loading").toBool();}),"fallback word result complete");
             auto label=app.m_word.window->findChild<QQuickItem*>("word-provider");
             check(label&&label->isVisible()&&label->property("text").toString()=="渠道：Google · 已降级","every word mode displays actual fallback provider");
-            check(label->property("color").value<QColor>()==QColor("#9D5D00"),"fallback word service uses caution color");
+            check(label->property("color").value<QColor>()==QColor("#666666"),"fallback word service uses normal text color");
             app.m_word.window->grabWindow().save(out+"/provider-"+mode+".png");
             hoverProvider(app.m_word,"word-provider","provider-"+mode);
             if(mode=="clip"){
                 app.appearance({{"theme","dark"}});pump(30);
-                check(label->property("color").value<QColor>()==QColor("#FCE100"),"fallback color follows dark theme");
+                check(label->property("color").value<QColor>()==QColor("#B8B8B8"),"fallback uses normal dark theme text color");
                 app.m_word.window->grabWindow().save(out+"/provider-clip-dark.png");
                 app.appearance({{"theme","light"}});
             }
@@ -1330,11 +1335,11 @@ void Probe::run(App& app,const QJsonObject& params)
         app.translatePin("en","zh",{"Hello + 100%"});
         check(until([&]{return !app.m_busy;}),"fallback screenshot result complete");
         check(app.m_bar.window->findChild<QQuickItem*>("toolbar-provider")->property("text").toString()=="渠道：Google · 已降级","screenshot displays actual fallback provider");
-        check(app.m_bar.window->findChild<QQuickItem*>("toolbar-provider")->property("color").value<QColor>()==QColor("#9D5D00"),"screenshot fallback color");
+        check(app.m_bar.window->findChild<QQuickItem*>("toolbar-provider")->property("color").value<QColor>()==QColor("#666666"),"screenshot fallback uses normal text color");
         app.m_bar.window->grabWindow().save(out+"/provider-toolbar.png");
         hoverProvider(app.m_bar,"toolbar-provider","provider-toolbar");
         app.pinAction("text",{});pump(30);
-        check(app.m_text.window->findChild<QQuickItem*>("text-provider")->property("color").value<QColor>()==QColor("#9D5D00"),"full translation fallback color");
+        check(app.m_text.window->findChild<QQuickItem*>("text-provider")->property("color").value<QColor>()==QColor("#666666"),"full translation fallback uses normal text color");
         hoverProvider(app.m_text,"text-provider","provider-text");
         auto queryRows=app.results(app.m_data,"clip");
         check(queryRows.first().toObject().value("subtitle").toString().contains("渠道：Google · 已降级"),"keyword clipboard result displays actual fallback provider");

@@ -223,7 +223,7 @@ AdaptiveWindow {
                 anchors.fill: parent; cursorShape: Qt.IBeamCursor
                 onClicked: wordWindow.focusEditor()
                 Accessible.role: Accessible.Button
-                Accessible.name: backend.state.chinese ? "展开并编辑原文" : "Expand and edit source"
+                Accessible.name: backend.state.chinese ? (preview.truncated ? "展开并编辑原文" : "编辑原文") : (preview.truncated ? "Expand and edit source" : "Edit source")
             }
         }
         Flickable {
@@ -262,13 +262,15 @@ AdaptiveWindow {
         ListScrollBar { flickable: sourceScroll; visible: wordWindow.sourceExpanded && sourceScroll.contentHeight > sourceScroll.height; anchors.right: sourceScroll.right; anchors.top: sourceScroll.top; anchors.bottom: sourceScroll.bottom }
         // Outside both scroll views: always reachable, even at the end of long text.
         ToolButton {
+            id: sourceToggle
             objectName: "word-source-toggle"; anchors.right: parent.right; y: -3; width: 26; height: 26
+            visible: preview.truncated
             glyph: wordWindow.sourceExpanded ? "\uE70E" : "\uE70D"
             tip: backend.state.chinese ? (wordWindow.sourceExpanded ? "收起原文" : "展开并编辑原文") : (wordWindow.sourceExpanded ? "Collapse source" : "Expand and edit source")
             onClicked: wordWindow.sourceExpanded ? wordWindow.collapseSource() : wordWindow.focusEditor()
         }
         ToolButton {
-            objectName: "word-restore"; anchors.right: parent.right; anchors.rightMargin: 28; y: -3; width: 26; height: 26
+            objectName: "word-restore"; anchors.right: parent.right; anchors.rightMargin: sourceToggle.visible ? 28 : 0; y: -3; width: 26; height: 26
             glyph: "\uE7A7"; visible: wordWindow.sourceExpanded && wordWindow.sourceDirty
             opacity: sourceHover.hovered || restoreHover.hovered ? (enabled ? 1 : 0.45) : 0
             keyboardActivation: false; HoverHandler { id: restoreHover; blocking: false }
@@ -332,7 +334,7 @@ AdaptiveWindow {
                 : wordWindow.switchError ? (backend.state.chinese ? "切换失败 · " : "Switch failed · ") + backend.state.providerChoiceLabel
                 : backend.state.provider || backend.state.providerChoiceLabel || (backend.state.chinese ? "选择翻译渠道" : "Choose service")
             textFormat: Text.PlainText; elide: Text.ElideRight; font.pixelSize: 12
-            color: wordWindow.switchError ? Theme.danger : backend.state.providerFallback ? Theme.caution : Theme.subtext
+            color: wordWindow.switchError ? Theme.danger : Theme.subtext
             HoverHandler { id: serviceHover }
         }
         Text { objectName: "word-provider-progress"; x: 8; y: 27; width: parent.width - 16; height: 18; visible: wordWindow.switchingProvider || wordWindow.switchError

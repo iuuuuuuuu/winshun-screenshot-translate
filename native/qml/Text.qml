@@ -23,7 +23,7 @@ AdaptiveWindow {
         anchors.left: heading.right; anchors.leftMargin: 16; anchors.verticalCenter: heading.verticalCenter
         anchors.right: parent.right; anchors.rightMargin: 82; elide: Text.ElideRight
         text: backend.state.provider || ""; font.pixelSize: 12
-        color: backend.state.providerFallback ? Theme.caution : Theme.subtext
+        color: Theme.subtext
         HoverHandler { id: serviceHover }
         ServiceTip {
             objectName: "provider-tip"

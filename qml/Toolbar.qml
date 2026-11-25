@@ -86,7 +86,7 @@ Window {
                 anchors.verticalCenter: parent.verticalCenter
                 objectName: "toolbar-provider"
                 text: backend.state.provider
-                color: backend.state.providerFallback ? Theme.caution : Theme.subtext; font.pixelSize: 11
+                color: Theme.subtext; font.pixelSize: 11
                 width: implicitWidth
                 HoverHandler { id: serviceHover }
                 ServiceTip {
