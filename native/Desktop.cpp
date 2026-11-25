@@ -774,19 +774,20 @@ Selection selectionAt(POINT point,HWND target)
                     auto selected=QString::fromWCharArray(text.data(),int(result)).mid(start,end-start).trimmed();
                     if(!selected.isEmpty()){
                         RECT client{};GetClientRect(focus,&client);POINT origin{};ClientToScreen(focus,&origin);
-                        QRect area(origin.x,origin.y,client.right,client.bottom);
+                        QRect area(origin.x,origin.y,client.right,client.bottom),endArea;
                         if(edit&&send(EM_POSFROMCHAR,start,0)){
                             POINT first{GET_X_LPARAM(result),GET_Y_LPARAM(result)};
                             if(send(EM_POSFROMCHAR,end-1,0)){
                                 POINT last{GET_X_LPARAM(result),GET_Y_LPARAM(result)};
                                 int h=std::max(16,int(GetDpiForWindow(focus)*20/96));
                                 if(first.x>=0&&first.y>=0&&last.x>=0&&last.y>=0){
+                                    endArea=QRect(origin.x+last.x,origin.y+last.y,h,h);
                                     area=first.y==last.y?QRect(origin.x+first.x,origin.y+first.y,std::max(h,int(last.x-first.x)+h),h):
                                         QRect(origin.x,origin.y+first.y,client.right,last.y-first.y+h);
                                 }
                             }
                         }
-                        return {selected,area};
+                        return {selected,area,endArea};
                     }
                 }
             }
@@ -808,7 +809,7 @@ Selection selectionAt(POINT point,HWND target)
             ComPtr<IUIAutomationTextPattern> pattern;ComPtr<IUIAutomationTextRangeArray> ranges;
             if(SUCCEEDED(element->GetCurrentPatternAs(UIA_TextPatternId,IID_PPV_ARGS(&pattern)))&&pattern&&
                 SUCCEEDED(pattern->GetSelection(&ranges))&&ranges){
-                int length=0;ranges->get_Length(&length);QStringList pieces;QRectF bounds;
+                int length=0;ranges->get_Length(&length);QStringList pieces;QRectF bounds,endArea;
                 for(int i=0;i<std::min(length,32);++i){
                     ComPtr<IUIAutomationTextRange> range;BSTR text=nullptr;
                     if(FAILED(ranges->GetElement(i,&range))||!range)continue;
@@ -822,13 +823,13 @@ Selection selectionAt(POINT point,HWND target)
                             if(SUCCEEDED(SafeArrayAccessData(rectangles,reinterpret_cast<void**>(&data)))){
                                 for(LONG j=0;j+3<=upper-lower;j+=4){
                                     QRectF b(data[j],data[j+1],data[j+2],data[j+3]);
-                                    if(!b.isEmpty())bounds=bounds.isEmpty()?b:bounds.united(b);
+                                    if(!b.isEmpty()){bounds=bounds.isEmpty()?b:bounds.united(b);endArea=b;}
                                 }SafeArrayUnaccessData(rectangles);
                             }SafeArrayDestroy(rectangles);
                         }
                     }
                 }
-                if(!pieces.isEmpty())return {pieces.join('\n').trimmed(),bounds.toAlignedRect()};
+                if(!pieces.isEmpty())return {pieces.join('\n').trimmed(),bounds.toAlignedRect(),endArea.toAlignedRect()};
             }
             return {};
     };
@@ -937,8 +938,9 @@ Selection isolatedSelection(POINT point,HWND target,Cancel cancel,int timeoutMs)
     if(response.value("error").toString()=="target-access-denied")throw std::runtime_error(restrictedSelectionMessage);
     if(worker.exitStatus()!=QProcess::NormalExit||worker.exitCode()!=0||parse.error!=QJsonParseError::NoError||
         !response.contains("text")||!response.value("error").toString().isEmpty())throw std::runtime_error("无法读取选区，请重试或使用鼠标 OCR");
-    auto box=response.value("area").toArray();
-    return {response.value("text").toString(),box.size()==4?QRect(box[0].toInt(),box[1].toInt(),box[2].toInt(),box[3].toInt()):QRect()};
+    auto box=response.value("area").toArray(),end=response.value("endArea").toArray();
+    return {response.value("text").toString(),box.size()==4?QRect(box[0].toInt(),box[1].toInt(),box[2].toInt(),box[3].toInt()):QRect(),
+        end.size()==4?QRect(end[0].toInt(),end[1].toInt(),end[2].toInt(),end[3].toInt()):QRect()};
 }
 int selectionWorker()
 {
@@ -953,7 +955,8 @@ int selectionWorker()
         // Try the actual read first; report access restrictions only on failure.
         auto problem=result.text.isEmpty()?selectionAccessProblem(target):QString();
         if(!problem.isEmpty())response={{"error",problem}};
-        else response={{"text",result.text},{"area",QJsonArray{result.area.x(),result.area.y(),result.area.width(),result.area.height()}}};
+        else response={{"text",result.text},{"area",QJsonArray{result.area.x(),result.area.y(),result.area.width(),result.area.height()}},
+            {"endArea",QJsonArray{result.endArea.x(),result.endArea.y(),result.endArea.width(),result.endArea.height()}}};
     }catch(...){response={{"error","read failed"}};}
     auto data=QJsonDocument(response).toJson(QJsonDocument::Compact);
     std::fwrite(data.constData(),1,size_t(data.size()),stdout);std::fflush(stdout);
@@ -1126,7 +1129,7 @@ void Selector::cancel()
     if(m_closed)return;m_closed=true;
     for(auto w:m_windows)DestroyWindow(w);m_windows.clear();m_surfaces.clear();
 }
-RawClicks::RawClicks(std::function<void(POINT,DWORD)> callback):m_callback(std::move(callback))
+RawClicks::RawClicks(std::function<void(POINT,DWORD)> callback,std::function<void(POINT,DWORD,USHORT)> observer):m_callback(std::move(callback)),m_observer(std::move(observer))
 {
     m_thread=std::thread([this]{
         m_id=GetCurrentThreadId();MSG msg{};PeekMessageW(&msg,nullptr,0,0,PM_NOREMOVE);
@@ -1146,8 +1149,12 @@ LRESULT CALLBACK RawClicks::proc(HWND hwnd,UINT msg,WPARAM w,LPARAM l)
     if(self&&msg==WM_INPUT){
         RAWINPUT raw{};UINT size=sizeof raw;
         if(self->m_read.load()(reinterpret_cast<HRAWINPUT>(l),RID_INPUT,&raw,&size,sizeof(RAWINPUTHEADER))!=UINT(-1)&&raw.header.dwType==RIM_TYPEMOUSE&&
-            (raw.data.mouse.usButtonFlags&(RI_MOUSE_LEFT_BUTTON_DOWN|RI_MOUSE_RIGHT_BUTTON_DOWN|RI_MOUSE_MIDDLE_BUTTON_DOWN))){
-            POINT point{};if(self->m_cursor.load()(&point))self->m_callback(point,DWORD(GetMessageTime()));
+            raw.data.mouse.usButtonFlags){
+            POINT point{};if(self->m_cursor.load()(&point)){
+                auto flags=raw.data.mouse.usButtonFlags;auto time=DWORD(GetMessageTime());
+                if(flags&(RI_MOUSE_LEFT_BUTTON_DOWN|RI_MOUSE_RIGHT_BUTTON_DOWN|RI_MOUSE_MIDDLE_BUTTON_DOWN))self->m_callback(point,time);
+                if(self->m_observer)self->m_observer(point,time,flags);
+            }
         }
     }return DefWindowProcW(hwnd,msg,w,l);
 }

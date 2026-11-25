@@ -1,8 +1,14 @@
-# 截图翻译 0.4.19
+# 截图翻译 0.4.21
 
 WinShun 原生翻译插件，支持截图翻译、剪贴板翻译、划词翻译和鼠标指词 OCR。**不需要安装 Python、PySide6 或 Qt。**
 
 插件 ID：`iuuuuuuuu.screenshot-translate`。本版使用 C++ / Qt Quick 和 Windows OCR，通过官方契约复用 WinShun 的 Qt 6.12，安装包不再包含 Qt DLL、平台插件或 QML 运行库。社区原生插件按官方规则标记为**未审核**；源码公开和文件校验不等于代码安全审核。
+
+## 划词图标与翻译速度
+
+用鼠标拖选文字、双击选词，或按住 Shift 点击扩展选区后，选区末尾会出现一个小“译”图标。点击才发送翻译请求；图标不会抢走原软件的焦点或修改剪贴板。滚动、点击其他位置、切换软件或等待 15 秒后隐藏。设置首页的“划词翻译图标”开关在保存后生效。键盘选区仍可用划词热键；目标软件需要提供可读取的选区接口。
+
+Google 和 Edge 默认入口均支持一次提交多个片段。同一渠道限制发送频率，同时请求相同内容时复用结果；近期译文保存在有容量上限的内存缓存中。HTTP 429 按服务器 Retry-After 暂停；未给时间时从 15 秒开始加倍，最多 30 分钟。暂停期间继续自动降级，额度用完和认证失败保留长时间冷却。
 
 ## 本地 OCR 优化
 
@@ -14,17 +20,17 @@ WinShun 原生翻译插件，支持截图翻译、剪贴板翻译、划词翻译
 
 开启已有的自动降级后，手动模式按渠道、模型顺序尝试；自动权重模式按近期成功率和响应速度选择。每个 AI 渠道和模型分别记录失败冷却与恢复，禁用项不会发出请求。关闭自动降级时，只请求首个启用的模型。已有单组 AI 配置会继续使用，首次进入配置页时呈现为默认渠道；所有渠道密钥仍由 Windows 加密保存。
 
-使用关键词 **`jfy`** 或 **`翻译面板`**，也可以点击渠道设置中的 **打开独立翻译面板**。左侧输入或粘贴原文，右侧显示译文；停止输入约 700 毫秒后自动翻译，`Ctrl+Enter` 可立即提交。可以切换源语言、目标语言，或使用自动检测与中英互译。关闭自动翻译后用翻译按钮提交。输入法组词期间暂停，修改内容或关闭窗口会取消旧请求。
+使用关键词 **`jfy`** 或 **`翻译面板`**，也可以点击渠道设置中的 **打开独立翻译面板**。左侧输入或粘贴原文，右侧显示译文；停止输入约 350 毫秒后自动翻译，`Ctrl+Enter` 可立即提交。可以切换源语言、目标语言，或使用自动检测与中英互译。关闭自动翻译后用翻译按钮提交。输入法组词期间暂停，修改内容或关闭窗口会取消旧请求。
 
-下方释义与译文分别显示来源。英文词语优先使用已下载且启用的 ECDICT；已配置的 AI 渠道可解释词语、短语和句子。每次最多输入 10,000 个字符，长文本在正文内滚动。面板使用插件当前的主渠道、代理与降级设置。
+下方释义与译文分别显示来源。英文词语优先使用已下载且启用的 ECDICT；已配置的 AI 渠道可解释词语、短语和句子。翻译不限制整篇长度，按句子分批处理并逐步显示；可切换逐句对照。查词模式另外限制为 10,000 字符和 60 个不同单词。面板使用插件当前的主渠道、代理与降级设置。
 
 ## 安装与升级
 
 需要 **Windows 10/11 x64、WinShun 0.23.0 或更新版本**，以及系统已安装的 OCR 语言包。
 
-1. 从 [0.4.10 发布页](https://github.com/iuuuuuuuu/winshun-screenshot-translate/releases/tag/v0.4.10) 下载 `iuuuuuuuu.screenshot-translate-0.4.10.wsplugin`。
+1. 从 [0.4.21 发布页](https://github.com/iuuuuuuuu/winshun-screenshot-translate/releases/tag/v0.4.21) 下载 `iuuuuuuuu.screenshot-translate-0.4.21.wsplugin`。
 2. 打开 WinShun 设置 → 插件 → 从压缩包安装，选择这个文件，查看并允许所需权限。
-3. 更新后检查插件卡片版本为 **0.4.10**。新版通过检查后由官方插件库自动同步；安装和每次更新仍需用户确认。
+3. 更新后检查插件卡片版本为 **0.4.21**。新版通过检查后由官方插件库自动同步；安装和每次更新仍需用户确认。
 
 从 0.3.3 / 0.4.0 升级继续使用原有渠道、密钥、代理、热键及偏好；不需要重新安装 Python 依赖。原先明确清空或自定义的热键优先于新版默认值，请在插件设置中检查。不要同时启用早期本地 `winshun.screenshot-translate` 与当前社区版。
 
@@ -95,8 +101,8 @@ WinShun 0.23.0 起，共享 Qt 支持 `elevated`。本版声明 `runtime.qt: "ho
 | 渠道 | 默认地址 | 配置 |
 |---|---|---|
 | MyMemory | `https://api.mymemory.translated.net/get` | 无密钥 |
-| Google | `https://translate.googleapis.com/translate_a/single` | 无密钥，多客户端重试 |
-| Edge / Bing | `https://api-edge.cognitive.microsofttranslator.com/translate`；Bing 备用路径 | 无密钥，认证入口可能变化 |
+| Google | `https://translate-pa.googleapis.com/v1/translateHtml` | 无需用户密钥，批量翻译 |
+| Edge | `https://edge.microsoft.com/translate/translatetext` | 无需用户密钥，直接批量翻译 |
 | translate.js / Zvo | `https://api.translate.zvo.cn/translate.json` | 免费入口无需密钥 |
 | 微软 Azure | `https://api.cognitive.microsofttranslator.com` | API 密钥、区域 |
 | DeepL | `https://api-free.deepl.com` | API 密钥 |

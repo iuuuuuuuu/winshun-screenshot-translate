@@ -19,6 +19,7 @@ import threading
 import time
 import urllib.parse
 import uuid
+from email.utils import formatdate
 import msvcrt
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -91,6 +92,25 @@ class Server(http.server.BaseHTTPRequestHandler):
         raw = self.rfile.read(int(self.headers.get("Content-Length", 0)))
         body = (urllib.parse.parse_qs(raw.decode()) if "urlencoded" in self.headers.get("Content-Type", "")
                 else json.loads(raw) if raw else {})
+        if path.startswith('/batch-rate'):
+            self.send_response(429)
+            self.send_header('Retry-After', formatdate(time.time()+120, usegmt=True) if 'date' in path else '120')
+            self.end_headers();return
+        if path.startswith('/batch-'):
+            time.sleep(.35)
+            assert self.command == 'POST'
+            if path.endswith('/translateHtml'):
+                assert self.headers.get('Content-Type') == 'application/json+protobuf'
+                assert self.headers.get('X-Goog-API-Key')
+                assert body[1] == 'wt_lib' and body[0][1:] == ['en','zh-CN']
+                result = [['译：'+text for text in body[0][0]]]
+            else:
+                assert path.endswith('/translatetext') and query.get('to') == ['zh-Hans']
+                assert query.get('isEnterpriseClient') == ['false']
+                assert not self.headers.get('Authorization')
+                assert all(isinstance(text,str) for text in body)
+                result = [{'translations':[{'text':'译：'+text}]} for text in body]
+            self.send_response(200);self.end_headers();self.wfile.write(json.dumps(result).encode());return
         if path in ("/zvo-speed","/google-speed"):
             time.sleep(.16)
         if path == "/mymemory-wave":
@@ -294,6 +314,9 @@ def main():
             assert counts.get("/zvo-cache") == 4, counts
             assert counts.get("/zvo-cache-changed") == 1, counts
             assert counts.get("/google-rate-speed") == 1, counts
+            for path in ('/batch-google/translateHtml','/batch-edge/translatetext','/batch-cancel/translateHtml',
+                         '/batch-rate/translatetext','/batch-rate-date/translatetext'):
+                assert counts.get(path) == 1, counts
             assert counts.get("/zvo-emergency") == 3, counts  # failure, one recovery, new-text failure; cache still works
             assert counts.get("/mymemory-temporary") == 2 and counts.get("/mymemory-quota") == 1, counts
             assert counts.get("/mymemory-wave") == 16 and counts.get("/google-client") == 1, counts

@@ -92,6 +92,7 @@ App::App(ws::captureplugin::Protocol& protocol,QString appDir,QJsonObject initia
     QString dir=qEnvironmentVariable("WS_DATA_DIR",initial.value("dataDir").toString());
     if(dir.isEmpty())dir=qEnvironmentVariable("LOCALAPPDATA")+"/WinShun/plugins/iuuuuuuuu.screenshot-translate.data";
     m_services=std::make_shared<Services>(dir);
+    m_settings["selectionIconEnabled"]=m_services->routing().value("selectionIconEnabled").toBool(true);
     m_services->migrateAi(m_settings);
     m_settings["provider"]=canonicalProvider(m_settings.value("provider").toString());
     m_pinBackend.update({{"comparison",false},{"fullText",false},{"ready",false},{"loading",false},{"status",""},
@@ -115,10 +116,20 @@ App::App(ws::captureplugin::Protocol& protocol,QString appDir,QJsonObject initia
     QObject::connect(&m_panelBackend,&Backend::invoked,this,&App::panelAction);
     m_followSelection.setInterval(450);
     QObject::connect(&m_followSelection,&QTimer::timeout,this,[this]{readSelection(true);});
+    m_iconDelay.setSingleShot(true);m_iconDelay.setInterval(160);
+    QObject::connect(&m_iconDelay,&QTimer::timeout,this,&App::readIconSelection);
+    m_iconWatch.setInterval(180);
+    QObject::connect(&m_iconWatch,&QTimer::timeout,this,[this]{
+        if((GetAsyncKeyState(VK_ESCAPE)&0x8000)||!IsWindow(m_iconTarget)||
+            GetAncestor(m_foreground(),GA_ROOT)!=GetAncestor(m_iconTarget,GA_ROOT)||
+            DWORD(GetTickCount()-m_iconShown)>15000)hideSelectionIcon();
+    });
+    QObject::connect(&m_iconBackend,&Backend::invoked,this,[this](const QString& action,const QVariant&){if(action=="translate")translateIconSelection();});
     m_idleTimer.setSingleShot(true);
     QObject::connect(&m_idleTimer,&QTimer::timeout,this,&App::reclaimIdle);
     used();
     registerKeys();
+    updateSelectionMonitor();
 }
 void App::used()
 {
@@ -145,7 +156,7 @@ void App::reclaimIdle()
     if(tick-m_idleSince<20000){m_idleTimer.start(int(20000-(tick-m_idleSince)));return;}
     if(!m_idleReleased){
         m_idleReleased=true;
-        dispose(m_word);dispose(m_bar);dispose(m_status);dispose(m_text);dispose(m_menu);dispose(m_config);dispose(m_panel);
+        dispose(m_word);dispose(m_bar);dispose(m_status);dispose(m_text);dispose(m_menu);dispose(m_config);dispose(m_panel);dispose(m_icon);
         m_original={};m_translated={};m_blocks.clear();m_data={};m_drafts={};m_tests.clear();m_testCancels.clear();
         m_pinBackend.update({{"translatedText",""},{"sourceText",""},{"provider",""},{"providerNote",""}});
         m_wordBackend.update({{"sourceText",""},{"translatedText",""},{"provider",""},{"providerNote",""},{"status",""}});
@@ -189,6 +200,7 @@ void App::defaults(const QJsonObject& settings)
         {"wordOcrHotkey","Alt+Shift+O"}};
     for(auto it=settings.begin();it!=settings.end();++it)m_settings[it.key()]=it.value();
     if(m_services){m_services->migrateAi(m_settings);m_settings["provider"]=canonicalProvider(m_settings.value("provider").toString());}
+    if(m_services)m_settings["selectionIconEnabled"]=m_services->routing().value("selectionIconEnabled").toBool(true);
 }
 void App::appearance(const QJsonObject& params)
 {
@@ -375,7 +387,7 @@ void App::dispatch(const QJsonValue& id,const QString& method,const QJsonObject&
             }m_protocol.respond(id,QJsonObject{{"effects",effects}});
         }else if(method=="showSettings"){showSettings();if(hasId(id))m_protocol.respond(id,QJsonObject());}
         else if(method=="settingsChanged"){
-            defaults(params.value("settings").toObject());registerKeys();
+            defaults(params.value("settings").toObject());registerKeys();updateSelectionMonitor();
             if(m_pin){render();m_pinOpened=GetTickCount();}
         }else if(method=="appearance")appearance(params);
         else if(method=="shutdown"){
@@ -391,7 +403,7 @@ void App::shot(const QString& kind,int delay)
 {
     if(m_busy)return;
     used();
-    closePin();m_busy=true;HWND foreground=GetForegroundWindow();auto epoch=++m_epoch;
+    hideSelectionIcon();closePin();m_busy=true;HWND foreground=GetForegroundWindow();auto epoch=++m_epoch;
     QTimer::singleShot(delay,this,[this,epoch,kind,foreground]{
         if(epoch!=m_epoch)return;
         try{
@@ -471,7 +483,75 @@ void App::ensureRaw()
             if(pid==GetCurrentProcessId())return;
             if(m_pin&&m_settings.value("closeOnOutsideClick").toBool(true)&&LONG(timestamp-m_pinOpened)>=150)closePin();
         },Qt::QueuedConnection);
+    },[this](POINT point,DWORD timestamp,USHORT flags){
+        QMetaObject::invokeMethod(this,[this,point,timestamp,flags]{selectionGesture(point,timestamp,flags);},Qt::QueuedConnection);
     });
+}
+void App::updateSelectionMonitor()
+{
+    if(m_settings.value("selectionIconEnabled").toBool(true))ensureRaw();
+    else{hideSelectionIcon();m_iconPressed=false;if(!m_pin&&(!m_word.window||!m_word.window->isVisible()))m_raw.reset();}
+}
+void App::hideSelectionIcon()
+{
+    ++m_iconEpoch;if(m_iconCancel)m_iconCancel->store(true);
+    m_iconDelay.stop();m_iconWatch.stop();m_iconSelection={};
+    if(m_icon.window)m_icon.window->hide();
+}
+void App::selectionGesture(POINT point,DWORD timestamp,USHORT flags)
+{
+    if(!m_settings.value("selectionIconEnabled").toBool(true))return;
+    DWORD pid=0;GetWindowThreadProcessId(WindowFromPoint(point),&pid);
+    // Clicking the passive icon must keep both the source selection and the
+    // captured text alive until QML delivers the click.
+    if(pid==GetCurrentProcessId())return;
+    if(flags&(RI_MOUSE_WHEEL|RI_MOUSE_HWHEEL|RI_MOUSE_RIGHT_BUTTON_DOWN|RI_MOUSE_MIDDLE_BUTTON_DOWN)){
+        hideSelectionIcon();m_iconPressed=false;return;
+    }
+    const QPoint at(point.x,point.y);
+    if(flags&RI_MOUSE_LEFT_BUTTON_DOWN){
+        hideSelectionIcon();m_iconDown=at;m_iconPressed=true;
+        m_iconDouble=DWORD(timestamp-m_iconClickTime)<=GetDoubleClickTime()&&(at-m_iconPreviousClick).manhattanLength()<8;
+        m_iconClickTime=timestamp;m_iconPreviousClick=at;
+    }
+    if(flags&RI_MOUSE_LEFT_BUTTON_UP){
+        if(!m_iconPressed)return;m_iconPressed=false;
+        if(!m_iconDouble&&(at-m_iconDown).manhattanLength()<4&&!(GetAsyncKeyState(VK_SHIFT)&0x8000))return;
+        if(m_selector||m_wordPinned||m_wordEditing)return;
+        m_iconPoint=at;m_iconTarget=selectionTarget();
+        GetWindowThreadProcessId(m_iconTarget,&pid);
+        if(!m_iconTarget||pid==GetCurrentProcessId())return;
+        m_iconDelay.start();
+    }
+}
+void App::readIconSelection()
+{
+    if(!m_settings.value("selectionIconEnabled").toBool(true)||m_selector||m_wordPinned||m_wordEditing)return;
+    if(GetAncestor(m_foreground(),GA_ROOT)!=GetAncestor(m_iconTarget,GA_ROOT))return;
+    if(m_iconReading||m_selectionReading){m_iconDelay.start(100);return;}
+    m_iconReading=true;m_iconCancel=token();auto cancel=m_iconCancel;auto epoch=m_iconEpoch;
+    auto reader=m_readSelection;auto at=m_iconPoint;auto target=m_iconTarget;
+    background([reader,at,target,cancel]{return reader(POINT{at.x(),at.y()},target,cancel);},
+        [this,epoch,cancel,target](Selection selection,QString error){
+            m_iconReading=false;
+            if(cancel->load()||epoch!=m_iconEpoch||!error.isEmpty()||selection.text.trimmed().isEmpty()||
+                m_selector||m_wordPinned||m_wordEditing||
+                GetAncestor(m_foreground(),GA_ROOT)!=GetAncestor(target,GA_ROOT))return;
+            m_iconSelection=selection;
+            auto point=selection.endArea.isEmpty()?m_iconPoint:selection.endArea.bottomRight();
+            if(!m_icon.window)m_icon=view("qrc:/ui/qml/SelectionIcon.qml",&m_iconBackend);
+            auto screen=screenAt(point);m_icon.window->setScreen(screen);
+            m_icon.window->setPosition(boundedPosition(m_icon.window,logical(point,screen)+QPoint(5,5)));
+            m_iconBackend.update({{"chinese",m_chinese},{"dark",m_dark}});
+            m_iconShown=GetTickCount();m_icon.window->show();m_iconWatch.start();used();
+        });
+}
+void App::translateIconSelection()
+{
+    if(m_iconSelection.text.trimmed().isEmpty())return;
+    auto selection=m_iconSelection;auto point=m_iconPoint;auto target=m_iconTarget;
+    hideSelectionIcon();m_selectionTarget=target;
+    openWord("jsel",point,selection.area);translateWord(selection.text);
 }
 void App::closePin()
 {
@@ -479,7 +559,7 @@ void App::closePin()
     if(m_bar.window)m_bar.window->hide();if(m_status.window)m_status.window->hide();if(m_text.window)m_text.window->hide();if(m_menu.window)m_menu.window->hide();
     if(m_pin)m_pin->setShown(false);
     if(m_cancel)m_cancel->store(true);++m_epoch;m_busy=false;m_position.stop();
-    if(!m_word.window||!m_word.window->isVisible())m_raw.reset();
+    if(!m_settings.value("selectionIconEnabled").toBool(true)&&(!m_word.window||!m_word.window->isVisible()))m_raw.reset();
     m_pin.reset();m_selector.reset();dispose(m_bar);dispose(m_status);dispose(m_text);dispose(m_menu);
     m_original={};m_translated={};m_blocks.clear();m_data={};
 }
@@ -653,6 +733,7 @@ void App::textFlow(const QString& command,bool retry)
 }
 void App::openWord(QString mode,QPoint anchor,QRect selection)
 {
+    hideSelectionIcon();
     used();
     if(m_selectionCancel)m_selectionCancel->store(true);
     m_selectionPendingEpoch=0;
@@ -699,7 +780,7 @@ void App::closeWord()
     if(m_wordCancel)m_wordCancel->store(true);++m_wordEpoch;
     m_wordPinned=false;m_wordPlacementFrozen=false;m_followSelection.stop();m_wordSource.clear();m_lastSelection.clear();
     m_wordBackend.update({{"pinned",false},{"loading",false}});
-    if(!m_pin)m_raw.reset();
+    if(!m_pin&&!m_settings.value("selectionIconEnabled").toBool(true))m_raw.reset();
 }
 void App::editWord(bool editing)
 {
@@ -1054,6 +1135,9 @@ void App::configAction(const QString& name,const QVariant& value)
         else if(name=="cancelDictionary"){
             if(m_dictionaryCancel)m_dictionaryCancel->store(true);
         }
+        else if(name=="selectionIconEnabled"){
+            m_routingDraft["selectionIconEnabled"]=value.toBool();publishTests();
+        }
         else if(name=="routingMode"){
             if(value.toString()!="manual"&&value.toString()!="auto")return;
             m_routingDraft["mode"]=value.toString();publishTests();
@@ -1081,6 +1165,7 @@ void App::configAction(const QString& name,const QVariant& value)
             if(name=="appId")m_configBackend.update({{"endpointHint",value.toString().trimmed().isEmpty()?"https://dict.youdao.com/jsonapi":"https://openapi.youdao.com/api"}});
         }else if(name=="save"){
             m_services->save(m_drafts,m_routingDraft);m_cache.clear();
+            m_settings["selectionIconEnabled"]=m_services->routing().value("selectionIconEnabled").toBool(true);updateSelectionMonitor();
             publishTests();
             const auto saved=m_chinese?QString("配置已保存"):QString("Settings saved");
             m_configBackend.update({{"message",saved}});
@@ -1173,6 +1258,7 @@ void App::publishTests()
     }
     m_configBackend.update({{"aiTests",aiTests},{"testResults",rows},{"testing",m_testRunning>0||!m_testQueue.isEmpty()},{"batch",m_batch},
         {"queue",queue},{"routingMode",m_routingDraft.value("mode").toString("manual")},{"readyCount",ready},{"coolingCount",cooling},{"unconfiguredCount",unconfigured},
+        {"selectionIconEnabled",m_routingDraft.value("selectionIconEnabled").toBool(true)},
         {"fallbackEnabled",m_settings.value("fallbackEnabled").toBool(true)},{"recoveryMinutes",std::clamp(m_settings.value("fallbackRecoveryMinutes").toDouble(60),1.0,10080.0)},
         {"message",m_batch?QString("已测试 %1/%2").arg(completed).arg(total):m_tests.contains(m_configProvider)?m_tests.at(m_configProvider).value("detail").toString():QString()}});
 }

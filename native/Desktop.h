@@ -20,7 +20,7 @@ QImage capture(const QRect& area);
 QRect virtualScreen();
 QRect monitorRect(POINT point, bool work = false);
 QString selectedText();
-struct Selection { QString text; QRect area; };
+struct Selection { QString text; QRect area; QRect endArea; };
 Selection selectionAt(POINT point,HWND target=nullptr);
 HWND selectionTarget();
 Selection isolatedSelection(POINT point,HWND target,Cancel cancel,int timeoutMs=2200);
@@ -59,11 +59,12 @@ private:
 class RawClicks {
     friend class Probe;
 public:
-    explicit RawClicks(std::function<void(POINT,DWORD)> callback);
+    explicit RawClicks(std::function<void(POINT,DWORD)> callback,std::function<void(POINT,DWORD,USHORT)> observer={});
     ~RawClicks();
 private:
     static LRESULT CALLBACK proc(HWND,UINT,WPARAM,LPARAM);
     std::function<void(POINT,DWORD)> m_callback;
+    std::function<void(POINT,DWORD,USHORT)> m_observer;
     std::thread m_thread;
     std::atomic<DWORD> m_id{0};
     std::atomic<HWND> m_hwnd{nullptr};

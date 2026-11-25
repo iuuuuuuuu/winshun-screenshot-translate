@@ -37,6 +37,21 @@ namespace st {
 namespace {
 [[noreturn]] void fail(const QString& message) { throw std::runtime_error(message.toUtf8().constData()); }
 class Unsupported : public std::runtime_error { public: explicit Unsupported(const QString& text):std::runtime_error(text.toUtf8().constData()){} };
+class HttpFailure : public std::runtime_error {
+public:
+    HttpFailure(int status,const QString& header={}):std::runtime_error(QString("HTTP %1").arg(status).toStdString()) {
+        bool ok=false;double value=header.toDouble(&ok);
+        if(!ok){
+            SYSTEMTIME date{};FILETIME file{};
+            if(WinHttpTimeToSystemTime(header.toStdWString().c_str(),&date)&&SystemTimeToFileTime(&date,&file)){
+                ULARGE_INTEGER ticks{};ticks.LowPart=file.dwLowDateTime;ticks.HighPart=file.dwHighDateTime;
+                value=double(ticks.QuadPart/10000000ULL)-11644473600.0-QDateTime::currentSecsSinceEpoch();ok=true;
+            }
+        }
+        if(ok&&std::isfinite(value))retrySeconds=std::clamp(value,1.0,86400.0);
+    }
+    double retrySeconds=-1;
+};
 QJsonObject readJson(const QString& file, bool strict = false)
 {
     QFile f(file);
@@ -49,12 +64,14 @@ QJsonObject readJson(const QString& file, bool strict = false)
 double retryTime(const QJsonObject& health,double recovery)
 {
     if(health.value("failedAt").toDouble()<=0)return 0;
+    if(health.value("failureKind").toString()=="rate")return health.value("retryAt").toDouble();
     return std::max(health.value("retryAt").toDouble(),health.value("failedAt").toDouble()+recovery);
 }
 QString failureKind(const QString& error)
 {
     if(error.contains("HTTP 401")||error.contains("HTTP 403"))return "auth";
-    if(error.contains("HTTP 429")||error.contains("额度"))return "quota";
+    if(error.contains("额度"))return "quota";
+    if(error.contains("HTTP 429"))return "rate";
     if(error.contains("HTTP 4"))return "request";
     if(error.contains("超时")||error.contains("无法连接")||error.contains("无法解析"))return "network";
     return "service";
@@ -72,7 +89,7 @@ QString failureSummary(const QString& error)
 double recoveryProbeTime(const QJsonObject& health)
 {
     const auto kind=health.value("failureKind").toString();
-    if(kind=="auth"||kind=="quota"||kind=="request")return 0;
+    if(kind=="auth"||kind=="quota"||kind=="request"||kind=="rate")return 0;
     // Keep bad channels out of normal routing for a long time. Only when all
     // alternatives fail, allow one bounded probe after 1, 2, 4, then 5 minutes.
     // Version-2 health has no category; let one probe classify an old outage.
@@ -101,7 +118,7 @@ QJsonObject normalizedRouting(const QJsonObject& value)
     for(auto p:defaults)if(!order.contains(p))order<<p;
     QJsonObject adjustments;const auto stored=value.value("adjustments").toObject();
     for(auto p:providers){const int adjustment=std::clamp(stored.value(p).toInt(),-10000,10000);if(adjustment)adjustments[p]=adjustment;}
-    return {{"mode",value.value("mode").toString()=="auto"?"auto":"manual"},{"order",array(order)},{"adjustments",adjustments}};
+    return {{"mode",value.value("mode").toString()=="auto"?"auto":"manual"},{"order",array(order)},{"adjustments",adjustments},{"selectionIconEnabled",value.value("selectionIconEnabled").toBool(true)}};
 }
 QString endpoint(const QJsonObject& p)
 {
@@ -120,6 +137,7 @@ QString fingerprint(const QJsonObject& p)
         quoted << ascii;
     }
     if(!field(p,"channelId").isEmpty())quoted<<QString::fromUtf8(QJsonDocument(QJsonArray{p["channelId"]}).toJson(QJsonDocument::Compact));
+    if(field(p,"provider")=="google"||field(p,"provider")=="edge")quoted<<"\"batch-protocol-2026-11\"";
     return QCryptographicHash::hash(("[" + quoted.join(", ") + "]").toUtf8(),QCryptographicHash::Sha256).toHex();
 }
 class Http {
@@ -159,7 +177,7 @@ public:
                 headers["Content-Type"]="application/x-www-form-urlencoded";
             } else {
                 bytes=body.isArray()?QJsonDocument(body.toArray()).toJson(QJsonDocument::Compact):QJsonDocument(body.toObject()).toJson(QJsonDocument::Compact);
-                headers["Content-Type"]="application/json; charset=utf-8";
+                if(!headers.contains("Content-Type"))headers["Content-Type"]="application/json; charset=utf-8";
             }
         }
         auto response=nativeRequest(url,bytes,!body.isNull()&&!body.isUndefined(),headers,m_proxy,m_cancel,remaining);
@@ -169,14 +187,14 @@ public:
         if (response.error==ERROR_FILE_TOO_LARGE) fail("服务响应过大");
         if (!redirect.isEmpty()) {
             QUrl from(url), to=from.resolved(redirect);
-            if (to.host().endsWith("google.com") && to.path().startsWith("/sorry")) fail("HTTP 429");
+            if (to.host().endsWith("google.com") && to.path().startsWith("/sorry")) throw HttpFailure(429);
             if ((from.host()=="www.bing.com"||from.host()=="cn.bing.com") &&
                 (to.host()=="www.bing.com"||to.host()=="cn.bing.com") && to.scheme()=="https" &&
                 to.path()=="/translator" && (body.isNull()||body.isUndefined()) && ++m_redirects<=3)
                 return request(to.toString(),{},headers);
             fail("服务重定向了请求；请配置最终地址");
         }
-        if (response.status>=400) fail(QString("HTTP %1").arg(response.status));
+        if (response.status>=400) throw HttpFailure(response.status,response.retryAfter);
         if (response.error==ERROR_WINHTTP_SECURE_FAILURE) fail("HTTPS 证书验证失败；请检查系统时间或代理");
         if (response.error==ERROR_WINHTTP_NAME_NOT_RESOLVED) fail("无法解析服务地址；请检查网络或代理");
         if (response.error) fail(QString("无法连接服务；请检查网络或共用代理（%1）").arg(response.error));
@@ -507,7 +525,7 @@ QList<QJsonObject> Services::candidates(const QJsonObject& profile,const QJsonOb
         return score(a)>score(b);
     });return rows;
 }
-void Services::recordOutcome(const QJsonObject& p,bool success,qint64 elapsed,double recovery,const QString& error)
+void Services::recordOutcome(const QJsonObject& p,bool success,qint64 elapsed,double recovery,const QString& error,double retrySeconds)
 {
     QMutexLocker lock(&m_lock);const auto id=fingerprint(p);auto h=m_health.value(id).toObject();
     h["provider"]=field(p,"provider");h["samples"]=std::min(1000000,h.value("samples").toInt()+1);
@@ -521,7 +539,9 @@ void Services::recordOutcome(const QJsonObject& p,bool success,qint64 elapsed,do
         const int failures=std::min(16,h.value("consecutiveFailures").toInt()+1);
         double delay=std::min(604800.0,std::max(3600.0,recovery)*std::pow(2.0,failures-1));
         if(error.contains("HTTP 401")||error.contains("HTTP 403"))delay=std::max(delay,86400.0);
-        else if(error.contains("HTTP 429")||error.contains("额度"))delay=std::max(delay,21600.0);
+        else if(error.contains("额度"))delay=std::max(delay,21600.0);
+        else if(error.contains("HTTP 429"))delay=std::max(retrySeconds,std::min(1800.0,15*std::pow(2.0,failures-1)));
+        else if(retrySeconds>0)delay=std::max(delay,retrySeconds);
         h["consecutiveFailures"]=failures;h["failedAt"]=double(QDateTime::currentSecsSinceEpoch());
         h["retryAt"]=h["failedAt"].toDouble()+delay;
         h["failureKind"]=failureKind(error);h["lastError"]=failureSummary(error);
@@ -670,7 +690,7 @@ Translation Services::translate(const QJsonObject& settings,const QStringList& p
         if(!packed.isEmpty()){units<<packed;owners<<i;}
     }
     const auto preferred=draft.isEmpty()?canonicalProvider(settings.value("provider").toString("ecdict")):field(draft,"provider");
-    const int batchSize=(preferred=="mymemory"||preferred=="google"||preferred=="sogou"||preferred=="youdao")?4:16;
+    const int batchSize=(preferred=="mymemory"||preferred=="sogou"||preferred=="youdao")?4:16;
     QList<QPair<int,int>> batches;
     for(int start=0;start<units.size();){
         int end=start,chars=0;
@@ -768,6 +788,22 @@ Translation Services::translateBatch(const QJsonObject& settings,const QStringLi
         }
         auto cacheKey=QCryptographicHash::hash(QJsonDocument(QJsonArray{id,source,target,definition,array(parts)}).toJson(QJsonDocument::Compact),QCryptographicHash::Sha256);
         Translation result;bool cached=false;
+        if(draft.isEmpty()){
+            QMutexLocker lock(&m_lock);if(auto entry=m_results.object(cacheKey))
+                if(entry->expires>QDateTime::currentMSecsSinceEpoch()){result=entry->result;cached=true;}
+        }
+        // Share one lane per endpoint. Recheck cache and health after waiting:
+        // identical callers reuse the result and a 429 pauses queued callers.
+        std::shared_ptr<RequestGate> gate;
+        if(!cached&&(provider=="google"||provider=="edge")){
+            QMutexLocker lock(&m_lock);auto& stored=m_gates[id];if(!stored)stored=std::make_shared<RequestGate>();gate=stored;
+        }
+        std::unique_lock<std::timed_mutex> lane;
+        if(gate){
+            lane=std::unique_lock<std::timed_mutex>(gate->mutex,std::defer_lock);
+            while(!lane.try_lock_for(std::chrono::milliseconds(25))){if(cancel->load())fail("cancelled");if(total.elapsed()>6000)break;}
+            if(!lane.owns_lock()){last="翻译请求较多，请稍后重试";continue;}
+        }
         {
             QMutexLocker lock(&m_lock);
             if(draft.isEmpty())if(auto entry=m_results.object(cacheKey)){
@@ -805,6 +841,10 @@ Translation Services::translateBatch(const QJsonObject& settings,const QStringLi
         try{
             if(!cached){
                 tried.insert(id);
+                if(gate){
+                    while(std::chrono::steady_clock::now()<gate->next){if(cancel->load())fail("cancelled");std::this_thread::sleep_for(std::chrono::milliseconds(20));}
+                    gate->next=std::chrono::steady_clock::now()+std::chrono::milliseconds(250);
+                }
                 result=route(p,parts,source,target,cancel,budget,workers);
                 if(cancel->load())fail("cancelled");
                 if(draft.isEmpty()){
@@ -824,7 +864,8 @@ Translation Services::translateBatch(const QJsonObject& settings,const QStringLi
             if(cancel->load())fail("cancelled");unsupported=QString::fromUtf8(e.what());if(!fallback)throw;
         }catch(const std::exception& e){
             if(cancel->load())fail("cancelled");
-            auto error=QString::fromUtf8(e.what());recordOutcome(p,false,attempt.elapsed(),recovery,error);
+            auto error=QString::fromUtf8(e.what());const auto httpError=dynamic_cast<const HttpFailure*>(&e);
+            recordOutcome(p,false,attempt.elapsed(),recovery,error,httpError?httpError->retrySeconds:-1);
             last=names.value(providers.indexOf(provider))+"："+error;if(!fallback)throw;
         }
     }
@@ -895,6 +936,17 @@ Translation Services::route(const QJsonObject& p,const QStringList& parts,const 
                 result.segments<<meanings.join('\n');
             }
         }
+    }else if(provider=="google"&&(field(p,"endpoint").isEmpty()||QUrl(url).path().endsWith("/translateHtml"))){
+        QJsonArray input;
+        for(auto part:parts){part=part.toHtmlEscaped();part.replace("\r\n","\n");part.replace('\n',"<br data-st-lb=\"1\">");input.append(part);}
+        // Public web-client protocol; this key identifies Google's web widget,
+        // not a user's Cloud Translation account or saved credential.
+        auto headers=browser();headers["Content-Type"]="application/json+protobuf";
+        headers["X-Goog-API-Key"]="AIzaSyATBXajvzQLTDHEQbcpq0Ihe0vWDHmO520";
+        auto response=http.json(url,QJsonArray{QJsonArray{input,origin,destination},"wt_lib"},headers).toArray();
+        result.segments=strings(at(response,0));
+        const QRegularExpression lineBreak("<br\\s+data-st-lb=[\"']1[\"']\\s*/?>",QRegularExpression::CaseInsensitiveOption);
+        for(auto& text:result.segments){text.replace(lineBreak,"\n");text=unescape(text);}
     }else if(provider=="mymemory"||provider=="google"){
         QElapsedTimer batchClock;batchClock.start();
         auto one=[&](const QString& part)->QString{
@@ -948,65 +1000,35 @@ Translation Services::route(const QJsonObject& p,const QStringList& parts,const 
             }
             requests<<chunk;owners<<index;
         }
-        std::vector<QString> outputs(requests.size());std::atomic_int next{0};std::mutex errorsLock;QString error;
+        std::vector<QString> outputs(requests.size());std::atomic_int next{0};std::mutex errorsLock;std::exception_ptr error;
         std::vector<std::thread> workers;
         for(int i=0;i<std::min(workerLimit,int(requests.size()));++i)workers.emplace_back([&]{
             for(;;){
                 int index=next.fetch_add(1);if(index>=requests.size())return;
                 try{outputs[index]=one(requests[index]);}
-                catch(const std::exception& e){std::lock_guard lock(errorsLock);if(error.isEmpty())error=QString::fromUtf8(e.what());next=requests.size();return;}
+                catch(const std::exception& e){std::lock_guard lock(errorsLock);if(!error)error=std::current_exception();next=requests.size();return;}
             }
         });
         for(auto& worker:workers)worker.join();
-        if(!error.isEmpty())fail(error);
+        if(error)std::rethrow_exception(error);
         for(int i=0;i<parts.size();++i)result.segments<<QString();
         for(int i=0;i<outputs.size();++i){auto& text=result.segments[owners[i]];if(!text.isEmpty())text+='\n';text+=outputs[i];}
-    }else if(provider=="microsoft"||provider=="edge"){
-        QMap<QByteArray,QByteArray> headers;
-        bool bing=false;
-        if(provider=="edge"){
-            headers=browser();
-            try{
-                QString cached;
-                {QMutexLocker lock(&m_lock);if(m_edgeExpiry>QDateTime::currentSecsSinceEpoch()&&m_edgeProxy==field(p,"proxy"))cached=m_edgeToken;}
-                if(cached.isEmpty()){
-                    cached=QString::fromUtf8(http.request("https://edge.microsoft.com/translate/auth",{},headers,false,2500)).trimmed();
-                    if(cached.isEmpty())fail("Edge 返回空凭据");
-                    QMutexLocker lock(&m_lock);m_edgeToken=cached;m_edgeExpiry=QDateTime::currentSecsSinceEpoch()+420;m_edgeProxy=field(p,"proxy");
-                }
-                headers["Authorization"]=("Bearer "+cached).toUtf8();
-            }catch(...){if(cancel->load())throw;bing=true;}
-        }else{
-            if(!url.endsWith("/translate"))url=url.remove(QRegularExpression("/+$"))+"/translate";
-            headers["Ocp-Apim-Subscription-Key"]=key.toUtf8();
-            if(!field(p,"region").isEmpty())headers["Ocp-Apim-Subscription-Region"]=field(p,"region").toUtf8();
-        }
-        if(bing){
-            headers["Cache-Control"]="no-cache";headers["Referer"]="https://www.bing.com/translator";headers["Origin"]="https://www.bing.com";
-            auto page=QString::fromUtf8(http.request(query("https://www.bing.com/translator",{{"timestamp",QString::number(QDateTime::currentMSecsSinceEpoch())}}),{},headers));
-            auto helper=QRegularExpression("params_AbusePreventionHelper\\s*=\\s*(\\[[^\\]]+\\])").match(page);
-            auto ig=QRegularExpression("IG:\"([^\"]+)\"").match(page);
-            if(!helper.hasMatch()||!ig.hasMatch())fail("微软免费翻译入口暂不可用");
-            auto credentials=QJsonDocument::fromJson(helper.captured(1).toUtf8()).array();
-            auto iid=QRegularExpression("data-iid=\"(translator[^\"]+)\"").match(page);
-            int index=0;
-            for(auto part:parts){
-                auto d=http.json(query("https://www.bing.com/ttranslatev3",{{"isVertical","1"},{"IG",ig.captured(1)},
-                    {"IID",(iid.hasMatch()?iid.captured(1):"translator.5028")+"."+QString::number(++index)}}),
-                    QJsonObject{{"fromLang",source=="auto"?"auto-detect":code(source,"zh-Hans")},{"to",code(target,"zh-Hans")},
-                        {"text",part},{"key",at(credentials,0)},{"token",at(credentials,1)}},headers,true).toArray();
-                result.segments<<at(at(d,0).toObject().value("translations").toArray(),0).toObject().value("text").toString();
-            }
-        }else{
-            QMap<QString,QString> values{{"api-version","3.0"},{"to",code(target,"zh-Hans")}};
-            if(source!="auto")values["from"]=code(source,"zh-Hans");
-            QJsonArray body;for(auto part:parts)body.append(QJsonObject{{"Text",part}});
-            QJsonArray d;
-            try{d=http.json(query(url,values),body,headers).toArray();}
-            catch(...){if(provider=="edge"){QMutexLocker lock(&m_lock);m_edgeExpiry=0;}throw;}
-            for(auto v:d)result.segments<<at(v.toObject().value("translations").toArray(),0).toObject().value("text").toString();
-            if(source=="auto"&&!d.isEmpty())result.source=d[0].toObject().value("detectedLanguage").toObject().value("language").toString(result.source).section('-',0,0).toLower();
-        }
+    }else if(provider=="edge"){
+        QJsonArray body;for(const auto& part:parts)body.append(part.toHtmlEscaped());
+        auto response=http.json(query(url,{{"from",source=="auto"?QString():code(source,"zh-Hans")},
+            {"to",code(target,"zh-Hans")},{"isEnterpriseClient","false"}}),body,browser()).toArray();
+        for(auto value:response)result.segments<<unescape(at(value.toObject().value("translations").toArray(),0).toObject().value("text").toString());
+        if(source=="auto"&&!response.isEmpty())result.source=response[0].toObject().value("detectedLanguage").toObject().value("language").toString(result.source).section('-',0,0).toLower();
+    }else if(provider=="microsoft"){
+        if(!url.endsWith("/translate"))url=url.remove(QRegularExpression("/+$"))+"/translate";
+        QMap<QByteArray,QByteArray> headers{{"Ocp-Apim-Subscription-Key",key.toUtf8()}};
+        if(!field(p,"region").isEmpty())headers["Ocp-Apim-Subscription-Region"]=field(p,"region").toUtf8();
+        QMap<QString,QString> values{{"api-version","3.0"},{"to",code(target,"zh-Hans")}};
+        if(source!="auto")values["from"]=code(source,"zh-Hans");
+        QJsonArray body;for(auto part:parts)body.append(QJsonObject{{"Text",part}});
+        auto response=http.json(query(url,values),body,headers).toArray();
+        for(auto value:response)result.segments<<at(value.toObject().value("translations").toArray(),0).toObject().value("text").toString();
+        if(source=="auto"&&!response.isEmpty())result.source=response[0].toObject().value("detectedLanguage").toObject().value("language").toString(result.source).section('-',0,0).toLower();
     }else if(provider=="zvo"){
         QMap<QString,QString> mapping{{"zh","chinese_simplified"},{"en","english"},{"ja","japanese"},{"ko","korean"},
             {"fr","french"},{"de","deutsch"},{"es","spanish"},{"ru","russian"}};

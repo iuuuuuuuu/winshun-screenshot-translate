@@ -133,6 +133,11 @@ HttpResponse nativeRequest(const QString& url,const QByteArray& body,bool post,
     DWORD size=sizeof response.status;
     if(!WinHttpQueryHeaders(request.handle,WINHTTP_QUERY_STATUS_CODE|WINHTTP_QUERY_FLAG_NUMBER,
         WINHTTP_HEADER_NAME_BY_INDEX,&response.status,&size,WINHTTP_NO_HEADER_INDEX))return failed(GetLastError());
+    if(response.status==429||response.status==503){
+        wchar_t value[256]{};DWORD length=sizeof value;
+        if(WinHttpQueryHeaders(request.handle,WINHTTP_QUERY_CUSTOM,L"Retry-After",value,&length,WINHTTP_NO_HEADER_INDEX))
+            response.retryAfter=QString::fromWCharArray(value);
+    }
     if(response.status>=300&&response.status<400){
         DWORD length=0;
         WinHttpQueryHeaders(request.handle,WINHTTP_QUERY_LOCATION,WINHTTP_HEADER_NAME_BY_INDEX,nullptr,&length,WINHTTP_NO_HEADER_INDEX);

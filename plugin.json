@@ -5,7 +5,7 @@
     "zh": "截图翻译",
     "en": "Screenshot Translate"
   },
-  "version": "0.4.20",
+  "version": "0.4.21",
   "settingsWindow": true,
   "description": {
     "zh": "无需 Python 的原生截图、剪贴板、划词和鼠标指词翻译；支持可编辑原文、固定跟随、管理员选区及渠道自动降级。",
@@ -301,8 +301,8 @@
         "en": "Recovery interval (minutes)"
       },
       "hint": {
-        "zh": "基础恢复间隔。故障至少停用 1 小时，连续失败加倍，最长 7 天；限流至少 6 小时，认证失败至少 24 小时。修改配置或手动测试可立即重试。",
-        "en": "Base recovery interval. Failures pause at least 1 hour, doubling up to 7 days; rate limits pause 6 hours, authentication failures 24 hours. Changed configuration or manual tests retry immediately."
+        "zh": "基础恢复间隔。故障至少停用 1 小时，连续失败加倍，最长 7 天；429 按服务要求短暂暂停；额度耗尽至少 6 小时，认证失败至少 24 小时。修改配置或手动测试可立即重试。",
+        "en": "Base recovery interval. Failures pause at least 1 hour, doubling up to 7 days; 429 follows Retry-After; exhausted quotas pause 6 hours, authentication failures 24 hours. Changed configuration or manual tests retry immediately."
       },
       "default": 60,
       "min": 1,

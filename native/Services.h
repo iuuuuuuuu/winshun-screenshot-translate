@@ -7,14 +7,16 @@
 #include <atomic>
 #include <memory>
 #include <functional>
+#include <mutex>
+#include <chrono>
 
 namespace st {
 inline const QStringList providers{"mymemory","google","edge","zvo","sogou","youdao","ecdict","microsoft","deepl","ai"};
 inline const QStringList names{"MyMemory","Google","Edge","translate.js","搜狗","有道","ECDICT","Microsoft","DeepL","AI 翻译"};
 inline const QStringList legacyAi{"openai","deepseek","doubao","hunyuan"};
 inline const QStringList endpoints{
-    "https://api.mymemory.translated.net/get","https://translate.googleapis.com/translate_a/single",
-    "https://api-edge.cognitive.microsofttranslator.com/translate","https://api.translate.zvo.cn/translate.json",
+    "https://api.mymemory.translated.net/get","https://translate-pa.googleapis.com/v1/translateHtml",
+    "https://edge.microsoft.com/translate/translatetext","https://api.translate.zvo.cn/translate.json",
     "https://fanyi.sogou.com/text","https://dict.youdao.com/jsonapi","",
     "https://api.cognitive.microsofttranslator.com","https://api-free.deepl.com","https://api.openai.com/v1"};
 QString canonicalProvider(const QString& provider);
@@ -55,7 +57,9 @@ private:
     Translation route(const QJsonObject& profile, const QStringList& parts,
         const QString& source, const QString& target, Cancel cancel, int budget, int workers=4);
     void usage(const QString& text);
-    void recordOutcome(const QJsonObject& profile, bool success, qint64 elapsed, double recovery, const QString& error = {});
+    void recordOutcome(const QJsonObject& profile, bool success, qint64 elapsed, double recovery, const QString& error = {}, double retrySeconds=-1);
+    struct RequestGate { std::timed_mutex mutex; std::chrono::steady_clock::time_point next{}; };
+    QHash<QString,std::shared_ptr<RequestGate>> m_gates;
     struct CachedTranslation { Translation result; qint64 expires; };
     QCache<QByteArray,CachedTranslation> m_results{2*1024*1024};
     QString m_directory;
@@ -64,8 +68,6 @@ private:
     QString m_day;
     int m_submitted = 0;
     bool m_usageValid = true;
-    QString m_edgeToken,m_edgeProxy;
-    qint64 m_edgeExpiry=0;
     qint64 m_recoveryProbeAfter=0;
 };
 }

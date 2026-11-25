@@ -92,7 +92,19 @@ Window {
                                "Test services, arrange fallback, or open a service tab to configure it.")
                 color: Theme.subtext; font.pixelSize: 12; wrapMode: Text.Wrap
             }
-            FlatButton { objectName: "open-panel"; text: window.t("打开独立翻译面板", "Open translation panel"); textPixelSize: 13; onClicked: backend.action("openPanel",null) }
+            Row {
+                spacing: 12
+                FlatButton { objectName: "open-panel"; text: window.t("打开独立翻译面板", "Open translation panel"); textPixelSize: 13; onClicked: backend.action("openPanel",null) }
+                FlatButton {
+                    objectName: "selection-icon-toggle"
+                    visible: window.home && backend.state.selectionIconEnabled !== undefined
+                    text: window.t("划词翻译图标：", "Selection icon: ")
+                        + (backend.state.selectionIconEnabled ? window.t("开", "On") : window.t("关", "Off"))
+                    textPixelSize: 13
+                    highlighted: !!backend.state.selectionIconEnabled
+                    onClicked: backend.action("selectionIconEnabled", !backend.state.selectionIconEnabled)
+                }
+            }
             Item { width: 1; height: 4 }
             ChoiceTabs {
                 id: tabs

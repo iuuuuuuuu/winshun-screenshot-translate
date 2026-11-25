@@ -199,7 +199,7 @@ void Probe::run(App& app,const QJsonObject& params)
             pump(24000);report["idleMemory"]=memory();
             report["idleWordEngineRetained"]=bool(app.m_word.engine);
             check(!app.m_word.engine&&!app.m_config.engine&&!app.m_bar.engine,"idle destroys unused QML engines");
-            check(app.m_original.isNull()&&app.m_translated.isNull()&&!app.m_raw,"idle frees capture and input resources");
+            check(app.m_original.isNull()&&app.m_translated.isNull()&&app.m_raw&&!app.m_icon.engine,"idle keeps only the lightweight selection monitor");
             check(app.m_trimCount->load()>0,"idle returns resident pages to Windows");
             report["idleTrimCount"]=int(app.m_trimCount->load());
             elapsed.restart();app.dispatch({},"hotkey",{{"key","Alt+Shift+C"}});
@@ -571,7 +571,7 @@ void Probe::run(App& app,const QJsonObject& params)
             read->ready=true;
         }).detach();
         check(until([&]{return read->ready.load();},6000),"real Windows selection read completes");
-        check(read->error.isEmpty()&&read->selection.text=="Hello"&&!read->selection.area.isEmpty(),"real Windows selection text and bounds");
+        check(read->error.isEmpty()&&read->selection.text=="Hello"&&!read->selection.area.isEmpty()&&!read->selection.endArea.isEmpty(),"real Windows selection text, bounds and endpoint");
         report["wordIsolatedSelection"]=true;
         // Force a native provider to stall without running its owning thread's
         // message loop. The worker must exit, and the next read must succeed.
@@ -589,7 +589,42 @@ void Probe::run(App& app,const QJsonObject& params)
         }).detach();
         check(until([&]{return recovered->ready.load();},4000)&&recovered->error.isEmpty()&&recovered->selection.text=="Hello","selection works after a stalled provider");
         report["wordSelectionTimeoutRecovery"]=true;
-        DestroyWindow(parent);report["wordRealEditSelection"]=true;
+        // Read the fixture selection without any translation, then click the
+        // actual passive QML icon after changing the source selection.
+        app.m_settings["provider"]="google";
+        // Private desktops cannot become the user's foreground desktop. Inject
+        // only that identity; still read the real EDIT through the worker and
+        // deliver actual native mouse events to the QML icon.
+        auto originalForeground=app.m_foreground;app.m_foreground=[parent]{return parent;};
+        auto foregroundBefore=GetForegroundWindow();pump(50);
+        app.m_iconTarget=edit;app.m_iconPoint={560,340};
+        auto providerBefore=app.m_services->queue(app.m_settings);
+        app.readIconSelection();
+        check(until([&]{return app.m_icon.window&&app.m_icon.window->isVisible();},6000),"selection icon appears after native selection read");
+        check(app.m_iconSelection.text=="Hello"&&app.m_services->queue(app.m_settings)==providerBefore,"selection alone sends no translation");
+        check(app.m_icon.window->flags().testFlag(Qt::WindowDoesNotAcceptFocus)&&GetForegroundWindow()==foregroundBefore,"selection icon does not steal foreground");
+        auto screen=app.m_icon.window->screen();check(screen->availableGeometry().contains(app.m_icon.window->geometry()),"selection icon stays within monitor work area");
+        app.m_icon.window->grabWindow().save(out+"/selection-icon.png");
+        SendMessageW(edit,EM_SETSEL,6,11);
+        click(app.m_icon.window,app.m_icon.window->findChild<QQuickItem*>("translate-selection-icon"));
+        check(until([&]{return !app.m_wordBackend.values.value("loading").toBool();}),"selection icon click translates");
+        check(app.m_wordSource=="Hello"&&!app.m_wordBackend.values.value("translatedText").toString().isEmpty()&&!app.m_icon.window->isVisible(),"icon uses captured text even if source selection changes");
+        app.closeWord();SendMessageW(edit,EM_SETSEL,0,0);
+        app.m_iconTarget=edit;app.readIconSelection();check(until([&]{return !app.m_iconReading;},6000)&&!app.m_icon.window->isVisible(),"empty selection shows no icon");
+        auto iconReader=app.m_readSelection;
+        app.m_readSelection=[](POINT,HWND,Cancel){QThread::msleep(180);return Selection{"stale",{500,320,120,20},{580,320,40,20}};};
+        app.readIconSelection();app.hideSelectionIcon();
+        check(until([&]{return !app.m_iconReading;})&&!app.m_icon.window->isVisible(),"cancelled icon read cannot reappear");
+        app.m_readSelection=iconReader;SendMessageW(edit,EM_SETSEL,0,5);app.readIconSelection();
+        check(until([&]{return app.m_icon.window->isVisible();},6000),"selection icon can reopen");
+        app.selectionGesture(POINT{-30000,-30000},GetTickCount(),RI_MOUSE_WHEEL);
+        check(!app.m_icon.window->isVisible(),"scroll hides selection icon");
+        app.m_settings["selectionIconEnabled"]=false;app.updateSelectionMonitor();
+        check(!app.m_raw,"disabled selection icon releases idle monitor");app.readIconSelection();
+        check(!app.m_iconReading&&!app.m_icon.window->isVisible(),"disabled selection icon never reads");
+        app.m_settings["selectionIconEnabled"]=true;app.updateSelectionMonitor();
+        report["selectionIcon"]=true;report["selectionIconCapturedText"]=true;report["selectionIconNoAutoRequest"]=true;report["selectionIconCancellation"]=true;
+        app.m_foreground=originalForeground;DestroyWindow(parent);report["wordRealEditSelection"]=true;
         // Production hotkey routes, actual QML windows and Windows OCR. Only
         // input text/cursor/pixels are injected; never alter the Owner clipboard.
         app.m_settings["provider"]="google";

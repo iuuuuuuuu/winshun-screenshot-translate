@@ -14,6 +14,7 @@
 #include <QFontMetrics>
 #include <QDir>
 #include <thread>
+#include <future>
 #include <cstdio>
 #include <stdexcept>
 namespace {
@@ -635,7 +636,43 @@ int main(int argc,char** argv)
                 auto denied=alwaysFail;denied["endpoint"]=base+path;
                 try{queueReopened.translate({}, {"hello"},"en","zh",fresh(),denied);}catch(...){}
                 int wait=queueEntry(queueReopened.queue(settings,{{"zvo",denied}}),"zvo").value("retrySeconds").toInt();
-                if(wait<(QString(path)=="/auth-fail"?86395:21595))throw std::runtime_error("authentication and quota disable periods");
+                if(QString(path)=="/auth-fail"?wait<86395:(wait<10||wait>15))throw std::runtime_error("authentication cooldown differs from temporary rate limiting");
+            }
+            // Real HTTP batches, concurrent reuse, cancellation and a shared
+            // Retry-After pause. The Python server verifies exact request counts.
+            QStringList batchText{"First <button>& line\nSecond line", "literal &lt; and <br data-st-lb=\"1\">"};
+            for(const auto& provider:QStringList{"google","edge"}){
+                QTemporaryDir dir;st::Services service(dir.path());
+                service.save({{provider,QJsonObject{{"enabled",true},{"endpoint",base+"/batch-"+provider+(provider=="google"?"/translateHtml":"/translatetext")}}}});
+                QJsonObject config{{"provider",provider},{"fallbackEnabled",false}};
+                std::vector<std::future<st::Translation>> calls;
+                for(int i=0;i<8;++i)calls.emplace_back(std::async(std::launch::async,[&]{return service.translate(config,batchText,"en","zh",fresh());}));
+                for(auto& call:calls){auto result=call.get();
+                    if(result.segments.size()!=2||!result.segments[0].contains("<button>& line\n")||
+                        !result.segments[1].contains("&lt; and <br data-st-lb=\"1\">"))throw std::runtime_error("batch order, literal markup and newlines round-trip");}
+                if(queueEntry(service.queue(config),provider)["samples"].toInt()!=1)throw std::runtime_error("concurrent identical translations share one request");
+            }
+            {
+                QTemporaryDir dir;st::Services service(dir.path());
+                service.save({{"google",QJsonObject{{"endpoint",base+"/batch-cancel/translateHtml"}}}});
+                QJsonObject config{{"provider","google"},{"fallbackEnabled",false}};
+                auto active=std::async(std::launch::async,[&]{return service.translate(config,{"first"},"en","zh",fresh());});
+                QThread::msleep(80);auto cancel=fresh();
+                auto waiting=std::async(std::launch::async,[&]{try{service.translate(config,{"second"},"en","zh",cancel);}catch(const std::exception& e){return QString::fromUtf8(e.what());}return QString();});
+                QThread::msleep(40);cancel->store(true);
+                if(waiting.get()!="cancelled")throw std::runtime_error("queued translation cancellation");active.get();
+                if(queueEntry(service.queue(config),"google")["samples"].toInt()!=1)throw std::runtime_error("cancelled waiter never damages provider health");
+            }
+            for(const auto& path:QStringList{"/batch-rate/translatetext","/batch-rate-date/translatetext"}){
+                QTemporaryDir dir;st::Services service(dir.path());
+                service.save({{"edge",QJsonObject{{"endpoint",base+path}}}});
+                QJsonObject config{{"provider","edge"},{"fallbackEnabled",false}};
+                std::vector<std::future<QString>> calls;
+                for(int i=0;i<8;++i)calls.emplace_back(std::async(std::launch::async,[&,i]{try{service.translate(config,{QString("text %1").arg(i)},"en","zh",fresh());}catch(const std::exception& e){return QString::fromUtf8(e.what());}return QString();}));
+                for(auto& call:calls)if(call.get().isEmpty())throw std::runtime_error("rate-limited request cannot succeed");
+                st::Services reopened(dir.path());auto health=queueEntry(reopened.queue(config),"edge");
+                if(health["samples"].toInt()!=1||health["retrySeconds"].toInt()<115||health["retrySeconds"].toInt()>120||health["recoveryProbe"].toBool())
+                    throw std::runtime_error(("Retry-After pause: "+path+" "+QString::fromUtf8(QJsonDocument(health).toJson(QJsonDocument::Compact))).toStdString());
             }
             // Multi-endpoint/model routing uses real requests, encryption and reopened state.
             QTemporaryDir aiDir;st::Services multi(aiDir.path());
@@ -672,7 +709,7 @@ int main(int argc,char** argv)
             aiRecovered.save({{"google",QJsonObject{{"enabled",false},{"endpoint",base+"/google"}}}});
             bool noEnabled=false;try{aiRecovered.translate(aiSettings,{"hello"},"auto","zh",fresh());}catch(const std::exception&){noEnabled=true;}
             if(!noEnabled)throw std::runtime_error("all-disabled queue must not send requests");
-            std::puts(QJsonDocument(QJsonObject{{"passed",true},{"translationCache",true},{"cacheLanguageIsolation",true},{"cacheDiagnosticBypass",true},{"parallelCancellation",true},{"orderedPartialFailure",true},{"singleRateLimitAttempt",true},{"longDocumentTail",true},{"sentenceProgress",true},{"longDocumentCancellation",true},{"unicodeSentenceBoundaries",true},{"exponentialBackoff",true},{"authQuotaDisablePeriods",true},{"darkTallOcrTiles",true},{"fixtureRoutes",QJsonArray::fromStringList(routes)},
+            std::puts(QJsonDocument(QJsonObject{{"passed",true},{"batchProtocols",true},{"concurrentDeduplication",true},{"retryAfterSecondsAndDate",true},{"queuedCancellation",true},{"translationCache",true},{"cacheLanguageIsolation",true},{"cacheDiagnosticBypass",true},{"parallelCancellation",true},{"orderedPartialFailure",true},{"singleRateLimitAttempt",true},{"longDocumentTail",true},{"sentenceProgress",true},{"longDocumentCancellation",true},{"unicodeSentenceBoundaries",true},{"exponentialBackoff",true},{"authQuotaDisablePeriods",true},{"darkTallOcrTiles",true},{"fixtureRoutes",QJsonArray::fromStringList(routes)},
                 {"chineseDictionaryCandidates",true},{"offlineReverseDictionary",true},{"senseGroupedSynonyms",true},{"wordTokenizer",true},{"structuredDictionary",true},{"youdaoWordFallback",true},{"progressiveWordLookup",true},{"wordLookupLimits",true},{"wordLookupCancellation",true},{"multiAiFallback",true},{"aiModelCooldown",true},{"aiModelRecovery",true},{"aiChannelEncryption",true},{"disabledProviders",true},{"aiExplanation",true},{"dpapi",true},{"smallScreenshotOcr",true},{"aiMigration",true},{"offlineDictionary",true},{"dictionaryFallback",true},{"dictionaryDownload",true},{"dictionaryIntegrity",true},{"youdaoSignature",true},{"sogouEncoding",true},
                 {"persistentFallback",true},{"recovery",true},{"cancel",true},{"httpProxy",true},{"pointerPhrases",true},
                 {"manualQueue",true},{"automaticWeights",true},{"persistentQueue",true},{"diagnosticsHealth",true},{"neutralCancellationAndMisses",true}}).toJson(QJsonDocument::Compact).constData());
