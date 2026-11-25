@@ -87,7 +87,7 @@ class BrokerIntegrationTests(unittest.TestCase):
                 submitted.append(parts)
                 if len(submitted) == 1:
                     entered.set()
-                    release.wait(5)
+                    release.wait(15)
                 answer = json.dumps({"choices": [{"message": {"content": json.dumps(["Translated: " + x for x in parts])}}]}).encode()
                 self.send_response(200)
                 self.send_header("Content-Length", str(len(answer)))
@@ -112,6 +112,12 @@ class BrokerIntegrationTests(unittest.TestCase):
                     resident.send("query", {"command": "clip", "text": "Hello", "queryId": 3}, 3)
                     resident.send("cancel", {"queryId": 3})
                     resident.send("query", {"command": "clip", "text": "Hello world", "queryId": 4}, 4)
+                    # A flushed pipe is not an acknowledgement. Keep the first
+                    # HTTP request blocked until the broker has consumed the
+                    # queued cancellation and final query, even on a slow runner.
+                    resident.send("test/queue-barrier", identifier=40)
+                    resident.until(lambda m: m.get("id") == 40)
+                    self.assertEqual(submitted, [["H"]])
                     release.set()
                     answer = resident.until(lambda m: m.get("id") == 4)
                     self.assertEqual(answer["result"]["items"][0]["title"], "Translated: Hello world")
