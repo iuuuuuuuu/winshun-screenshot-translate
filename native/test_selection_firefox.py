@@ -99,7 +99,9 @@ def main():
             assert ready.wait(5), 'Firefox accessibility primer did not become ready'
         report['primerEnabled'] = primer is not None
         for name, x, y in [('primary-cold', 100, 100), ('primary-retry', 100, 100), ('primary-reselect', 100, 100),
-                            ('secondary', 2700, 100), ('secondary-repeat', 2700, 100)]:
+                            ('secondary', 2700, 100), ('secondary-repeat', 2700, 100),
+                            ('long-scrolled', 100, 100), ('long-focus-restored', 100, 100),
+                            ('long-over-100k', 100, 100)]:
             command('POST', '/window/rect', {'x': x, 'y': y, 'width': 800, 'height': 500})
             expected = 'Please translate this Firefox selection.'
             if name != 'primary-retry':
@@ -110,11 +112,35 @@ def main():
                 const selection = window.getSelection();
                 selection.removeAllRanges(); selection.addRange(range);
                 return selection.toString();''', 'args': []})
+            if name.startswith('long-'):
+                expected = command('POST', '/execute/sync', {'script': r'''
+                const source = document.getElementById('source');
+                document.activeElement.blur();
+                source.style.whiteSpace = 'pre-wrap';
+                source.textContent = Array.from({length: arguments[0]}, (_, i) =>
+                    'Line ' + i + ': Cross-page selected text must remain readable after scrolling and changing focus.').join('\n');
+                const range = document.createRange(); range.selectNodeContents(source);
+                const selection = window.getSelection(); selection.removeAllRanges(); selection.addRange(range);
+                window.scrollTo(0, document.body.scrollHeight);
+                return selection.toString();''', 'args': [1600 if name == 'long-over-100k' else 150]})
+                if name == 'long-focus-restored':
+                    original = command('GET', '/window')
+                    other = command('POST', '/window/new', {'type': 'window'})['handle']
+                    command('POST', '/window', {'handle': other})
+                    command('POST', '/url', {'url': 'data:text/html,<title>Temporary focus fixture</title>Other fixture'})
+                    command('DELETE', '/window')
+                    command('POST', '/window', {'handle': original})
+            expected = command('POST', '/execute/sync', {'script': 'return window.getSelection().toString()', 'args': []})
+            assert expected, 'Browser itself cleared the fixture selection'
+            expected = expected.replace('\r\n', '\n')
             rect = w.RECT()
             api('user32', 'GetWindowRect', w.BOOL, w.HWND, ctypes.POINTER(w.RECT))(target, ctypes.byref(rect))
             with (args.output/(name+'.log')).open('wb') as log:
                 reader = NativeProcess([str(args.build.resolve()/'ScreenshotTranslate.exe'), '--selection-worker'], env, desktop_name, log)
             started = time.monotonic()
+            output = []
+            drain = threading.Thread(target=lambda: output.append(reader.stdout.read()), daemon=True)
+            drain.start()
             try:
                 reader.stdin.write(json.dumps({'target': str(target), 'x': rect.left+150, 'y': rect.top+180}).encode()+b'\n')
                 reader.stdin.close()
@@ -123,14 +149,22 @@ def main():
                 except subprocess.TimeoutExpired:
                     reader.kill(); reader.wait()
                     raise
-                result = json.loads(reader.stdout.read())
+                drain.join(3)
+                assert not drain.is_alive(), 'Selection output pipe did not close'
+                result = json.loads(b''.join(output))
             finally:
                 reader.close()
-            result.update(name=name, passed=code == 0 and result.get('text') == expected,
+            result.update(name=name, passed=code == 0 and result.get('text', '').strip() == expected.strip(),
+                          expectedLength=len(expected),
                           ms=round((time.monotonic()-started)*1000),
                           window=[rect.left, rect.top, rect.right, rect.bottom])
+            if not result['passed']:
+                actual = result.get('text', '')
+                mismatch = next((i for i, (a, b) in enumerate(zip(actual, expected)) if a != b), min(len(actual), len(expected)))
+                result['difference'] = {'offset': mismatch, 'actual': actual[max(0, mismatch-30):mismatch+50],
+                                        'expected': expected[max(0, mismatch-30):mismatch+50]}
             report['cases'].append(result)
-            print(json.dumps(result), flush=True)
+            print(json.dumps({k: v for k, v in result.items() if k != 'text'} | {'textLength': len(result.get('text', ''))}), flush=True)
         report['passed'] = all(case['passed'] for case in report['cases'])
         if primer:
             primer.stdin.close()

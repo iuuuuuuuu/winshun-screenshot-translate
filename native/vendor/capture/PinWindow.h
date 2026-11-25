@@ -147,6 +147,7 @@ public:
     void beginTextPick(); // reads the picture's words, then a drag picks lines
     void endTextPick();
     QString pickedText() const; // the lines picked now
+    void setSelectableLines(QList<RedactLine> lines); // known translated glyphs; drag blank space to move
 
 private:
     enum class Text { Off, Reading, Ready };
@@ -224,6 +225,7 @@ private:
     QList<RedactLine> m_lines;
     QList<PickedLine> m_picked;
     bool m_picking = false; // a drag under way
+    bool m_inlineText = false;
     QPoint m_pickStart; // screen, physical
     QRect m_pickBand; // the drag, in picture pixels
     std::shared_ptr<bool> m_alive = std::make_shared<bool>(true); // the reading's answer finds this pin gone

@@ -21,6 +21,7 @@ AdaptiveWindow {
         objectName: "text-provider"
         z: 1
         anchors.left: heading.right; anchors.leftMargin: 16; anchors.verticalCenter: heading.verticalCenter
+        anchors.right: parent.right; anchors.rightMargin: 82; elide: Text.ElideRight
         text: backend.state.provider || ""; font.pixelSize: 12
         color: backend.state.providerFallback ? Theme.caution : Theme.subtext
         HoverHandler { id: serviceHover }
@@ -30,8 +31,11 @@ AdaptiveWindow {
             text: backend.state.providerNote || ""
         }
     }
+    MouseArea { x: 0; y: 0; width: parent.width-80; height: 44; onPressed: textWindow.startSystemMove() }
+    ToolButton { objectName: "text-copy"; anchors.right: parent.right; anchors.rightMargin: 36; y: 8; glyph: "\uE8C8"
+        tip: backend.state.chinese ? "复制选中内容或全部译文" : "Copy selection or translation"
+        onClicked: backend.action("copyText", textArea.selectedText || textArea.text) }
     ToolButton { anchors.right: parent.right; y: 8; glyph: "\uE8BB"; tipEnabled: false; onClicked: textWindow.hide() }
-    MouseArea { x: 0; y: 0; width: parent.width-48; height: 44; onPressed: textWindow.startSystemMove() }
     Flickable {
         id: scroll
         objectName: "text-scroll"
@@ -42,7 +46,7 @@ AdaptiveWindow {
             id: textArea
             objectName: "text-content"
             width: scroll.width - 10; height: Math.max(scroll.height, contentHeight)
-            text: backend.state.translatedText; readOnly: true; selectByMouse: true
+            text: backend.state.translatedText; readOnly: true; selectByMouse: true; persistentSelection: true
             textFormat: TextEdit.PlainText
             color: Theme.text; font.family: "Segoe UI"; font.pixelSize: 16; wrapMode: TextEdit.Wrap
             selectionColor: Theme.textSelection

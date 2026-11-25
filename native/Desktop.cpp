@@ -19,6 +19,8 @@
 #include <QPainter>
 #include <QRegularExpression>
 #include <QTextDocument>
+#include <QTextLayout>
+#include <QTextBoundaryFinder>
 #include <QTextDocumentFragment>
 #include <QAbstractTextDocumentLayout>
 #include <QtMath>
@@ -777,7 +779,7 @@ Selection selectionAt(POINT point,HWND target,int warmupMs)
                 return SendMessageTimeoutW(focus,msg,w,l,SMTO_ABORTIFHUNG|SMTO_BLOCK,250,&result)!=0;
             };
             if(send(EM_GETSEL,reinterpret_cast<WPARAM>(&start),reinterpret_cast<LPARAM>(&end))&&end>start&&
-                send(WM_GETTEXTLENGTH,0,0)&&result>0&&result<=100000){
+                send(WM_GETTEXTLENGTH,0,0)&&result>0&&result<INT_MAX){
                 std::vector<wchar_t> text(size_t(result)+1);
                 if(send(WM_GETTEXT,text.size(),reinterpret_cast<LPARAM>(text.data()))){
                     auto selected=QString::fromWCharArray(text.data(),int(result)).mid(start,end-start).trimmed();
@@ -820,14 +822,25 @@ Selection selectionAt(POINT point,HWND target,int warmupMs)
             if(SUCCEEDED(element->GetCurrentPatternAs(UIA_TextPatternId,IID_PPV_ARGS(&pattern)))&&pattern&&
                 SUCCEEDED(pattern->GetSelection(&ranges))&&ranges){
                 int length=0;ranges->get_Length(&length);QStringList pieces;QRectF bounds,endArea;
-                for(int i=0;i<std::min(length,32);++i){
+                for(int i=0;i<length;++i){
                     ComPtr<IUIAutomationTextRange> range;BSTR text=nullptr;
                     if(FAILED(ranges->GetElement(i,&range))||!range)continue;
-                    if(SUCCEEDED(range->GetText(100000,&text))&&text){
+                    trace("selected range text");
+                    if(SUCCEEDED(range->GetText(-1,&text))&&text){
                         auto value=QString::fromWCharArray(text,SysStringLen(text));SysFreeString(text);
                         if(value.trimmed().isEmpty())continue;pieces<<value;
+                        // Asking a browser for every rectangle of a cross-page
+                        // range can stall its layout. Text retrieval must not
+                        // depend on laying out thousands of selected lines.
+                        ComPtr<IUIAutomationTextRange> tail;int moved=0;
+                        range->Clone(&tail);
+                        if(tail){
+                            tail->MoveEndpointByRange(TextPatternRangeEndpoint_Start,range.Get(),TextPatternRangeEndpoint_End);
+                            tail->MoveEndpointByUnit(TextPatternRangeEndpoint_Start,TextUnit_Character,-1,&moved);
+                        }
+                        trace("selected range endpoint");
                         SAFEARRAY* rectangles=nullptr;
-                        if(SUCCEEDED(range->GetBoundingRectangles(&rectangles))&&rectangles){
+                        if(tail&&SUCCEEDED(tail->GetBoundingRectangles(&rectangles))&&rectangles){
                             LONG lower=0,upper=-1;double* data=nullptr;
                             SafeArrayGetLBound(rectangles,1,&lower);SafeArrayGetUBound(rectangles,1,&upper);
                             if(SUCCEEDED(SafeArrayAccessData(rectangles,reinterpret_cast<void**>(&data)))){
@@ -854,6 +867,21 @@ Selection selectionAt(POINT point,HWND target,int warmupMs)
     ComPtr<IUIAutomationElement> rootElement;
     trace("root element");
     if(root)automation->ElementFromHandle(root,&rootElement);
+    if(rootElement){
+        // Start with the document rather than hit-testing a potentially
+        // offscreen, stale or unrelated focused link after focus returns.
+        trace("document selections");
+        VARIANT type{};type.vt=VT_I4;type.lVal=UIA_DocumentControlTypeId;
+        ComPtr<IUIAutomationCondition> condition;ComPtr<IUIAutomationElementArray> documents;
+        if(SUCCEEDED(automation->CreatePropertyCondition(UIA_ControlTypePropertyId,type,&condition))&&
+            SUCCEEDED(rootElement->FindAll(TreeScope_Descendants,condition.Get(),&documents))&&documents){
+            int count=0;documents->get_Length(&count);
+            for(int i=0;i<count;++i){
+                ComPtr<IUIAutomationElement> document;documents->GetElement(i,&document);
+                if(document)if(auto result=selected(document.Get());!result.text.isEmpty())return result;
+            }
+        }
+    }
     for(int route=0;route<3;++route){
         trace(route==0?"target route":route==1?"point route":"focus route");
         ComPtr<IUIAutomationElement> element;
@@ -1052,11 +1080,20 @@ QImage textImage(const QString& text,int width,bool dark)
     QPainter p(&image);p.translate(16,16);QAbstractTextDocumentLayout::PaintContext context;
     context.palette.setColor(QPalette::Text,dark?QColor("#F3F3F3"):QColor("#1B1B1B"));doc.documentLayout()->draw(&p,context);return image;
 }
-QImage translatedImage(const QImage& source,const QList<Block>& blocks,const QStringList& segments,bool dark)
+QImage translatedImage(const QImage& source,const QList<Block>& blocks,const QStringList& segments,bool dark,
+    QList<ws::capture::RedactLine>* selectable)
 {
+    if(selectable)selectable->clear();
     QImage result=source.convertToFormat(QImage::Format_RGB32);QPainter p(&result);p.setRenderHint(QPainter::TextAntialiasing);
     for(int i=0;i<std::min(blocks.size(),segments.size());++i){
-        auto block=blocks[i];if(numeric(block.text))continue;
+        auto block=blocks[i];if(numeric(block.text)){
+            if(selectable){
+                ws::capture::RedactLine line;auto r=block.box;line.quad={r.topLeft(),r.topRight(),r.bottomRight(),r.bottomLeft()};line.text=block.text;
+                for(int j=0;j<line.text.size();++j)line.chars<<qMakePair(j,float((j+.5)/line.text.size()));
+                selectable->append(line);
+            }
+            continue;
+        }
         QRect box=block.box.toAlignedRect().adjusted(-1,-1,1,2).intersected(result.rect());if(box.isEmpty())continue;
         double right=result.width(),bottom=result.height();
         for(int j=0;j<blocks.size();++j){
@@ -1078,7 +1115,29 @@ QImage translatedImage(const QImage& source,const QList<Block>& blocks,const QSt
         font.setPixelSize(std::max(12,size));p.setFont(font);
         p.save();p.setClipRect(cell);
         p.fillRect(QRect(cell.topLeft(),QSize(std::min(bounds.width(),cell.width()),std::min(bounds.height(),cell.height()))),background);
-        p.drawText(cell,Qt::TextWordWrap|Qt::AlignLeft|Qt::AlignTop,segments[i]);p.restore();
+        // Draw and select from the very same glyph layout; never OCR the
+        // translated picture again (that loses punctuation and small letters).
+        QTextLayout layout(segments[i],font);QTextOption option;option.setWrapMode(QTextOption::WrapAtWordBoundaryOrAnywhere);
+        layout.setTextOption(option);layout.beginLayout();qreal y=0;
+        while(true){
+            auto line=layout.createLine();if(!line.isValid())break;
+            line.setLineWidth(cell.width());line.setPosition(QPointF(0,y));y+=line.height();
+        }
+        layout.endLayout();layout.draw(&p,cell.topLeft());
+        if(selectable)for(int j=0;j<layout.lineCount();++j){
+            auto line=layout.lineAt(j);QRectF rect=line.naturalTextRect().translated(cell.topLeft());rect=rect.intersected(cell);
+            if(rect.isEmpty())continue;
+            ws::capture::RedactLine pick;pick.text=segments[i].mid(line.textStart(),line.textLength());
+            pick.quad={rect.topLeft(),rect.topRight(),rect.bottomRight(),rect.bottomLeft()};
+            QTextBoundaryFinder graphemes(QTextBoundaryFinder::Grapheme,pick.text);int begin=0;
+            for(int end=graphemes.toNextBoundary();end>=0;end=graphemes.toNextBoundary()){
+                auto middle=(line.cursorToX(line.textStart()+begin)+line.cursorToX(line.textStart()+end))/2+cell.x();
+                for(int k=begin;k<end;++k)pick.chars<<qMakePair(k,float((middle-rect.x())/rect.width()));
+                begin=end;
+            }
+            selectable->append(pick);
+        }
+        p.restore();
     }return result;
 }
 QImage comparisonImage(const QImage& source,const QImage& translated,bool first,bool dark,bool chinese)

@@ -466,6 +466,7 @@ void App::openPin(QImage image,QRect area)
     ws::capture::PinWindow::Host host;
     host.closed=[this](auto*){QTimer::singleShot(0,this,[this]{closePin();});};
     host.copy=[this](auto*){pinAction("copy",false);};
+    host.copyText=[this](const QString& text){if(!text.isEmpty())m_protocol.tool("clipboard_copy",{{"text",text}});};
     host.save=[this](auto* pin){
         auto path=qEnvironmentVariable("USERPROFILE")+"/Pictures/WinShun_Translate_"+QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss")+".png";
         if(pin->image().save(path))m_protocol.notify("winshun/toast",{{"message","已保存到图片文件夹"}});
@@ -550,7 +551,13 @@ void App::selectionGesture(POINT point,DWORD timestamp,USHORT flags)
     // Clicking the passive icon must keep both the source selection and the
     // captured text alive until QML delivers the click.
     if(pid==GetCurrentProcessId())return;
-    if(flags&(RI_MOUSE_WHEEL|RI_MOUSE_HWHEEL|RI_MOUSE_RIGHT_BUTTON_DOWN|RI_MOUSE_MIDDLE_BUTTON_DOWN)){
+    if(flags&(RI_MOUSE_WHEEL|RI_MOUSE_HWHEEL)){
+        // Wheel scrolling while holding the selection drag is still the same
+        // gesture. Only dismiss an already displayed icon.
+        if(m_iconPressed)m_iconDouble=true; // counts even if mouse-up returns to the starting pixel
+        hideSelectionIcon();return;
+    }
+    if(flags&(RI_MOUSE_RIGHT_BUTTON_DOWN|RI_MOUSE_MIDDLE_BUTTON_DOWN)){
         hideSelectionIcon();m_iconPressed=false;return;
     }
     const QPoint at(point.x,point.y);
@@ -654,9 +661,14 @@ void App::translatePin(QString source,QString target,QStringList parts)
 void App::render()
 {
     if(!m_pin)return;QStringList segments;for(auto v:m_data.value("segments").toArray())segments<<v.toString();
-    m_translated=segments.isEmpty()?m_original:translatedImage(m_original,m_blocks,segments,m_dark);
+    QList<ws::capture::RedactLine> selectable;
+    m_translated=segments.isEmpty()?m_original:translatedImage(m_original,m_blocks,segments,m_dark,&selectable);
     auto image=m_compare?comparisonImage(m_original,m_translated,m_settings.value("comparisonOrder").toString()!="source-first",m_dark,m_chinese):m_translated;
-    m_pin->setPicture(image,{});m_pinBackend.update({{"comparison",m_compare}});place();
+    if(m_compare){
+        int shift=m_settings.value("comparisonOrder").toString()!="source-first"?30:m_original.height()+60;
+        for(auto& line:selectable)line.quad.translate(0,shift);
+    }
+    m_pin->setPicture(image,{});m_pin->setSelectableLines(selectable);m_pinBackend.update({{"comparison",m_compare}});place();
 }
 void App::place()
 {
@@ -693,6 +705,9 @@ void App::pinAction(const QString& name,const QVariant& value)
         if(name=="close")closePin();
         else if(name=="retry"){closePin();shot("region");}
         else if(name=="settings")showSettings();
+        else if(name=="copyText"){
+            auto text=value.toString();if(!text.isEmpty())m_protocol.tool("clipboard_copy",{{"text",text}});
+        }
         else if(name=="copy"){
             QString text=m_data.value(value.toBool()?"source":"translated").toString();
             if(!text.isEmpty())m_protocol.tool("clipboard_copy",{{"text",text}});
@@ -738,7 +753,11 @@ void App::textFlow(const QString& command,bool retry)
     // Snapshot the source HWND before creating or showing the popup. Browser
     // focus and hit-testing may otherwise refer to our own editable window.
     if(command=="jsel"){
-        if(!retry)m_selectionTarget=selectionTarget();
+        if(!retry){
+            auto target=selectionTarget();
+            // A hotkey from our editable popup still refers to its source.
+            if(target||!IsWindow(m_selectionTarget))m_selectionTarget=target;
+        }
         m_selectionAttempts=0;
     }
     if(command=="ocr"&&m_word.window)m_word.window->hide();
@@ -793,7 +812,8 @@ void App::openWord(QString mode,QPoint anchor,QRect selection)
     if(!m_wordPinned&&!m_wordPlacementFrozen){m_wordAnchor=anchor;m_wordSelection=selection;}
     m_wordSource.clear();m_lastSelection.clear();m_wordOpened=GetTickCount();
     m_followBaseline=m_wordPinned&&mode!="jsel";
-    m_wordBackend.update({{"mode",mode},{"sourceText",""},{"translatedText",""},{"provider",""},{"providerNote",""},{"providerFallback",false},{"loading",true},
+    m_wordBackend.update({{"mode",mode},{"sourceText",""},{"translatedText",""},{"alignmentSource",""},{"alignmentRows",QVariantList()},
+        {"providerSwitching",false},{"providerSwitchError",false},{"provider",""},{"providerNote",""},{"providerFallback",false},{"loading",true},
         {"status",mode=="jsel"?"正在读取选中文字…":mode=="ocr"?"正在识别鼠标处的短句…":"正在翻译…"}});
     publishWordProviders();
     if(!m_word.window){
@@ -831,7 +851,7 @@ void App::closeWord()
     if(m_wordCancel)m_wordCancel->store(true);++m_wordEpoch;
     m_wordPinned=false;m_wordPlacementFrozen=false;m_followSelection.stop();m_wordSource.clear();m_lastSelection.clear();
     m_wordProviderChoice.clear();m_wordProviderProfiles.clear();
-    m_wordBackend.update({{"pinned",false},{"loading",false}});
+    m_wordBackend.update({{"pinned",false},{"loading",false},{"providerSwitching",false}});
     if(!m_pin&&!m_settings.value("selectionIconEnabled").toBool(true))m_raw.reset();
 }
 void App::editWord(bool editing)
@@ -856,12 +876,15 @@ void App::wordAction(const QString& name,const QVariant& value)
     }
     else if(name=="providerSettings")showSettings();
     else if(name=="provider"){
+        if(m_wordBackend.values.value("providerSwitching").toBool())return;
         const auto request=value.toMap();const auto id=request.value("id").toString();
         publishWordProviders();
         if(!id.isEmpty()&&!m_wordProviderProfiles.contains(id))return;
         const auto text=request.value("text",m_wordSource).toString().trimmed();
         if(text.isEmpty())return;
-        m_wordProviderChoice=id;editWord(false);publishWordProviders();translateWord(text,true);
+        m_wordProviderChoice=id;editWord(false);publishWordProviders();
+        m_wordBackend.update({{"providerSwitching",true},{"providerSwitchError",false}});
+        translateWord(text,true);
     }
     else if(name=="submitEdit"){
         auto text=value.toString().trimmed();if(text.isEmpty())return;
@@ -930,7 +953,7 @@ void App::readSelection(bool follow)
                     return;
                 }
                 m_wordBackend.update({{"loading",false},{"status",error.isEmpty()?
-                    QString("没有读到选区，请保留文字选中后重试；也可用鼠标 OCR 热键 %1").arg(m_settings.value("wordOcrHotkey").toString()):error}});
+                    QString("快捷键已响应，但没有读到选中文字。请回到原窗口保留选区后重试；也可用鼠标 OCR 热键 %1").arg(m_settings.value("wordOcrHotkey").toString()):error}});
                 return;
             }
             m_lastSelection=text;
@@ -973,7 +996,8 @@ void App::translateWord(QString text,bool retainResult)
     text=text.trimmed();if(m_wordCancel)m_wordCancel->store(true);m_wordCancel=token();auto cancel=m_wordCancel;auto epoch=++m_wordEpoch;
     m_wordSource=text;m_wordBackend.update({{"sourceText",text},
         {"loading",!text.isEmpty()},{"status",text.isEmpty()?"没有读取到剪贴板文字":"正在翻译…"}});
-    if(!retainResult)m_wordBackend.update({{"translatedText",""},{"provider",""},{"providerNote",""},{"providerFallback",false}});
+    if(!retainResult)m_wordBackend.update({{"translatedText",""},{"alignmentSource",""},{"alignmentRows",QVariantList()},
+        {"providerSwitching",false},{"providerSwitchError",false},{"provider",""},{"providerNote",""},{"providerFallback",false}});
     if(text.isEmpty())return;
     auto services=m_services;auto settings=m_settings;auto command=m_wordMode;
     if(!m_wordProviderChoice.isEmpty()&&m_wordProviderProfiles.contains(m_wordProviderChoice)){
@@ -981,22 +1005,32 @@ void App::translateWord(QString text,bool retainResult)
         settings["provider"]=profile.value("provider");settings["fallbackEnabled"]=false;
         settings["requestedChannelId"]=profile.value("channelId");settings["requestedModel"]=profile.value("model");
     }
-    background([this,services,settings,text,cancel,epoch]{
-        return services->translate(settings,{text},"auto",targetFor(text,settings.value("target").toString()),cancel,{},
-            [this,text,cancel,epoch](const Translation& result,int done,int total){
-                auto data=result.json({text});
-                QMetaObject::invokeMethod(this,[this,data,cancel,epoch,done,total]{
-                    if(epoch!=m_wordEpoch||cancel->load())return;
-                    m_wordBackend.update({{"translatedText",data.value("translated").toString()},
-                        {"status",QString("已翻译 %1 / %2 段").arg(done).arg(total)},
-                        {"provider",providerLabel(data)},{"providerNote",providerNote(data)},{"providerFallback",data.value("fallback").toBool()}});
-                },Qt::QueuedConnection);
-            }).json({text});
-    },[this,epoch,cancel,command](QJsonObject data,QString error){
-        if(epoch!=m_wordEpoch||cancel->load())return;
-        if(error.isEmpty())m_wordBackend.update({{"translatedText",data.value("translated").toString()},
+    const auto parts=sentenceParts(text);
+    auto publish=[this,text,parts](const QJsonObject& data){
+        QVariantList rows;int sourceOffset=0,targetOffset=0;const auto segments=data.value("segments").toArray();
+        for(int i=0;i<parts.size()&&i<segments.size();++i){
+            const auto translated=segments[i].toString();const auto at=text.indexOf(parts[i],sourceOffset);
+            if(at>=0&&!translated.isEmpty())rows<<QVariantMap{{"sourceStart",at},{"sourceEnd",at+parts[i].size()},
+                {"targetStart",targetOffset},{"targetEnd",targetOffset+translated.size()}};
+            if(at>=0)sourceOffset=at+parts[i].size();targetOffset+=translated.size()+1;
+        }
+        m_wordBackend.update({{"translatedText",data.value("translated").toString()},{"alignmentSource",text},{"alignmentRows",rows},
             {"provider",providerLabel(data)},{"providerNote",providerNote(data)},{"providerFallback",data.value("fallback").toBool()}});
-        m_wordBackend.update({{"loading",false},{"status",error}});
+    };
+    background([this,services,settings,text,parts,cancel,epoch,publish]{
+        return services->translate(settings,parts,"auto",targetFor(text,settings.value("target").toString()),cancel,{},
+            [this,parts,cancel,epoch,publish](const Translation& result,int done,int total){
+                auto data=result.json(parts);
+                QMetaObject::invokeMethod(this,[this,data,cancel,epoch,done,total,publish]{
+                    if(epoch!=m_wordEpoch||cancel->load())return;
+                    publish(data);m_wordBackend.update({{"status",QString("已翻译 %1 / %2 段").arg(done).arg(total)}});
+                },Qt::QueuedConnection);
+            }).json(parts);
+    },[this,epoch,cancel,command,publish](QJsonObject data,QString error){
+        if(epoch!=m_wordEpoch||cancel->load())return;
+        if(error.isEmpty())publish(data);
+        const bool switchFailed=m_wordBackend.values.value("providerSwitching").toBool()&&!error.isEmpty();
+        m_wordBackend.update({{"loading",false},{"status",error},{"providerSwitching",false},{"providerSwitchError",switchFailed}});
         if(error.isEmpty())m_cache[command]={QDateTime::currentSecsSinceEpoch(),results(data,command)};
     });
 

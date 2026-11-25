@@ -13,6 +13,7 @@ AdaptiveWindow {
     preferredWidth: 330; contentHeight: Math.min(400, entries.implicitHeight + 76)
     availableArea: hostWindow.availableArea
     function open() {
+        if (backend.state.providerSwitching) return
         backend.action("providerMenu", true)
         const work = hostWindow.availableArea
         const at = anchorItem.mapToGlobal(0, 0)

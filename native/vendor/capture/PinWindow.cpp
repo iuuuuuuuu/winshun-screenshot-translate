@@ -316,7 +316,7 @@ void PinWindow::drawTextLayer(QImage& canvas, const QRect& picture)
             std::max(1, static_cast<int>(std::ceil(line.box.height() * z))));
         painter.fillRect(box, veil);
     }
-    if (m_picking && !m_pickBand.isEmpty()) {
+    if (m_picking && !m_inlineText && !m_pickBand.isEmpty()) {
         const QRect band(picture.left() + static_cast<int>(std::lround(m_pickBand.left() * z)),
             picture.top() + static_cast<int>(std::lround(m_pickBand.top() * z)),
             static_cast<int>(std::lround(m_pickBand.width() * z)), static_cast<int>(std::lround(m_pickBand.height() * z)));
@@ -325,7 +325,7 @@ void PinWindow::drawTextLayer(QImage& canvas, const QRect& picture)
         painter.drawRect(band.adjusted(0, 0, -1, -1));
     }
     // What the pin is doing, in a pill at the lower left (white on the accent fill).
-    if (picture.width() < 150 * dpr() || picture.height() < 44 * dpr())
+    if (m_inlineText || picture.width() < 150 * dpr() || picture.height() < 44 * dpr())
         return;
     const QString text = m_text == Text::Reading
         ? QCoreApplication::translate("ws::capture::PinWindow", "识别文字中…")
@@ -639,6 +639,7 @@ void PinWindow::endTextPick()
     if (m_text == Text::Off)
         return;
     m_text = Text::Off;
+    m_inlineText = false;
     m_picking = false;
     m_lines.clear();
     m_picked.clear();
@@ -653,12 +654,41 @@ QString PinWindow::pickedText() const
     return ws::capture::pickedText(m_picked);
 }
 
+void PinWindow::setSelectableLines(QList<RedactLine> lines)
+{
+    endTextPick();
+    if(lines.isEmpty())return;
+    std::stable_sort(lines.begin(),lines.end(),[](const auto& a,const auto& b){
+        auto ar=a.quad.boundingRect(),br=b.quad.boundingRect();
+        return ar.top()==br.top()?ar.left()<br.left():ar.top()<br.top();
+    });
+    m_lines=std::move(lines);m_inlineText=true;m_text=Text::Ready;render();
+}
+
 void PinWindow::updatePicked(QPoint cursor)
 {
     const QPoint a = toImage(m_pickStart);
     const QPoint b = toImage(cursor);
     m_pickBand = QRect(QPoint(std::min(a.x(), b.x()), std::min(a.y(), b.y())), QPoint(std::max(a.x(), b.x()), std::max(a.y(), b.y())));
-    m_picked = pickedLines(m_lines, QRectF(m_pickBand));
+    if(m_inlineText){
+        auto nearest=[&](QPoint p){int best=-1;double distance=1e100;
+            for(int i=0;i<m_lines.size();++i){auto r=m_lines[i].quad.boundingRect();
+                double dx=std::max({r.left()-p.x(),double(p.x())-r.right(),0.});
+                double dy=std::max({r.top()-p.y(),double(p.y())-r.bottom(),0.});
+                double d=dx*dx+dy*dy*4;if(d<distance){distance=d;best=i;}}
+            return best;};
+        int first=nearest(a),last=nearest(b);auto start=a,finish=b;m_picked.clear();
+        if(first>=0&&last>=0){
+            if(first>last||(first==last&&a.x()>b.x())){std::swap(first,last);std::swap(start,finish);}
+            for(int i=first;i<=last;++i){auto rect=m_lines[i].quad.boundingRect();
+                if((a-b).manhattanLength()>3){
+                    if(i==first)rect.setLeft(std::max(rect.left(),double(start.x())));
+                    if(i==last)rect.setRight(std::min(rect.right(),double(finish.x())));
+                }
+                m_picked.append(pickedLines({m_lines[i]},rect));
+            }
+        }
+    }else m_picked = pickedLines(m_lines, QRectF(m_pickBand));
     render();
 }
 
@@ -675,9 +705,11 @@ LRESULT CALLBACK PinWindow::proc(HWND hwnd, UINT message, WPARAM wParam, LPARAM 
 LRESULT PinWindow::handle(UINT message, WPARAM wParam, LPARAM lParam)
 {
     const HWND hwnd = m_hwnd;
-    const auto cursorNow = [] {
+    const auto cursorNow = [hwnd,message,lParam] {
         POINT cursor {};
-        ::GetCursorPos(&cursor);
+        if(message==WM_LBUTTONDOWN||message==WM_LBUTTONUP||message==WM_MOUSEMOVE||message==WM_LBUTTONDBLCLK){
+            cursor={GET_X_LPARAM(lParam),GET_Y_LPARAM(lParam)};::ClientToScreen(hwnd,&cursor);
+        }else ::GetCursorPos(&cursor);
         return QPoint(cursor.x, cursor.y);
     };
     const int reach = std::max(4, static_cast<int>(std::lround(10 * dpr())));
@@ -694,9 +726,9 @@ LRESULT PinWindow::handle(UINT message, WPARAM wParam, LPARAM lParam)
         LPCWSTR shape = nullptr;
         if (m_form != PinForm::Full) {
             shape = IDC_HAND;
-        } else if (m_text == Text::Ready) {
+        } else if (m_text == Text::Ready && (!m_inlineText || std::any_of(m_lines.begin(),m_lines.end(),[&](const auto& line){return line.quad.boundingRect().contains(toImage(at));}))) {
             shape = IDC_IBEAM;
-        } else if (m_text == Text::Off || m_corner != Corner::None) {
+        } else if (m_text == Text::Off || m_inlineText || m_corner != Corner::None) {
             const Corner corner = m_corner != Corner::None ? m_corner : cornerAt(pictureRect(), at, reach);
             if (corner == Corner::TopLeft || corner == Corner::BottomRight)
                 shape = IDC_SIZENWSE;
@@ -714,7 +746,7 @@ LRESULT PinWindow::handle(UINT message, WPARAM wParam, LPARAM lParam)
         m_moved = false;
         m_clickOpened = false;
         m_swallowUp = false;
-        if (m_form == PinForm::Full && m_text == Text::Ready) {
+        if (m_form == PinForm::Full && m_text == Text::Ready && (!m_inlineText || std::any_of(m_lines.begin(),m_lines.end(),[&](const auto& line){return line.quad.boundingRect().contains(toImage(at));}))) {
             m_picking = true;
             m_pickStart = at;
             m_picked.clear();
@@ -722,6 +754,7 @@ LRESULT PinWindow::handle(UINT message, WPARAM wParam, LPARAM lParam)
             ::SetCapture(hwnd);
             return 0;
         }
+        if(m_inlineText&&!m_picked.isEmpty()){m_picked.clear();render();}
         if (m_form == PinForm::Full) {
             m_corner = cornerAt(pictureRect(), at, reach);
             m_resizeStart = pictureRect();
@@ -840,7 +873,7 @@ LRESULT PinWindow::handle(UINT message, WPARAM wParam, LPARAM lParam)
         if (action) {
             switch (*action) {
             case KeyAction::PinClose:
-                if (m_text != Text::Off)
+                if (m_text != Text::Off && !m_inlineText)
                     endTextPick();
                 else
                     close();

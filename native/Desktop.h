@@ -7,6 +7,7 @@
 #include <functional>
 #include <thread>
 #include <vector>
+#include "vendor/capture/SmartRedact.h"
 namespace st {
 struct Block { QString text; QRectF box; double glyphHeight=16; int ocrLine=0; };
 QList<Block> groupWords(QList<Block> words);
@@ -25,7 +26,8 @@ Selection selectionAt(POINT point,HWND target=nullptr,int warmupMs=0);
 HWND selectionTarget();
 Selection isolatedSelection(POINT point,HWND target,Cancel cancel,int timeoutMs=2200);
 int selectionWorker();
-QImage translatedImage(const QImage& source, const QList<Block>& blocks, const QStringList& segments, bool dark);
+QImage translatedImage(const QImage& source, const QList<Block>& blocks, const QStringList& segments, bool dark,
+    QList<ws::capture::RedactLine>* selectable=nullptr);
 QImage textImage(const QString& text, int width, bool dark);
 QImage comparisonImage(const QImage& source,const QImage& translated,bool translationFirst,bool dark,bool chinese=true);
 class Selector {
