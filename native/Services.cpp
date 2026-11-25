@@ -757,7 +757,12 @@ Translation Services::translateBatch(const QJsonObject& settings,const QStringLi
     auto append=[&](QJsonObject config){
         const auto id=field(config,"provider");
         if(definition&&id!="ecdict"&&id!="youdao"&&id!="ai")return;
-        choices.append(candidates(config,settings));
+        auto available=candidates(config,settings);
+        if(id=="ai"&&id==preferred&&!settings.value("requestedModel").toString().isEmpty()){
+            const auto channel=settings.value("requestedChannelId").toString(),model=settings.value("requestedModel").toString();
+            available.removeIf([&](const auto& candidate){return candidate.value("channelId").toString()!=channel||candidate.value("model").toString()!=model;});
+        }
+        choices.append(available);
     };
     append(first);
     if(fallback)for(auto row:queue(settings)){

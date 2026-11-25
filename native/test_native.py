@@ -333,10 +333,15 @@ def main():
                 "locale":"zh", "appearance":{"theme":"light","renderer":"d3d11" if "--gpu" in sys.argv else "software","locale":"zh"},
                 "settings":{"provider":"zvo","fallbackEnabled":False}, "capabilities":{"hostHotkeys":True},
                 "probePointerFixtures":pointer_fixtures, "probeDictionaryEndpoint":base,
-                "probeMemory":"--memory" in sys.argv, "probeWindowFrame":"--window-frame" in sys.argv
+                "probeMemory":"--memory" in sys.argv, "probeWindowFrame":"--window-frame" in sys.argv,
+                "probeWordPopup":"--word-popup" in sys.argv
             }, "--gpu" in sys.argv)
             report=json.loads((out/"report.json").read_text(encoding="utf-8"))
             assert report["passed"], report
+            if "--word-popup" in sys.argv:
+                print(json.dumps({"passed":report["passed"],"wordPopupInteractions":report["wordPopupInteractions"]}))
+                server.shutdown()
+                return
             if "--window-frame" in sys.argv:
                 print(json.dumps(report["frames"]))
                 server.shutdown()

@@ -14,6 +14,7 @@
 #include <QUrl>
 #include <QDebug>
 #include <QPixmapCache>
+#include <QPainterPath>
 #include <dwmapi.h>
 #include <psapi.h>
 #include <realtimeapiset.h>
@@ -59,6 +60,14 @@ QScreen* screenAt(QPoint physical)
 void roundWindow(QQuickWindow* w)
 {
     int corner=2;DwmSetWindowAttribute(HWND(w->winId()),33,&corner,sizeof corner);
+    if(w->property("cornerRadius").toReal()<=0||w->property("roundedMaskInstalled").toBool())return;
+    w->setProperty("roundedMaskInstalled",true);
+    auto update=[w]{
+        QPainterPath path;path.addRoundedRect(QRectF(0,0,w->width(),w->height()),w->property("cornerRadius").toReal(),w->property("cornerRadius").toReal());
+        w->setMask(QRegion(path.toFillPolygon().toPolygon()));
+    };
+    QObject::connect(w,&QWindow::widthChanged,w,update);QObject::connect(w,&QWindow::heightChanged,w,update);
+    QObject::connect(w,&QWindow::screenChanged,w,update);QObject::connect(w,&QWindow::visibleChanged,w,update);update();
 }
 QPoint boundedPosition(QQuickWindow* window,QPoint point)
 {
@@ -109,6 +118,8 @@ App::App(ws::captureplugin::Protocol& protocol,QString appDir,QJsonObject initia
     m_mouse=[] {POINT p{};GetPhysicalCursorPos(&p);return QPoint(p.x,p.y);};
     m_wordBackend.update({{"chinese",m_chinese},{"dark",m_dark},{"pinned",false},{"editing",false},{"loading",false},
         {"sourceText",""},{"translatedText",""},{"status",""},{"provider",""},{"mode","clip"}});
+    BOOL animations=TRUE;SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION,0,&animations,0);
+    m_wordBackend.update({{"animations",bool(animations)}});
     QObject::connect(&m_wordBackend,&Backend::invoked,this,&App::wordAction);
     m_panelBackend.update({{"chinese",m_chinese},{"dark",m_dark},{"sourceText",""},{"source","auto"},{"target","auto"},
         {"translatedText",""},{"definition",""},{"status",""},{"loading",false},{"autoTranslate",true},{"explain",true},
@@ -493,6 +504,7 @@ void App::ensureRaw()
             const bool insideWord=insideView(m_word);
             if(m_word.window&&m_word.window->isVisible()&&!m_wordPinned&&!insideWord&&LONG(timestamp-m_wordOpened)>=150)closeWord();
             if(insideWord)return;
+            if(m_word.window)QMetaObject::invokeMethod(m_word.window,"dismissProviderMenu");
             if(m_pin&&contains(m_pin->hwnd()))return;
             for(auto v:{&m_bar,&m_status,&m_config,&m_text,&m_menu})if(insideView(*v))return;
             DWORD pid=0;auto clicked=WindowFromPoint(point);GetWindowThreadProcessId(clicked,&pid);
@@ -783,6 +795,7 @@ void App::openWord(QString mode,QPoint anchor,QRect selection)
     m_followBaseline=m_wordPinned&&mode!="jsel";
     m_wordBackend.update({{"mode",mode},{"sourceText",""},{"translatedText",""},{"provider",""},{"providerNote",""},{"providerFallback",false},{"loading",true},
         {"status",mode=="jsel"?"正在读取选中文字…":mode=="ocr"?"正在识别鼠标处的短句…":"正在翻译…"}});
+    publishWordProviders();
     if(!m_word.window){
         m_word=view("qrc:/ui/qml/Word.qml",&m_wordBackend);
         adaptiveWindow(m_word.window,[this]{placeWord();});
@@ -817,6 +830,7 @@ void App::closeWord()
     editWord(false);
     if(m_wordCancel)m_wordCancel->store(true);++m_wordEpoch;
     m_wordPinned=false;m_wordPlacementFrozen=false;m_followSelection.stop();m_wordSource.clear();m_lastSelection.clear();
+    m_wordProviderChoice.clear();m_wordProviderProfiles.clear();
     m_wordBackend.update({{"pinned",false},{"loading",false}});
     if(!m_pin&&!m_settings.value("selectionIconEnabled").toBool(true))m_raw.reset();
 }
@@ -834,6 +848,21 @@ void App::wordAction(const QString& name,const QVariant& value)
     else if(name=="move")m_wordPlacementFrozen=true;
     else if(name=="edit")editWord(true);
     else if(name=="cancelEdit")editWord(false);
+    else if(name=="providerMenu"){
+        if(value.toBool()){
+            publishWordProviders();
+            if(m_word.window)if(auto menu=m_word.window->findChild<QQuickWindow*>("word-provider-menu"))roundWindow(menu);
+        }
+    }
+    else if(name=="providerSettings")showSettings();
+    else if(name=="provider"){
+        const auto request=value.toMap();const auto id=request.value("id").toString();
+        publishWordProviders();
+        if(!id.isEmpty()&&!m_wordProviderProfiles.contains(id))return;
+        const auto text=request.value("text",m_wordSource).toString().trimmed();
+        if(text.isEmpty())return;
+        m_wordProviderChoice=id;editWord(false);publishWordProviders();translateWord(text,true);
+    }
     else if(name=="submitEdit"){
         auto text=value.toString().trimmed();if(text.isEmpty())return;
         if(text==m_wordSource){editWord(false);return;}
@@ -909,13 +938,49 @@ void App::readSelection(bool follow)
             translateWord(text);
         });
 }
-void App::translateWord(QString text)
+void App::publishWordProviders()
+{
+    QVariantList rows{QVariantMap{{"id",""},{"name",m_chinese?"自动 · 跟随设置":"Automatic · follow settings"},
+        {"detail",m_chinese?"按已设置的优先级和降级策略翻译":"Use configured priority and fallback"},{"selectable",true}}};
+    m_wordProviderProfiles.clear();
+    for(auto value:m_services->queue(m_settings)){
+        const auto row=value.toObject();const auto provider=row.value("provider").toString();
+        auto profile=m_services->profile(provider);profile["provider"]=provider;
+        auto choices=m_services->candidates(profile,m_settings);
+        if(choices.isEmpty())choices<<profile;
+        for(auto candidate:choices){
+            auto name=names.value(providers.indexOf(provider),provider);
+            auto id=provider;
+            if(provider=="ai"&&!candidate.value("model").toString().isEmpty()){
+                name=candidate.value("channelName").toString()+" / "+candidate.value("model").toString();
+                id="ai:"+QString::fromLatin1(QJsonDocument(QJsonArray{candidate.value("channelId"),candidate.value("model")}).toJson(QJsonDocument::Compact).toBase64(QByteArray::Base64UrlEncoding|QByteArray::OmitTrailingEquals));
+            }
+            const auto problem=m_services->configurationProblem(candidate);
+            const bool enabled=candidate.value("enabled").toBool(true)&&row.value("enabled").toBool(true);
+            auto detail=!enabled?(m_chinese?QString("已停用"):QString("Disabled")):problem;
+            if(detail.isEmpty()&&row.value("cooling").toBool())detail=m_chinese?"冷却中；不会跳过限流保护":"Cooling down; rate limits remain active";
+            rows<<QVariantMap{{"id",id},{"name",name},{"detail",detail},{"selectable",enabled&&problem.isEmpty()}};
+            if(enabled&&problem.isEmpty())m_wordProviderProfiles[id]=candidate;
+        }
+    }
+    if(!m_wordProviderChoice.isEmpty()&&!m_wordProviderProfiles.contains(m_wordProviderChoice))m_wordProviderChoice.clear();
+    QString name=m_chinese?"自动选择渠道":"Automatic service";
+    for(auto value:rows){auto row=value.toMap();if(row.value("id").toString()==m_wordProviderChoice){name=row.value("name").toString();break;}}
+    m_wordBackend.update({{"providerOptions",rows},{"providerChoice",m_wordProviderChoice},{"providerChoiceLabel",name}});
+}
+void App::translateWord(QString text,bool retainResult)
 {
     text=text.trimmed();if(m_wordCancel)m_wordCancel->store(true);m_wordCancel=token();auto cancel=m_wordCancel;auto epoch=++m_wordEpoch;
-    m_wordSource=text;m_wordBackend.update({{"sourceText",text},{"translatedText",""},{"provider",""},{"providerNote",""},{"providerFallback",false},
+    m_wordSource=text;m_wordBackend.update({{"sourceText",text},
         {"loading",!text.isEmpty()},{"status",text.isEmpty()?"没有读取到剪贴板文字":"正在翻译…"}});
+    if(!retainResult)m_wordBackend.update({{"translatedText",""},{"provider",""},{"providerNote",""},{"providerFallback",false}});
     if(text.isEmpty())return;
     auto services=m_services;auto settings=m_settings;auto command=m_wordMode;
+    if(!m_wordProviderChoice.isEmpty()&&m_wordProviderProfiles.contains(m_wordProviderChoice)){
+        const auto profile=m_wordProviderProfiles.value(m_wordProviderChoice);
+        settings["provider"]=profile.value("provider");settings["fallbackEnabled"]=false;
+        settings["requestedChannelId"]=profile.value("channelId");settings["requestedModel"]=profile.value("model");
+    }
     background([this,services,settings,text,cancel,epoch]{
         return services->translate(settings,{text},"auto",targetFor(text,settings.value("target").toString()),cancel,{},
             [this,text,cancel,epoch](const Translation& result,int done,int total){

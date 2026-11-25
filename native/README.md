@@ -1,4 +1,6 @@
-# 截图翻译 0.4.23：原生版构建与验证
+# 截图翻译 0.4.24：原生版构建与验证
+
+弹窗交互回归：`python -B native/test_native.py --build <build-or-stage> --runtime <WinShun> --word-popup --output <report-dir>`。覆盖原文三行省略、点击展开编辑、独立滚动与固定收起按钮、收起提交、手动渠道切换、保留旧译文、全局设置不变及原生圆角。精确 AI 模型选择和禁用模型保护由 `--core` 回归覆盖。
 
 划词弹窗的缩放边缘检查：`python -B native/test_native.py --build <build-or-stage> --runtime <WinShun> --window-frame --scale 1.25 --output <report-dir>`。分别覆盖 1、1.25、1.5、1.75、2；测试只在独立桌面运行，并检查卡片最下行和最右列像素。
 
@@ -18,7 +20,7 @@ Firefox 选区回归：`python -B native/test_selection_firefox.py --driver <gec
 ## 安装和回退
 
 在 WinShun 设置 → 插件 → 从压缩包安装，选择
-`iuuuuuuuu.screenshot-translate-0.4.23.wsplugin`。运行时不检查或启动 Python。
+`iuuuuuuuu.screenshot-translate-0.4.24.wsplugin`。运行时不检查或启动 Python。
 包内包括启动器、应用 DLL、少量 Visual C++ 依赖、许可和文档；DLL 内包含 QML 控件与授权图标字体。
 现有渠道、热键、代理、偏好和 DPAPI 密钥格式保持兼容，不迁移或删除用户的数据目录。
 
@@ -48,6 +50,7 @@ WinShun 会创建受保护的插件副本并重新启动插件，名称旁出现
 - 剪贴板热键立即在鼠标附近打开小词义窗口，原文、译文、加载和错误均在窗口中显示。
   划词热键在实际选区旁打开同一窗口；点击图钉后位置固定，新的非空选区每 450ms
   后台检查并自动更新，关闭即停止跟随。拖动标题只移动位置，不会自动固定。
+- 原文默认最多三行，超出省略；点击原文展开并进入编辑。原文和译文分别滚动，右侧收起按钮保持固定，收起时提交修改。底部渠道菜单可选择服务或具体 AI 模型，只影响当前弹窗；“自动”沿用全局设置，显式选择继续遵循缓存、限流和冷却。圆角使用原生窗口裁剪，轻量动画遵循系统开关。
 - `Alt+Shift+O` 是鼠标指词 OCR 默认热键，可在 WinShun 基础插件设置中修改或清空。
   无需选中，Windows OCR 读取鼠标处的短句，在句末标点或明显间距处停止，
   自动换行时按行距、字号与左侧对齐连接同一段落的相邻行，最多连接 4 行；

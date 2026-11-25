@@ -56,7 +56,8 @@ private:
     void closeWord();
     void wordAction(const QString& name,const QVariant& value);
     void editWord(bool editing);
-    void translateWord(QString text);
+    void translateWord(QString text,bool retainResult=false);
+    void publishWordProviders();
     void readSelection(bool follow=false);
     void placeWord();
     void ensureRaw();
@@ -111,6 +112,8 @@ private:
     QPoint m_wordAnchor,m_wordRequestPoint;
     QRect m_wordSelection;
     QString m_wordMode,m_wordSource,m_lastSelection;
+    QString m_wordProviderChoice;
+    QHash<QString,QJsonObject> m_wordProviderProfiles;
     HWND m_selectionTarget=nullptr;
     std::function<Selection(POINT,HWND,Cancel)> m_readSelection=[](POINT p,HWND target,Cancel cancel){return isolatedSelection(p,target,cancel);};
     std::function<QString()> m_readClipboard;

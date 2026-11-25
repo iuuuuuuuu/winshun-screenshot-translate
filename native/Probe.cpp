@@ -64,7 +64,9 @@ bool until(std::function<bool()> ready,int max=3000)
 }
 void click(QQuickWindow* w,QQuickItem* item)
 {
-    check(w&&item,"missing click target");auto p=item->mapToScene(QPointF(item->width()/2,item->height()/2));
+    check(w&&item,"missing click target");
+    if(item->objectName()=="word-editor"&&!item->isVisible()){QMetaObject::invokeMethod(w,"focusEditor");pump(180);}
+    auto p=item->mapToScene(QPointF(item->width()/2,item->height()/2));
     check(item->isVisible()&&item->isEnabled()&&item->width()>0&&item->height()>0,"click target is visible and enabled");
     // Route through the native event dispatcher so Qt's global button state
     // matches the window events, including on Qt 6.10. These messages target
@@ -86,6 +88,7 @@ void typeDraft(QQuickWindow* window,const QString& text,const QString& name="wor
 {
     check(Probe::privateDesktop(),"typing requires private test desktop");
     auto editor=visualItem(window->contentItem(),name);check(editor,"source editor exists");
+    if(name=="word-editor"){QMetaObject::invokeMethod(window,"focusEditor");pump(180);}
     // Deliver focus and IME commits only to the probe window on its private
     // desktop. This does not send input to the Owner's foreground application.
     QFocusEvent focus(QEvent::FocusIn,Qt::MouseFocusReason);QCoreApplication::sendEvent(window,&focus);
@@ -127,8 +130,9 @@ void editableSource(QQuickWindow* window,const QString& source)
 {
     auto editor=window->findChild<QQuickItem*>("word-editor");
     auto meaning=window->findChild<QQuickItem*>("word-meaning");
-    check(editor&&editor->isVisible()&&editor->isEnabled()&&!editor->property("readOnly").toBool(),
-        "source is directly editable without switching modes");
+    auto preview=window->findChild<QQuickItem*>("word-source-preview");
+    check(editor&&editor->isEnabled()&&!editor->property("readOnly").toBool()&&
+        (editor->isVisible()||(preview&&preview->isVisible())),"source preview and editor preserve access to full text");
     check(editor->property("text").toString()==source,"editable source follows recognized or selected text");
     check(meaning&&meaning->isVisible(),"automatic translation remains visible alongside editable source");
 }
@@ -181,6 +185,54 @@ void Probe::run(App& app,const QJsonObject& params)
         report["loadedModulePaths"]=modulePaths;report["runtimeDirectory"]=runtime;
         report["qtBundled"]=runtime.compare(QDir::cleanPath(QCoreApplication::applicationDirPath()+"/runtime"),Qt::CaseInsensitive)==0;
         report["startupMemory"]=memory();
+        if(params.value("probeWordPopup").toBool()){
+            const auto initialSettings=app.m_settings;
+            app.openWord("jsel",{400,180});app.translateWord("Hello + 100%");
+            check(until([&]{return !app.m_wordBackend.values["loading"].toBool();}),"popup translation ready");pump(200);
+            auto word=app.m_word.window;
+            check(word->opacity()==1,"popup opening animation finishes");
+            auto preview=word->findChild<QQuickItem*>("word-source-preview");
+            auto source=word->findChild<QQuickItem*>("word-editor");
+            auto sourceScroll=word->findChild<QQuickItem*>("word-source-scroll");
+            auto meaning=word->findChild<QQuickItem*>("word-meaning");
+            auto translationScroll=word->findChild<QQuickItem*>("word-scroll");
+            auto toggle=word->findChild<QQuickItem*>("word-source-toggle");
+            const auto longText=QString("This is selected source text. Click it to expand and edit.\n").repeated(50);
+            const auto translation=QString("这里优先显示译文。原文默认三行，点击展开后可编辑。\n").repeated(40);
+            app.m_wordSource=longText;app.m_wordBackend.update({{"sourceText",longText},{"translatedText",translation}});pump(250);
+            check(!word->property("sourceExpanded").toBool()&&preview->property("lineCount").toInt()==3&&preview->property("truncated").toBool(),"source preview is three lines with ellipsis");
+            check(meaning->property("text").toString()==translation&&!source->isVisible(),"full translation retained beside collapsed source");
+            word->grabWindow().save(out+"/word-collapsed.png");
+            click(word,preview);pump(180);
+            check(word->property("sourceExpanded").toBool()&&source->hasActiveFocus(),"click preview expands and focuses editor");
+            const auto togglePosition=toggle->mapToScene(QPointF());
+            sourceScroll->setProperty("contentY",sourceScroll->property("contentHeight").toDouble()-sourceScroll->height());
+            translationScroll->setProperty("contentY",translationScroll->property("contentHeight").toDouble()-translationScroll->height());pump(30);
+            check(toggle->mapToScene(QPointF())==togglePosition&&toggle->isVisible(),"collapse button remains fixed while source and translation scroll");
+            check(sourceScroll->height()<=180&&translationScroll->height()>sourceScroll->height(),"translation retains more space than expanded source");
+            word->grabWindow().save(out+"/word-expanded.png");click(word,toggle);pump(180);
+            check(!word->property("sourceExpanded").toBool()&&sourceScroll->property("contentY").toDouble()==0,"fixed collapse button folds and resets source scrolling");
+            click(word,preview);typeDraft(word,"Settings");click(word,toggle);
+            check(until([&]{return !app.m_wordBackend.values["loading"].toBool()&&app.m_wordSource=="Settings";}),"collapsing saves edited source and translates");pump(180);
+            const auto oldTranslation=app.m_wordBackend.values["translatedText"].toString();
+            click(word,word->findChild<QQuickItem*>("word-provider-button"));pump(50);
+            auto menu=word->findChild<QQuickWindow*>("word-provider-menu");
+            check(menu&&menu->isVisible(),"popup channel selector opens");
+            menu->grabWindow().save(out+"/word-provider-menu.png");
+            auto option=visualItem(menu->contentItem(),"word-provider-option-google");check(option,"Google option exists");
+            click(menu,option);
+            check(app.m_wordBackend.values["translatedText"].toString()==oldTranslation,"channel change retains previous translation while loading");
+            check(until([&]{return !app.m_wordBackend.values["loading"].toBool()&&app.m_wordBackend.values["provider"].toString()=="渠道：Google";}),"manual service selection translates using chosen provider");
+            check(app.m_wordProviderChoice=="google"&&app.m_settings==initialSettings,"popup selection does not overwrite global defaults");
+            auto region=CreateRectRgn(0,0,0,0);auto kind=GetWindowRgn(HWND(word->winId()),region);
+            check(kind!=ERROR&&!PtInRegion(region,0,0)&&PtInRegion(region,20,20),"native window has genuinely clipped rounded corners");DeleteObject(region);
+            app.appearance({{"theme","dark"}});pump(180);word->grabWindow().save(out+"/word-popup-dark.png");
+            app.closeWord();app.openWord("jsel",{400,180});
+            check(app.m_wordProviderChoice.isEmpty()&&!word->property("sourceExpanded").toBool(),"new popup resets transient channel choice and collapse state");
+            report["wordPopupInteractions"]=true;report["passed"]=true;
+            QFile file(out+"/report.json");check(file.open(QIODevice::WriteOnly),"write popup report");file.write(QJsonDocument(report).toJson());
+            app.closeWord();QCoreApplication::exit(0);return;
+        }
         if(params.value("probeWindowFrame").toBool()){
             app.openWord("jsel",{400,180});
             app.m_wordBackend.update({{"sourceText","QQ"},{"translatedText","n. 中国腾讯公司开发的个人电子网络传呼软件"},
@@ -687,7 +739,7 @@ void Probe::run(App& app,const QJsonObject& params)
         editableSource(app.m_word.window,"Hello + 100%");
         check(!app.m_word.window->findChild<QQuickItem*>("word-submit-edit")&&!app.m_word.window->findChild<QQuickItem*>("word-cancel-edit"),"word popup has no footer edit buttons");
         auto restore=app.m_word.window->findChild<QQuickItem*>("word-restore");
-        hoverItem(app.m_word.window,app.m_word.window->findChild<QQuickItem*>("word-editor"));
+        hoverItem(app.m_word.window,app.m_word.window->findChild<QQuickItem*>("word-source-preview"));
         check(!restore->isVisible(),"hovering unchanged source keeps restore hidden");
         auto sourceFont=app.m_word.window->findChild<QQuickItem*>("word-editor")->property("font").value<QFont>().family();
         check(sourceFont=="Segoe UI","word popup uses Windows body font");
@@ -731,7 +783,7 @@ void Probe::run(App& app,const QJsonObject& params)
         // Return to the original monitor before comparing exact logical sizes;
         // fractional-DPI alignment may add up to three logical pixels elsewhere.
         app.m_wordAnchor=QPoint(400,180);app.placeWord();pump(40);
-        check(word->size()==compactSize&&longScroll->property("contentY").toReal()==0,"short result restores compact size and scroll origin");
+        check(until([&]{return word->size()==compactSize&&longScroll->property("contentY").toReal()==0;},500),"short result restores compact size and scroll origin after animation");
         app.m_wordPinned=true;
         word->setPosition(word->screen()->availableGeometry().bottomRight()-QPoint(word->width()+4,word->height()+4));
         app.m_wordBackend.update({{"translatedText",translation.repeated(200)}});pump(60);
@@ -763,7 +815,7 @@ void Probe::run(App& app,const QJsonObject& params)
         editableSource(app.m_word.window,"Hello + 100%");
         typeDraft(app.m_word.window,QString("Long editable source line\n").repeated(24));pump(30);
         auto editor=app.m_word.window->findChild<QQuickItem*>("word-editor");
-        auto scroller=app.m_word.window->findChild<QQuickItem*>("word-scroll");
+        auto scroller=app.m_word.window->findChild<QQuickItem*>("word-source-scroll");
         auto caretBottom=editor->mapToScene(editor->property("cursorRectangle").toRectF().bottomLeft());
         auto top=scroller->mapToScene(QPointF()).y();
         check(caretBottom.y()>=top&&caretBottom.y()<=top+scroller->height()+2,"long source editing keeps caret visible");

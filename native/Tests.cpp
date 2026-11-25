@@ -691,6 +691,12 @@ int main(int argc,char** argv)
             if(encoded.contains("fixture-key")||encoded.contains("apiKey"))throw std::runtime_error("all AI channel keys must be encrypted");
             auto autoPolicy=aiReopened.routing();autoPolicy["mode"]="auto";aiReopened.save({},autoPolicy);
             if(aiReopened.candidates(aiReopened.profile("ai"),aiSettings).first().value("model")!="good")throw std::runtime_error("AI weights rank healthy models first");
+            auto selectedSettings=aiSettings;selectedSettings["requestedChannelId"]="second";selectedSettings["requestedModel"]="last";selectedSettings["fallbackEnabled"]=false;
+            auto selectedModel=aiReopened.translate(selectedSettings,{"manual model"},"auto","zh",fresh());
+            if(selectedModel.channelId!="second"||selectedModel.model!="last"||selectedModel.fallback)throw std::runtime_error("explicit model selection overrides automatic model ranking");
+            selectedSettings["requestedChannelId"]="first";selectedSettings["requestedModel"]="disabled";
+            bool modelRejected=false;try{aiReopened.translate(selectedSettings,{"disabled manual model"},"auto","zh",fresh());}catch(...){modelRejected=true;}
+            if(!modelRejected)throw std::runtime_error("explicit model selection cannot reenable disabled models");
             auto firstChannel=channels[0].toObject();firstChannel["models"]=QJsonArray{model("bad"),model("good",false),model("disabled",false)};channels[0]=firstChannel;
             aiProfile["channels"]=channels;aiReopened.save({{"ai",aiProfile}},{{"mode","manual"}});
             auto alternate=aiReopened.translate(aiSettings,{"hello"},"auto","zh",fresh());
