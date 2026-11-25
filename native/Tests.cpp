@@ -99,6 +99,15 @@ void checkPhrases()
     row=st::groupWords(skewed);
     check(row.size()==2&&row.front().text=="Rotate text correctly."&&row.back().text=="Other column","native OCR lines never swallow another column");
     check(st::groupWords({{"Read",{10,10,40,20},20,1},{".",{52,28,3,3},3,1}}).front().text=="Read.","native baseline punctuation stays attached");
+    const auto toolbar=st::groupWords({{"Remote",{900,21,80,19},19},{"Prod",{20,30,36,15},15},
+        {"ucts",{57.5,32,31.5,13},13},{"Last",{1100,29,40,16},16}});
+    check(toolbar.size()==3&&toolbar[0].text=="Products"&&toolbar[1].text=="Remote"&&toolbar[2].text=="Last",
+        "remote search boxes do not split words or reverse column order");
+    const auto dots=st::groupWords({{"3",{10,10,8,14},14},{"．",{19,22,2,2},2},{"47",{22,10,18,14},14},
+        {"，",{41,22,2,2},2},{"9",{44,10,8,14},14}});
+    check(dots.size()==1&&dots[0].text=="3.47.9","numeric punctuation rejoins without inserted spaces");
+    const auto thousands=st::groupWords({{"1",{10,10,8,14},14},{"，",{19,21,3,4},4},{"218",{23,10,24,14},14}});
+    check(thousands.size()==1&&thousands[0].text=="1,218","real thousands commas remain commas");
     QList<st::Block> longLine;
     for(int i=0;i<100;++i)longLine.append({QString("word%1").arg(i),QRectF(i*65,0,60,20),20});
     auto local=st::phraseAt(longLine,{50*65+20,10});
@@ -196,6 +205,49 @@ void checkScreenshotLayout()
         check(inkBounds.height()>=size*.7&&inkBounds.height()<=size*1.2,"translation tracks small and large original fonts without fixed clamps");
         check(std::abs(inkBounds.top()-ink.top())<=2,"translated ink aligns with source ink");
         check(!selectable.isEmpty()&&selectable.first().text=="设置","new font layout retains selectable translated text");
+    }
+    {
+        QImage source(300,90,QImage::Format_RGB32);source.fill(Qt::white);
+        QFont font("Segoe UI");font.setPixelSize(18);QFontMetricsF metrics(font);
+        const auto ink=metrics.tightBoundingRect("lib").translated(20,40);
+        {QPainter p(&source);p.setPen(Qt::black);p.setFont(font);p.drawText(QPointF(20,40),"lib");
+            p.setPen(QPen(Qt::darkGray,2));p.drawRect(95,15,50,45);}
+        QList<ws::capture::RedactLine> selected;
+        auto output=st::translatedImage(source,st::groupWords({{"lib",ink,ink.height()}}),{"图书馆"},false,&selected);
+        check(selected.size()==1&&selected[0].text=="图书馆","short translated label uses free horizontal space before wrapping");
+        check(source.copy(93,13,55,50)==output.copy(93,13,55,50),"translation preserves adjacent graphics and button borders");
+        check(source.copy(155,0,145,90)==output.copy(155,0,145,90),"background clearing stays within used text area");
+        {QPainter p(&source);p.setPen(Qt::gray);p.drawLine(74,15,74,60);}
+        output=st::translatedImage(source,st::groupWords({{"lib",ink,ink.height()}}),{"主要内容"},false,&selected);
+        check(selected.size()==1&&selected[0].text=="主要内容","short button label fits one line at a smaller font when needed");
+        check(source.copy(73,15,3,46)==output.copy(73,15,3,46),"one-line fitting does not paint through adjacent border");
+    }
+    {
+        QImage source(260,100,QImage::Format_RGB32);source.fill(Qt::white);
+        QFont font("Segoe UI");font.setPixelSize(20);QFontMetricsF metrics(font);
+        auto mark=metrics.tightBoundingRect("!").translated(100,45);
+        {QPainter p(&source);p.setPen(QColor(115,80,220));p.setFont(font);p.drawText(QPointF(100,45),"!");
+            p.fillRect(20,25,6,6,QColor(115,80,220));p.fillRect(34,25,6,6,QColor(115,80,220));
+            p.fillRect(26,31,8,6,QColor(115,80,220));p.fillRect(34,38,6,9,QColor(115,80,220));}
+        const auto result=st::filterUiIcons(source,{{"；",{34,25,6,22},22},{"!",mark,mark.height()}});
+        check(result.size()==1&&result.front().text=="!","avatar fragments are removed while genuine coloured punctuation survives");
+    }
+    {
+        QImage source(200,60,QImage::Format_RGB32);source.fill(Qt::white);
+        {QPainter p(&source);p.setPen(QPen(Qt::gray,2));p.drawEllipse(10,10,18,18);
+            QFont font("Segoe UI");font.setPixelSize(13);p.setFont(font);p.setPen(Qt::black);p.drawText(35,25,"1218");}
+        auto result=st::filterUiIcons(source,{{"01218",{9,9,58,21},21}});
+        check(result.size()==1&&result[0].text=="1218"&&result[0].box.left()>30,"fused history icon is separated from actual count");
+        QImage blank(100,30,QImage::Format_RGB32);blank.fill(Qt::white);
+        result=st::filterUiIcons(blank,{{"01218",{10,5,45,15},15}});
+        check(result.size()==1&&result[0].text=="01218","leading zeros are not stripped from numeric text alone");
+    }
+    {
+        QImage button(160,45,QImage::Format_RGB32);button.fill(QColor(31,136,61));
+        {QPainter p(&button);p.setPen(QPen(Qt::white,2));p.drawLine(17,12,10,19);p.drawLine(10,19,17,26);
+            p.drawLine(24,12,31,19);p.drawLine(31,19,24,26);QFont font("Segoe UI");font.setPixelSize(18);p.setFont(font);p.drawText(43,26,"Code");}
+        const auto result=st::filterUiIcons(button,{{"<",{9,11,9,16},16},{"〉",{23,11,9,16},16},{"Code",{43,12,42,16},16}});
+        check(result.size()==1&&result.front().text=="Code","paired button chevrons remain graphical decorations");
     }
 }
 }
@@ -300,6 +352,7 @@ int main(int argc,char** argv)
                 {"repeatMs",repeat},{"paragraphMs",timer.elapsed()}}).toJson(QJsonDocument::Compact).constData());return 0;
         }
         if(args.contains("--ocr-image")){
+            QElapsedTimer ocrTimer;ocrTimer.start();
             QImage image(args.value(args.indexOf("--ocr-image")+1));
             if(image.isNull())throw std::runtime_error("OCR diagnostic image unavailable");
             QList<st::Block> words;std::exception_ptr error;
@@ -312,7 +365,11 @@ int main(int argc,char** argv)
             for(auto word:words)found.append(QJsonObject{{"text",word.text},
                 {"box",QJsonArray{word.box.x(),word.box.y(),word.box.width(),word.box.height()}},
                 {"phrase",st::phraseAt(words,word.box.center()).text}});
-            const auto blocks=st::groupWords(words);QJsonArray grouped;
+            const auto rawMs=ocrTimer.elapsed();ocrTimer.restart();
+            QList<st::Block> blocks;
+            std::thread groupedReader([&]{try{blocks=st::recognize(image,std::make_shared<std::atomic_bool>(false),true,
+                args.contains("--ocr-scale")?args.value(args.indexOf("--ocr-scale")+1).toDouble():2.);}catch(...){error=std::current_exception();}});
+            groupedReader.join();if(error)std::rethrow_exception(error);const auto groupedMs=ocrTimer.elapsed();QJsonArray grouped;
             for(const auto& block:blocks)grouped.append(QJsonObject{{"text",block.text},{"fontPixels",block.fontPixels},
                 {"box",QJsonArray{block.box.x(),block.box.y(),block.box.width(),block.box.height()}}});
             if(args.contains("--ocr-preview")){
@@ -335,7 +392,7 @@ int main(int argc,char** argv)
                     }
                 }catch(...){error=std::current_exception();}});reader.join();if(error)std::rethrow_exception(error);
             }
-            std::puts(QJsonDocument(QJsonObject{{"words",found},{"blocks",grouped},{"pointed",pointed}}).toJson(QJsonDocument::Compact).constData());return 0;
+            std::puts(QJsonDocument(QJsonObject{{"words",found},{"blocks",grouped},{"pointed",pointed},{"rawMs",rawMs},{"groupedMs",groupedMs}}).toJson(QJsonDocument::Compact).constData());return 0;
         }
         if(args.contains("--dictionary-download")){
             QTemporaryDir data;

@@ -185,8 +185,56 @@ QImage capture(const QRect& area)
     SelectObject(dc,old);DeleteObject(dib);DeleteDC(dc);ReleaseDC(nullptr,screen);
     if(image.isNull())throw std::runtime_error("无法读取屏幕");return image;
 }
-QList<Block> filterUiIcons(const QImage& image,const QList<Block>& words)
+QList<Block> filterUiIcons(const QImage& image,const QList<Block>& input)
 {
+    QList<Block> words;
+    for(auto word:input){
+        auto r=word.box.toAlignedRect().intersected(image.rect());
+        // A coloured avatar sometimes contributes just one tall punctuation
+        // fragment. It is decoration, provided it is not part of text ink.
+        bool punctuation=!word.text.isEmpty()&&std::all_of(word.text.begin(),word.text.end(),[](QChar c){return c.isPunct();});
+        int colour=0,ink=0;
+        if(punctuation&&r.height()>8){
+            auto region=r.adjusted(-2,-2,2,2).intersected(image.rect());
+            for(int y=region.top();y<=region.bottom();++y)for(int x=region.left();x<=region.right();++x){
+                auto p=image.pixelColor(x,y);int low=std::min({p.red(),p.green(),p.blue()}),high=std::max({p.red(),p.green(),p.blue()});
+                if(qGray(p.rgb())<210){++ink;colour+=high-low>45;}
+            }
+        }
+        if(ink>8&&colour>ink*.6){
+            const auto region=r.adjusted(-qRound(r.height()*1.5),-4,3,4).intersected(image.rect());
+            QRect coloured;
+            for(int y=region.top();y<=region.bottom();++y)for(int x=region.left();x<=region.right();++x){
+                auto p=image.pixelColor(x,y);
+                if(qGray(p.rgb())<210&&std::max({p.red(),p.green(),p.blue()})-std::min({p.red(),p.green(),p.blue()})>45)
+                    coloured=coloured.united(QRect(x,y,1,1));
+            }
+            bool adjacentText=false;
+            for(const auto& other:input)if(other.box!=word.box&&other.box.intersects(coloured)){adjacentText=true;break;}
+            // Colour alone is not evidence: a genuine coloured ! or ; stays.
+            // Require a separate, roughly square picture around the fragment.
+            if(!adjacentText&&coloured.left()>region.left()+2&&coloured.width()>r.width()*2&&
+                coloured.width()>coloured.height()*.7&&coloured.width()<coloured.height()*1.6)continue;
+        }
+        // Occasionally OCR fuses a round history icon with the first digit.
+        // Split only at a real blank column and when the left ink is taller.
+        if(word.text.size()>=2&&word.text.startsWith('0')&&numeric(word.text)&&r.width()>r.height()*1.3){
+            const auto tone=inkTone(image,r.adjusted(-1,-1,1,1));
+            if(tone.valid)for(int x=r.left()+qRound(r.height()*.8);x<r.right()-3;++x){
+                bool blank=true;for(int y=r.top();y<=r.bottom();++y)if(std::abs(qGray(image.pixel(x,y))-tone.background)>55){blank=false;break;}
+                if(!blank)continue;
+                QRect left,right;
+                for(int y=r.top();y<=r.bottom();++y)for(int k=r.left();k<=r.right();++k)if(std::abs(qGray(image.pixel(k,y))-tone.background)>55){
+                    if(k<x)left=left.united(QRect(k,y,1,1));else right=right.united(QRect(k,y,1,1));
+                }
+                if(!right.isEmpty()&&left.height()>right.height()*1.35&&left.width()>left.height()*.7){
+                    word.text.remove(0,1);word.box=right;word.glyphHeight=right.height();
+                }
+                break;
+            }
+        }
+        words<<word;
+    }
     // A recognizer can call a person/grid/tag icon a Chinese character or 0.
     // Require both graphical layout evidence and a different ink colour from
     // its label. Never strip a prefix merely because its text looks unusual.
@@ -194,15 +242,16 @@ QList<Block> filterUiIcons(const QImage& image,const QList<Block>& words)
     QList<Candidate> candidates;QSet<int> claimed;
     auto symbol=[](const Block& w){
         if(w.text.isEmpty()||w.text.size()>3)return false;
-        for(auto c:w.text)if(c.isLetter()&&!cjk(c)&&w.text.size()>1)return false;
+        int letters=0;for(auto c:w.text)letters+=c.isLetter()&&!cjk(c);
+        if(letters>1)return false;
         return true;
     };
     QList<int> symbols,labels;
     for(int i=0;i<words.size();++i){
         if(symbol(words[i]))symbols<<i;
-        int letters=0;for(auto c:words[i].text)letters+=c.isLetter();if(letters>=2)labels<<i;
+        int letters=0;for(auto c:words[i].text)letters+=c.isLetter();if(letters>=2||numeric(words[i].text))labels<<i;
     }
-    if(symbols.size()<3||labels.size()<3)return words;
+    if(symbols.isEmpty()||labels.isEmpty())return words;
     for(int i=0;i<words.size();++i){
         if(claimed.contains(i)||!symbol(words[i]))continue;
         Candidate candidate{{i},words[i].box};
@@ -234,7 +283,8 @@ QList<Block> filterUiIcons(const QImage& image,const QList<Block>& words)
         for(auto index:candidate.indices)claimed.insert(index);
         candidates<<candidate;
     }
-    QSet<int> excluded;
+    QSet<int> excluded;int latin=0,han=0;
+    for(const auto& word:words)for(auto c:word.text){latin+=c.script()==QChar::Script_Latin;han+=cjk(c);}
     for(const auto& candidate:candidates){
         const auto a=candidate.box,b=words[candidate.label].box;
         int peers=0;
@@ -246,13 +296,20 @@ QList<Block> filterUiIcons(const QImage& image,const QList<Block>& words)
             bool row=std::abs(a.center().y()-c.center().y())<h*.4&&std::abs(a.center().x()-c.center().x())>h*2;
             if(column||row)++peers;
         }
-        if(peers<2)continue;
         const auto icon=inkTone(image,a.adjusted(-1,-1,1,1)),text=inkTone(image,b.adjusted(-1,-1,1,1));
         if(!icon.valid||!text.valid||std::abs(icon.background-text.background)>35)continue;
         // ClearType adds coloured fringes even to black text. Compare ink
         // luminance, not the largest RGB channel, to preserve real prefixes.
         const int difference=std::abs(qGray(icon.foreground.rgb())-qGray(text.foreground.rgb()));
-        if(difference<24)continue;
+        bool cjkMark=false;for(auto index:candidate.indices)for(auto c:words[index].text)cjkMark|=cjk(c);
+        QString marks;for(auto index:candidate.indices)marks+=words[index].text;
+        const auto backdrop=image.pixelColor(std::clamp(qRound(a.left()-2),0,image.width()-1),std::clamp(qRound(a.top()-2),0,image.height()-1));
+        const bool buttonChevrons=candidate.indices.size()==2&&(marks=="<〉"||marks=="〈〉"||marks=="<>")&&
+            backdrop.saturation()>100&&backdrop.lightness()<170;
+        const bool tallMark=peers&&a.height()>b.height()*1.15&&latin>han*12;
+        const bool nonLatinIcon=peers>=2&&cjkMark&&latin>han*30;
+        if(difference<(peers?24:48)&&!tallMark&&!nonLatinIcon&&!buttonChevrons)continue;
+        if(!peers&&!buttonChevrons&&(a.width()<a.height()*.8||a.width()>a.height()*1.35))continue;
         for(auto index:candidate.indices)excluded.insert(index);
     }
     QList<Block> result;for(int i=0;i<words.size();++i)if(!excluded.contains(i))result<<words[i];return result;
@@ -265,13 +322,21 @@ QList<Block> groupWords(QList<Block> words)
         if(word.text.isEmpty()||word.box.isEmpty())continue;
         bool found=false;
         for(auto& row:rows){
-            auto b=row[0].box;
+            auto nearest=std::min_element(row.begin(),row.end(),[&](const Block& a,const Block& b){
+                auto distance=[&](QRectF r){return std::max({r.left()-word.box.right(),word.box.left()-r.right(),0.});};
+                return distance(a.box)<distance(b.box);
+            });
+            auto b=nearest->box;
             // Keep WinRT's native line membership, including rotated lines.
             // Geometry is a fallback for synthetic/merged words without a line id.
             if(word.ocrLine&&row[0].ocrLine){
                 if(word.ocrLine==row[0].ocrLine){row<<word;found=true;break;}
                 continue;
             }
+            // After tiling, a distant column must not become the vertical
+            // anchor for this word (a higher search box used to split Products).
+            const double gap=std::max({b.left()-word.box.right(),word.box.left()-b.right(),0.});
+            if(gap>std::max(18.,std::max(b.height(),word.box.height())*1.6))continue;
             bool punctuation=std::all_of(word.text.begin(),word.text.end(),[](QChar c){return c.isPunct();});
             bool baseline=punctuation&&word.box.top()>=b.top()-b.height()*.2&&word.box.bottom()<=b.bottom()+b.height()*.3&&
                 word.box.left()>=b.left()-b.height()&&word.box.left()<=row.last().box.right()+b.height()*1.5;
@@ -279,6 +344,34 @@ QList<Block> groupWords(QList<Block> words)
                 row<<word;found=true;break;
             }
         }if(!found)rows.append(QList<Block>{word});
+    }
+    // Words arrive sorted by top edge, so a short middle word can arrive after
+    // both neighbours. Reconnect those local fragments once all words exist.
+    for(int i=0;i<rows.size();++i)for(int j=i+1;j<rows.size();){
+        bool join=false;
+        for(const auto& a:rows[i])for(const auto& b:rows[j]){
+            if(a.ocrLine&&b.ocrLine&&a.ocrLine!=b.ocrLine)continue;
+            const auto x=a.box,y=b.box;const double h=std::max(x.height(),y.height());
+            const double gap=std::max({x.left()-y.right(),y.left()-x.right(),0.});
+            const double overlap=std::min(x.bottom(),y.bottom())-std::max(x.top(),y.top());
+            if(gap<=std::max(18.,h*1.6)&&overlap>=std::min(x.height(),y.height())*.5&&
+                std::abs(x.center().y()-y.center().y())<=h*.5){join=true;break;}
+        }
+        if(join){rows[i].append(rows.takeAt(j));j=i+1;}else ++j;
+    }
+    std::sort(rows.begin(),rows.end(),[](const auto& a,const auto& b){return a.front().box.top()<b.front().box.top();});
+    // Separate columns can have slightly different glyph tops. Within each
+    // visual row, read left to right without using a remote column as an anchor.
+    auto bounds=[](const QList<Block>& row){QRectF box;for(const auto& word:row)box=box.united(word.box);return box;};
+    for(int begin=0;begin<rows.size();){
+        const auto first=bounds(rows[begin]);int end=begin+1;
+        while(end<rows.size()){
+            const auto next=bounds(rows[end]);
+            if(std::abs(first.center().y()-next.center().y())>std::min(first.height(),next.height())*.5)break;
+            ++end;
+        }
+        std::sort(rows.begin()+begin,rows.begin()+end,[&](const auto& a,const auto& b){return bounds(a).left()<bounds(b).left();});
+        begin=end;
     }
     QList<Block> out;int paragraph=-1;
     for(auto row:rows){
@@ -294,9 +387,21 @@ QList<Block> groupWords(QList<Block> words)
         for(int i=0;i<row.size();++i){
             auto w=row[i];
             if(!run.text.isEmpty()&&w.box.x()-prev.box.right()>limit)flush();
+            if(!fontSizes.isEmpty()&&wordScript(w)&&w.text.size()>=2&&prev.text.size()>=2&&w.box.x()-prev.box.right()>std::min(w.box.height(),prev.box.height())*.3){
+                const auto current=sourceFontPixels(w),previous=fontSizes.back();
+                if((current>previous*1.35&&w.glyphHeight>prev.glyphHeight*1.35)||
+                    (previous>current*1.35&&prev.glyphHeight>w.glyphHeight*1.35))flush();
+            }
+            // Small dots are often returned as fullwidth commas/periods. Only
+            // normalize when tightly enclosed by digits in a numeric token.
+            bool numberDot=i>0&&i+1<row.size()&&QString("．，·").contains(w.text)&&w.text.size()==1&&
+                w.box.height()<h*.4&&row[i-1].text.back().isDigit()&&row[i+1].text.front().isDigit()&&
+                w.box.left()-row[i-1].box.right()<h*.3&&row[i+1].box.left()-w.box.right()<h*.3;
+            if(numberDot)w.text=w.box.height()>h*.25?",":".";
             if(run.text.isEmpty())run=w;
             else{
-                if(!QString(",.!?:;，。！？：；、)]}）】》」』”’").contains(w.text.front())&&!(cjk(run.text.back())&&cjk(w.text.front()))&&w.box.x()-prev.box.right()>std::max(1.,std::min(prev.box.height(),w.box.height())*.16))run.text+=" ";
+                bool numericJoin=w.text.front().isDigit()&&(run.text.endsWith('.')||run.text.endsWith(','))&&i>=2&&row[i-2].text.back().isDigit()&&w.box.left()-prev.box.right()<h*.3;
+                if(!numericJoin&&!QString(",.!?:;，。！？：；、)]}）】》」』”’").contains(w.text.front())&&!(cjk(run.text.back())&&cjk(w.text.front()))&&w.box.x()-prev.box.right()>std::max(1.,std::min(prev.box.height(),w.box.height())*.16))run.text+=" ";
                 run.text+=w.text;run.box=run.box.united(w.box);
             }
             if(std::any_of(w.text.begin(),w.text.end(),[](QChar c){return c.isLetter();}))fontSizes<<sourceFontPixels(w);
@@ -426,6 +531,87 @@ Block phraseAt(const QList<Block>& words,QPointF point,const QImage* image)
     }
     return phrase;
 }
+namespace {
+QList<Block> screenshotBlocks(const QImage& image,const QList<Block>& words,Cancel cancel)
+{
+    auto blocks=groupWords(words);
+    struct Strip { int index; QRect crop,slot; double scale; };
+    QList<Strip> strips;QList<Block> refined=blocks;QMap<int,QString> proposals;bool confirming=false;
+    QImage sheet(1800,1800,QImage::Format_RGB32);sheet.fill(Qt::white);int x=12,y=12,rowHeight=0;
+    auto flush=[&]{
+        if(strips.isEmpty()||cancel->load())return;
+        const auto found=recognize(sheet.copy(0,0,sheet.width(),std::min(sheet.height(),y+rowHeight+12)),cancel,false,1.,false);
+        for(const auto& strip:strips){
+            QList<Block> local;
+            for(auto word:found)if(strip.slot.contains(word.box.center().toPoint())){
+                const auto b=word.box;
+                word.box={strip.crop.x()+(b.x()-strip.slot.x())/strip.scale,strip.crop.y()+(b.y()-strip.slot.y())/strip.scale,b.width()/strip.scale,b.height()/strip.scale};
+                word.glyphHeight/=strip.scale;word.ocrLine=0;local<<word;
+            }
+            const auto groups=groupWords(local);if(groups.size()!=1)continue;
+            const auto original=blocks[strip.index];auto candidate=groups.front();
+            auto letters=[](const QString& text){int n=0;for(auto c:text)n+=c.isLetterOrNumber();return n;};
+            const auto before=letters(original.text),after=letters(candidate.text);
+            int oldOther=0,newOther=0;for(auto c:original.text)oldOther+=c.isLetter()&&c.script()!=QChar::Script_Latin;
+            for(auto c:candidate.text)newOther+=c.isLetter()&&(c.script()!=QChar::Script_Latin||c.unicode()>127);
+            if(newOther>oldOther||candidate.box.height()<original.box.height()*.8||after<before*.85||after>before*1.3+2||candidate.box.width()<original.box.width()*.8||
+                candidate.box.left()>original.box.left()+original.glyphHeight*.5||candidate.box.right()<original.box.right()-original.glyphHeight*.5)continue;
+            auto compact=[](QString text){return text.remove(QRegularExpression("\\s")).toLower();};
+            if(compact(original.text)==compact(candidate.text)&&candidate.text.count(' ')>=original.text.count(' '))continue;
+            auto lookalikes=[](QString text){return text.replace('I','l').remove(QRegularExpression("\\s")).toLower();};
+            if(lookalikes(original.text)==lookalikes(candidate.text)&&candidate.text.count(' ')>=original.text.count(' '))continue;
+            auto digits=[](QString text){return text.remove(QRegularExpression("[^0-9]"));};
+            if(digits(original.text)!=digits(candidate.text))continue;
+            auto alnum=[](QString text){return text.remove(QRegularExpression("[^\\p{L}\\p{N}]" )).toLower();};
+            if((original.text.size()>32||after<before)&&alnum(original.text)!=alnum(candidate.text))continue;
+            if(candidate.text.count(' ')>original.text.count(' '))continue;
+            if(confirming){
+                if(compact(candidate.text)==compact(proposals.value(strip.index)))refined[strip.index].text=proposals.value(strip.index);
+            }else if(alnum(original.text)==alnum(candidate.text))refined[strip.index].text=candidate.text;
+            else proposals.insert(strip.index,candidate.text);
+        }
+        strips.clear();sheet.fill(Qt::white);x=12;y=12;rowHeight=0;
+    };
+    auto append=[&](int index,double scale){
+        const auto crop=blocks[index].box.toAlignedRect().adjusted(-3,-3,3,3).intersected(image.rect());
+        QSize size(qRound(crop.width()*scale),qRound(crop.height()*scale));
+        if(x+size.width()+12>sheet.width()){x=12;y+=rowHeight+28;rowHeight=0;}
+        if(y+size.height()+12>sheet.height())flush();
+        QRect slot(QPoint(x,y),size);
+        {QPainter painter(&sheet);painter.setRenderHint(QPainter::SmoothPixmapTransform);painter.drawImage(slot,image.copy(crop));}
+        strips.append({index,crop,slot,scale});x+=size.width()+48;rowHeight=std::max(rowHeight,size.height());
+    };
+    for(int i=0;i<blocks.size();++i){
+        if(cancel->load())return {};
+        const auto& block=blocks[i];int latin=0,other=0;
+        for(auto c:block.text)if(c.isLetter()){if(c.script()==QChar::Script_Latin)++latin;else ++other;}
+        if(latin<3||other>1||block.glyphHeight>24||block.box.height()>block.glyphHeight*1.6||block.text.contains('\n')||block.text.contains('/'))continue;
+        const auto crop=block.box.toAlignedRect().adjusted(-3,-3,3,3).intersected(image.rect());
+        const double scale=std::min(4.,1760./crop.width());if(scale<2.5)continue;
+        append(i,scale);
+    }
+    flush();
+    // A second size must agree before changing letters. One enlarged pass
+    // can itself misread a correct label, especially with a different neighbour.
+    confirming=true;
+    for(auto it=proposals.cbegin();it!=proposals.cend();++it){
+        if(cancel->load())return {};
+        append(it.key(),std::min(3.25,1760./(blocks[it.key()].box.width()+8)));
+    }
+    flush();
+    for(auto& block:refined){
+        // In a dotted version token, I/l is a common OCR reading of digit 1.
+        // Require at least two numeric components so ordinary words are intact.
+        static const QRegularExpression version("\\bv[lI]\\s*[.．，]\\s*(\\d+(?:\\s*[.．，]\\s*\\d+)+)");
+        auto match=version.match(block.text);
+        if(match.hasMatch()){
+            auto tail=match.captured(1);tail.replace(QRegularExpression("\\s*[.．，]\\s*"),".");
+            block.text.replace(match.capturedStart(),match.capturedLength(),"v1."+tail);
+        }
+    }
+    return refined;
+}
+}
 QList<Block> recognize(const QImage& source,Cancel cancel,bool grouped,double maxScale,bool retryEmpty)
 {
     using namespace winrt::Windows::Media::Ocr;
@@ -451,7 +637,7 @@ QList<Block> recognize(const QImage& source,Cancel cancel,bool grouped,double ma
             if(!ink.isEmpty()&&!crop.isEmpty()&&qint64(crop.width())*crop.height()<qint64(source.width())*source.height()/2){
                 auto found=recognize(source.copy(crop),cancel,false,maxScale,retryEmpty);
                 for(auto& word:found)word.box.translate(crop.topLeft());
-                if(!found.isEmpty()||cancel->load())return grouped?groupWords(found):found;
+                if(!found.isEmpty()||cancel->load())return grouped?screenshotBlocks(source,found,cancel):found;
             }
         }
         const int maxSide=int(OcrEngine::MaxImageDimension());
@@ -471,7 +657,7 @@ QList<Block> recognize(const QImage& source,Cancel cancel,bool grouped,double ma
                     if(c.x()>=owner.x()&&c.x()<owner.x()+owner.width()&&c.y()>=owner.y()&&c.y()<owner.y()+owner.height())collected<<word;}
             }
             for(auto& word:collected)word.ocrLine=0;
-            return grouped?groupWords(collected):collected;
+            return grouped?screenshotBlocks(source,collected,cancel):collected;
         }
         maxScale=std::abs(maxScale);
         if(retryEmpty)maxScale=std::max(maxScale,2.);
@@ -527,17 +713,33 @@ QList<Block> recognize(const QImage& source,Cancel cancel,bool grouped,double ma
         if(retryEmpty&&words.isEmpty()&&!cancel->load())for(auto lang:available)if(from(lang.LanguageTag()).startsWith("en")){
             english=OcrEngine::TryCreateFromLanguage(lang);if(english){words=read(english,maxScale,border);break;}
         }
-        // A nonempty CJK pass can still fragment/drop Latin letters. Compare an English pass
-        // only for Latin-only captures; never replace mixed-script content with English OCR.
+        // Tiny pictograms can look like Han characters, so one such guess must
+        // not disable English OCR for an otherwise Latin page. Retain real
+        // multi-character non-Latin spans when merging the two recognizers.
         if(retryEmpty&&!words.isEmpty()&&!cancel->load()){
             int latin=0,other=0;for(const auto& word:words)for(auto c:word.text){
                 if(c.isLetter()){if(c.script()==QChar::Script_Latin)++latin;else ++other;}}
-            if(latin>=3&&other==0&&!from(engine.RecognizerLanguage().LanguageTag()).startsWith("en")){
+            if(latin>=3&&other<=std::max(3,latin/10)&&!from(engine.RecognizerLanguage().LanguageTag()).startsWith("en")){
                 for(auto lang:available)if(from(lang.LanguageTag()).startsWith("en")){
                     english=OcrEngine::TryCreateFromLanguage(lang);break;}
                 if(english){auto alternative=read(english,maxScale,border);
                     int letters=0;for(const auto& word:alternative)for(auto c:word.text)if(c.isLetter())++letters;
-                    if(letters>=latin&&letters<=latin*1.5+8)words=alternative;
+                    if(letters>=latin*.9&&letters<=latin*1.5+8){
+                        QList<Block> retained;
+                        for(const auto& word:words){
+                            int count=0;for(auto c:word.text)count+=c.isLetter()&&c.script()!=QChar::Script_Latin;
+                            if(count>=2)retained<<word;
+                        }
+                        if(!retained.isEmpty()){
+                            alternative.erase(std::remove_if(alternative.begin(),alternative.end(),[&](const Block& candidate){
+                                for(const auto& keep:retained)if(candidate.box.intersected(keep.box).width()*candidate.box.intersected(keep.box).height()>
+                                    std::min(candidate.box.width()*candidate.box.height(),keep.box.width()*keep.box.height())*.35)return true;
+                                return false;
+                            }),alternative.end());
+                            alternative.append(retained);for(auto& word:alternative)word.ocrLine=0;
+                        }
+                        words=alternative;
+                    }
                 }
             }
         }
@@ -587,7 +789,7 @@ QList<Block> recognize(const QImage& source,Cancel cancel,bool grouped,double ma
                 }
             }
         }
-        return cancel->load()?QList<Block>():grouped?groupWords(words):words;
+        return cancel->load()?QList<Block>():grouped?screenshotBlocks(source,words,cancel):words;
     }catch(const winrt::hresult_error&){throw std::runtime_error("Windows OCR 识别失败；请检查语言包");}
 }
 namespace {
@@ -1210,6 +1412,25 @@ QImage translatedImage(const QImage& source,const QList<Block>& blocks,const QSt
             samples<<source.pixel(x,box.top())<<source.pixel(x,box.bottom());
         }
         std::sort(samples.begin(),samples.end(),[](QRgb a,QRgb b){return qGray(a)<qGray(b);});QColor background(samples[samples.size()/2]);
+        // A short source label can become a wider translation. Use adjacent
+        // empty space before wrapping, stopping at borders, icons and text.
+        if(!block.text.contains('\n')){
+            const double fontSize=sourceFontPixels(block);
+            const int scanEnd=std::min(result.width(),qRound(std::min(right,block.box.right()+fontSize*8)));
+            int safeRight=box.right()+1;
+            for(int x=safeRight;x<scanEnd;++x){
+                int occupied=0;
+                for(int y=box.top();y<=box.bottom();++y){
+                    const auto pixel=source.pixelColor(x,y);
+                    const auto difference=std::max({std::abs(pixel.red()-background.red()),std::abs(pixel.green()-background.green()),std::abs(pixel.blue()-background.blue())});
+                    if(difference>38)++occupied;
+                }
+                if(occupied>=2)break;
+                safeRight=x+1;
+            }
+            // Never extend the paint area through a nearby graphical element.
+            cell.setRight(std::max(box.right(),safeRight-3));
+        }
         p.fillRect(box,background);p.setPen(qGray(background.rgb())>140?QColor("#1B1B1B"):QColor("#F5F5F5"));
         QFont font("Microsoft YaHei UI");
         const int originalSize=std::clamp(qRound(sourceFontPixels(block)),6,256);
@@ -1217,6 +1438,10 @@ QImage translatedImage(const QImage& source,const QList<Block>& blocks,const QSt
         // Draw and select from the very same glyph layout; never OCR the
         // translated picture again (that loses punctuation and small letters).
         QTextLayout layout;QTextOption option;option.setWrapMode(QTextOption::WrapAtWordBoundaryOrAnywhere);
+        if(!block.text.contains('\n')&&segments[i].size()<=80){
+            QFont trial(font);trial.setPixelSize(minimumSize);
+            if(QFontMetricsF(trial).horizontalAdvance(segments[i])<=cell.width())option.setWrapMode(QTextOption::NoWrap);
+        }
         layout.setTextOption(option);layout.setText(segments[i]);QPointF origin;
         for(int size=originalSize;size>=minimumSize;--size){
             font.setPixelSize(size);layout.clearLayout();layout.setFont(font);
@@ -1235,7 +1460,8 @@ QImage translatedImage(const QImage& source,const QList<Block>& blocks,const QSt
             if(origin.y()+y-metrics.descent()<=cell.bottom()+1&&width<=cell.width())break;
         }
         p.save();p.setClipRect(cell);
-        p.fillRect(layout.boundingRect().translated(origin).intersected(cell),background);
+        for(int j=0;j<layout.lineCount();++j)
+            p.fillRect(layout.lineAt(j).naturalTextRect().translated(origin).intersected(cell),background);
         layout.draw(&p,origin);
         if(selectable)for(int j=0;j<layout.lineCount();++j){
             auto line=layout.lineAt(j);QRectF rect=line.naturalTextRect().translated(origin);rect=rect.intersected(cell);
