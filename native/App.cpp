@@ -565,7 +565,7 @@ void App::readIconSelection()
     m_iconReading=true;m_iconCancel=token();auto cancel=m_iconCancel;auto epoch=m_iconEpoch;
     auto reader=m_readSelection;auto at=m_iconPoint;auto target=m_iconTarget;
     background([reader,at,target,cancel]{return reader(POINT{at.x(),at.y()},target,cancel);},
-        [this,epoch,cancel,target](Selection selection,QString error){
+        [this,epoch,cancel,target,at](Selection selection,QString error){
             m_iconReading=false;
             auto pending=m_selectionPendingEpoch;
             if(pending&&pending==m_wordEpoch){m_selectionPendingEpoch=0;readSelection();return;}
@@ -573,7 +573,10 @@ void App::readIconSelection()
                 m_selector||m_wordPinned||m_wordEditing||
                 GetAncestor(m_foreground(),GA_ROOT)!=GetAncestor(target,GA_ROOT))return;
             m_iconSelection=selection;
-            auto point=selection.endArea.isEmpty()?m_iconPoint:selection.endArea.bottomRight();
+            // Text ranges are returned in document order, regardless of drag
+            // direction. Anchor to the captured mouse-up point, even if the
+            // pointer has moved while the accessibility read was running.
+            const auto point=at;
             if(!m_icon.window)m_icon=view("qrc:/ui/qml/SelectionIcon.qml",&m_iconBackend);
             auto screen=screenAt(point);m_icon.window->setScreen(screen);
             m_icon.window->setPosition(boundedPosition(m_icon.window,logical(point,screen)+QPoint(5,5)));

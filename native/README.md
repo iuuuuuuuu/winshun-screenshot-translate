@@ -1,4 +1,4 @@
-# 截图翻译 0.4.22：原生版构建与验证
+# 截图翻译 0.4.23：原生版构建与验证
 
 划词弹窗的缩放边缘检查：`python -B native/test_native.py --build <build-or-stage> --runtime <WinShun> --window-frame --scale 1.25 --output <report-dir>`。分别覆盖 1、1.25、1.5、1.75、2；测试只在独立桌面运行，并检查卡片最下行和最右列像素。
 
@@ -18,7 +18,7 @@ Firefox 选区回归：`python -B native/test_selection_firefox.py --driver <gec
 ## 安装和回退
 
 在 WinShun 设置 → 插件 → 从压缩包安装，选择
-`iuuuuuuuu.screenshot-translate-0.4.22.wsplugin`。运行时不检查或启动 Python。
+`iuuuuuuuu.screenshot-translate-0.4.23.wsplugin`。运行时不检查或启动 Python。
 包内包括启动器、应用 DLL、少量 Visual C++ 依赖、许可和文档；DLL 内包含 QML 控件与授权图标字体。
 现有渠道、热键、代理、偏好和 DPAPI 密钥格式保持兼容，不迁移或删除用户的数据目录。
 

@@ -643,6 +643,31 @@ void Probe::run(App& app,const QJsonObject& params)
         check(until([&]{return app.m_icon.window->isVisible();},6000),"selection icon can reopen");
         app.selectionGesture(POINT{-30000,-30000},GetTickCount(),RI_MOUSE_WHEEL);
         check(!app.m_icon.window->isVisible(),"scroll hides selection icon");
+        auto beforeIconMouse=app.m_mouse;
+        for(auto monitor:QGuiApplication::screens()){
+            const auto work=monitor->availableGeometry();
+            for(auto release:{work.topLeft()+QPoint(240,150),work.topLeft()+QPoint(80,150),
+                             work.topLeft()+QPoint(80,80),work.bottomRight()-QPoint(2,2)}){
+                app.hideSelectionIcon();
+                const auto origin=monitor->geometry().topLeft();
+                const auto physical=origin+(release-origin)*monitor->devicePixelRatio();
+                app.m_iconPoint=physical;
+                app.m_readSelection=[](POINT,HWND,Cancel){
+                    QThread::msleep(60);
+                    return Selection{"Hello",{500,320,300,60},{740,360,60,20}};
+                };
+                app.readIconSelection();
+                app.m_mouse=[] {return QPoint(-30000,-30000);}; // moved after mouse-up
+                check(until([&]{return app.m_icon.window->isVisible();}),"selection icon reopens at release position");
+                check(app.m_icon.window->screen()==monitor,"release monitor determines icon monitor");
+                const auto position=app.m_icon.window->position();
+                if(work.adjusted(0,0,-40,-40).contains(release))
+                    check((position-release-QPoint(5,5)).manhattanLength()<=2,"forward, reverse and multiline selections anchor at mouse-up");
+                check(work.contains(app.m_icon.window->geometry()),"release near screen edge keeps icon on screen");
+            }
+        }
+        app.hideSelectionIcon();app.m_mouse=beforeIconMouse;app.m_readSelection=iconReader;
+        report["selectionIconMouseReleaseAnchor"]=true;
         app.m_settings["selectionIconEnabled"]=false;app.updateSelectionMonitor();
         check(!app.m_raw,"disabled selection icon releases idle monitor");app.readIconSelection();
         check(!app.m_iconReading&&!app.m_icon.window->isVisible(),"disabled selection icon never reads");
