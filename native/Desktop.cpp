@@ -29,6 +29,9 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <cstdio>
+#include <cwchar>
+#include <chrono>
 #include <stdexcept>
 
 namespace st {
@@ -742,8 +745,14 @@ Block recognizeAt(const QImage& image,Cancel cancel,QPointF point)
     if(recovered.text.size()>=original.text.size()&&!recovered.text.isEmpty())return recovered;
     return original;
 }
-Selection selectionAt(POINT point,HWND target)
+Selection selectionAt(POINT point,HWND target,int warmupMs)
 {
+    QElapsedTimer timing;timing.start();
+    auto trace=[&](const char* phase){
+        if(qEnvironmentVariableIsSet("ST_SELECTION_TRACE")){
+            std::fprintf(stderr,"[selection] %lldms %s\n",timing.elapsed(),phase);std::fflush(stderr);
+        }
+    };
     // UI Automation providers can block inside another application's COM
     // server. Production calls run in a disposable selection worker.
     static std::atomic_bool reading=false;
@@ -793,6 +802,7 @@ Selection selectionAt(POINT point,HWND target)
             }
         }
     }
+    trace("create automation");
     HRESULT hr=CoInitializeEx(nullptr,COINIT_MULTITHREADED);bool initialized=SUCCEEDED(hr);
     struct Cleanup{bool initialized;~Cleanup(){if(initialized)CoUninitialize();}} cleanup{initialized};
     using Microsoft::WRL::ComPtr;
@@ -836,9 +846,16 @@ Selection selectionAt(POINT point,HWND target)
     // Chromium's focused native child can expose only the web-view host. The
     // selection belongs to its descendant Document/TextPattern, not an ancestor.
     HWND root=target?GetAncestor(target,GA_ROOT):GetForegroundWindow();
+    // Browsers can publish their accessibility tree after the first query.
+    // Keep this COM client alive while it warms up instead of tearing down a
+    // fresh worker after an empty result. The parent still owns the hard timeout.
+    QElapsedTimer warmup;warmup.start();
+    for(int attempt=0;;++attempt){
     ComPtr<IUIAutomationElement> rootElement;
+    trace("root element");
     if(root)automation->ElementFromHandle(root,&rootElement);
     for(int route=0;route<3;++route){
+        trace(route==0?"target route":route==1?"point route":"focus route");
         ComPtr<IUIAutomationElement> element;
         if(route==0&&target)automation->ElementFromHandle(target,&element);
         else if(route==1&&GetAncestor(WindowFromPoint(point),GA_ROOT)==root)automation->ElementFromPoint(point,&element);
@@ -853,18 +870,27 @@ Selection selectionAt(POINT point,HWND target)
         }
     }
     if(rootElement){
+        trace("descendant text patterns");
         VARIANT available{};available.vt=VT_BOOL;available.boolVal=VARIANT_TRUE;
         ComPtr<IUIAutomationCondition> condition;
         ComPtr<IUIAutomationElementArray> containers;
         if(SUCCEEDED(automation->CreatePropertyCondition(UIA_IsTextPatternAvailablePropertyId,available,&condition))&&
             SUCCEEDED(rootElement->FindAll(TreeScope_Descendants,condition.Get(),&containers))&&containers){
             int count=0;containers->get_Length(&count);
+            trace("read descendant selections");
             for(int i=0;i<std::min(count,128);++i){
                 ComPtr<IUIAutomationElement> element;containers->GetElement(i,&element);
                 if(element)if(auto result=selected(element.Get());!result.text.isEmpty())return result;
             }
         }
     }
+    if(attempt>=3||warmup.elapsed()>=warmupMs||!IsWindow(root))break;
+    const auto delay=std::min<qint64>(80*(attempt+1),warmupMs-warmup.elapsed());
+    if(delay<=0)break;
+    std::this_thread::sleep_for(std::chrono::milliseconds(delay));
+    trace("retry after accessibility warmup");
+    }
+    trace("empty selection");
     return {};
 }
 HWND selectionTarget()
@@ -922,7 +948,8 @@ Selection isolatedSelection(POINT point,HWND target,Cancel cancel,int timeoutMs)
     });
     worker.start(QCoreApplication::applicationDirPath()+"/ScreenshotTranslate.exe",{"--selection-worker"});
     if(!worker.waitForStarted(800))throw std::runtime_error("无法启动选区读取，请重试");
-    QJsonObject request{{"x",int(point.x)},{"y",int(point.y)},{"target",QString::number(quintptr(target))}};
+    QJsonObject request{{"x",int(point.x)},{"y",int(point.y)},{"target",QString::number(quintptr(target))},
+        {"warmupMs",std::clamp(timeoutMs-500,0,600)}};
     worker.write(QJsonDocument(request).toJson(QJsonDocument::Compact)+"\n");worker.closeWriteChannel();
     QElapsedTimer elapsed;elapsed.start();
     while(!worker.waitForFinished(25)){
@@ -942,15 +969,65 @@ Selection isolatedSelection(POINT point,HWND target,Cancel cancel,int timeoutMs)
     return {response.value("text").toString(),box.size()==4?QRect(box[0].toInt(),box[1].toInt(),box[2].toInt(),box[3].toInt()):QRect(),
         end.size()==4?QRect(end[0].toInt(),end[1].toInt(),end[2].toInt(),end[3].toInt()):QRect()};
 }
+namespace {
+int selectionPrimer(HWND initial,bool watch)
+{
+    // Keep Firefox accessibility active before the user creates a selection.
+    // A cold Firefox tree does not always backfill the existing selection;
+    // repeated GetSelection calls cannot manufacture its missing event.
+    // This helper only retains the document interface, never reads its text.
+    std::thread([]{std::fgetc(stdin);ExitProcess(0);}).detach();
+    HRESULT hr=CoInitializeEx(nullptr,COINIT_MULTITHREADED);bool initialized=SUCCEEDED(hr);
+    struct Cleanup{bool initialized;~Cleanup(){if(initialized)CoUninitialize();}} cleanup{initialized};
+    using Microsoft::WRL::ComPtr;
+    ComPtr<IUIAutomation2> automation;
+    if(FAILED(CoCreateInstance(__uuidof(CUIAutomation8),nullptr,CLSCTX_INPROC_SERVER,IID_PPV_ARGS(&automation))))return 3;
+    automation->put_ConnectionTimeout(300);automation->put_TransactionTimeout(300);
+    ComPtr<IUIAutomationElement> retained;HWND retainedWindow=nullptr;
+    auto prime=[&](HWND window){
+        auto root=GetAncestor(window,GA_ROOT);if(!root||(root==retainedWindow&&retained))return;
+        wchar_t name[128]{};GetClassNameW(root,name,128);
+        if(QString::fromWCharArray(name)!=QStringLiteral("MozillaWindowClass"))return;
+        // Never reach across desktops (including from private QA into user tabs).
+        wchar_t sourceDesktop[256]{},ownDesktop[256]{};DWORD size=0;
+        auto thread=GetWindowThreadProcessId(root,nullptr);
+        if(!GetUserObjectInformationW(GetThreadDesktop(thread),UOI_NAME,sourceDesktop,sizeof sourceDesktop,&size)||
+            !GetUserObjectInformationW(GetThreadDesktop(GetCurrentThreadId()),UOI_NAME,ownDesktop,sizeof ownDesktop,&size)||
+            std::wcscmp(sourceDesktop,ownDesktop)!=0)return;
+        ComPtr<IUIAutomationElement> element,document;ComPtr<IUIAutomationCondition> condition;
+        if(FAILED(automation->ElementFromHandle(root,&element))||!element)return;
+        VARIANT type{};type.vt=VT_I4;type.lVal=UIA_DocumentControlTypeId;
+        if(SUCCEEDED(automation->CreatePropertyCondition(UIA_ControlTypePropertyId,type,&condition)))
+            element->FindFirst(TreeScope_Descendants,condition.Get(),&document);
+        retained=document?document:element;retainedWindow=root;
+    };
+    static thread_local std::function<void(HWND)> notify;
+    notify=prime;
+    auto hook=watch?SetWinEventHook(EVENT_SYSTEM_FOREGROUND,EVENT_SYSTEM_FOREGROUND,nullptr,
+        [](HWINEVENTHOOK,DWORD,HWND window,LONG,LONG,DWORD,DWORD){if(notify)notify(window);},
+        0,0,WINEVENT_OUTOFCONTEXT|WINEVENT_SKIPOWNPROCESS):nullptr;
+    prime(initial?initial:GetForegroundWindow());
+    auto heartbeat=[] {std::fputs("{\"ready\":true}\n",stdout);std::fflush(stdout);};
+    heartbeat();auto timer=SetTimer(nullptr,0,1000,nullptr);
+    MSG message{};
+    while(GetMessageW(&message,nullptr,0,0)>0){
+        if(message.message==WM_TIMER)heartbeat();
+        TranslateMessage(&message);DispatchMessageW(&message);
+    }
+    if(timer)KillTimer(nullptr,timer);if(hook)UnhookWinEvent(hook);notify={};return 0;
+}
+}
 int selectionWorker()
 {
     QFile input;input.open(stdin,QIODevice::ReadOnly);
     auto request=QJsonDocument::fromJson(input.readLine(4096)).object();
     auto target=reinterpret_cast<HWND>(quintptr(request.value("target").toString().toULongLong()));
+    if(request.value("prime").toBool())return selectionPrimer(target,request.value("watch").toBool());
     if(!target||!IsWindow(target))return 2;
     QJsonObject response;
     try{
-        auto result=selectionAt(POINT{request.value("x").toInt(),request.value("y").toInt()},target);
+        auto result=selectionAt(POINT{request.value("x").toInt(),request.value("y").toInt()},target,
+            std::clamp(request.value("warmupMs").toInt(600),0,600));
         // Some providers expose read-only text even across integrity levels.
         // Try the actual read first; report access restrictions only on failure.
         auto problem=result.text.isEmpty()?selectionAccessProblem(target):QString();

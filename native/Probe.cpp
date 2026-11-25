@@ -181,6 +181,30 @@ void Probe::run(App& app,const QJsonObject& params)
         report["loadedModulePaths"]=modulePaths;report["runtimeDirectory"]=runtime;
         report["qtBundled"]=runtime.compare(QDir::cleanPath(QCoreApplication::applicationDirPath()+"/runtime"),Qt::CaseInsensitive)==0;
         report["startupMemory"]=memory();
+        if(params.value("probeWindowFrame").toBool()){
+            app.openWord("jsel",{400,180});
+            app.m_wordBackend.update({{"sourceText","QQ"},{"translatedText","n. 中国腾讯公司开发的个人电子网络传呼软件"},
+                {"provider","渠道：ECDICT"},{"loading",false},{"status",""}});
+            auto window=app.m_word.window;pump(80);QJsonArray frames;
+            for(auto screen:QGuiApplication::screens()){
+                window->setScreen(screen);window->setPosition(screen->availableGeometry().topLeft()+QPoint(100,100));
+                for(int h:{180,181,182,183,184}){
+                    window->setProperty("preferredWidth",324+h-180);window->setProperty("contentHeight",h);pump(60);
+                    auto id=HWND(window->winId());RECT client{};GetClientRect(id,&client);
+                    auto frame=window->grabWindow();
+                    auto name=QString("frame-%1-%2.png").arg(frames.size()).arg(h);frame.save(out+"/"+name);
+                    auto bottom=frame.pixelColor(frame.width()/2,frame.height()-1);
+                    frames.append(QJsonObject{{"file",name},{"dpr",window->devicePixelRatio()},
+                        {"width",int(client.right)},{"height",int(client.bottom)},{"bottom",bottom.name()},
+                        {"logicalWidth",window->width()},{"logicalHeight",window->height()}});
+                    for(auto point:{QPoint(frame.width()/2,frame.height()-1),QPoint(frame.width()-1,frame.height()/2)})
+                        check(frame.pixelColor(point)!=QColor(Qt::black),"fractional scaling leaves no black edge pixels");
+                }
+            }
+            report["frames"]=frames;report["passed"]=true;
+            QFile f(out+"/report.json");check(f.open(QIODevice::WriteOnly),"write frame report");f.write(QJsonDocument(report).toJson());
+            app.closeWord();QCoreApplication::exit(0);return;
+        }
         if(params.value("probeMemory").toBool()){
             app.m_mouse=[] {return QPoint(100,100);};
             app.m_readClipboard=[] {return QString("Hello world");};
@@ -679,6 +703,9 @@ void Probe::run(App& app,const QJsonObject& params)
         check(word->width()<=512&&word->height()<=384,"small work area lowers both popup limits");
         word->setProperty("availableArea",word->screen()->availableGeometry());pump(30);
         app.m_wordBackend.update(compactState);pump(60);
+        // Return to the original monitor before comparing exact logical sizes;
+        // fractional-DPI alignment may add up to three logical pixels elsewhere.
+        app.m_wordAnchor=QPoint(400,180);app.placeWord();pump(40);
         check(word->size()==compactSize&&longScroll->property("contentY").toReal()==0,"short result restores compact size and scroll origin");
         app.m_wordPinned=true;
         word->setPosition(word->screen()->availableGeometry().bottomRight()-QPoint(word->width()+4,word->height()+4));
@@ -803,7 +830,10 @@ void Probe::run(App& app,const QJsonObject& params)
         app.m_selectionTarget=originalTarget;
         auto retryPosition=app.m_word.window->position();
         auto retryAnchor=app.m_wordAnchor;
-        for(int i=0;i<4;++i){
+        for(int i=0;i<2;++i){
+            // Visibility changes immediately, Column layout settles on the
+            // next frame. Wait before measuring the native click coordinates.
+            pump(50);
             // The mouse is over Retry now; it must not become the next source.
             auto onButton=app.m_word.window->position()+QPoint(36,140);
             app.m_mouse=[onButton]{return onButton;};
@@ -812,6 +842,10 @@ void Probe::run(App& app,const QJsonObject& params)
             click(app.m_word.window,button);
             check(app.m_word.window->position()==retryPosition,"retry loading does not move popup");
             check(until([&]{return !app.m_wordBackend.values["loading"].toBool();}),"retry completes");
+            if(i==0){
+                report["manualRetryReads"]=retryReads->load();
+                check(retryReads->load()==6,"manual retry restores its automatic read budget");
+            }
             check(app.m_word.window->position()==retryPosition&&app.m_wordAnchor==retryAnchor,"repeated retry preserves original position and anchor");
         }
         if(retryReads->load()!=7||!retryTargets->load()||app.m_wordSource!="Settings")
@@ -837,6 +871,25 @@ void Probe::run(App& app,const QJsonObject& params)
         check(until([&]{return app.m_wordBackend.values["translatedText"].toString()=="设置";}),"reopened selection starts after cancelled read without another hotkey");
         check(readCancelled->load()&&readAttempts->load()==2&&!app.m_selectionReading,"only the latest selection read completes");
         report["wordSelectionReplacement"]=true;app.closeWord();
+        auto activeReaders=std::make_shared<std::atomic_int>(0);
+        auto readerOverlap=std::make_shared<std::atomic_bool>(false);
+        auto iconStarted=std::make_shared<std::atomic_bool>(false);
+        auto fakeTarget=HWND(quintptr(0x1234));
+        app.m_foreground=[fakeTarget]{return fakeTarget;};app.m_iconTarget=fakeTarget;
+        app.m_readSelection=[activeReaders,readerOverlap,iconStarted](POINT,HWND,Cancel cancel){
+            if(activeReaders->fetch_add(1))readerOverlap->store(true);
+            if(!iconStarted->exchange(true)){
+                QElapsedTimer wait;wait.start();
+                while(!cancel->load()&&wait.elapsed()<2000)QThread::msleep(5);
+                QThread::msleep(100); // worker teardown must finish before hotkey starts
+            }
+            --*activeReaders;return Selection{"Settings",QRect(540,220,100,30)};
+        };
+        app.readIconSelection();check(until([&]{return iconStarted->load();}),"passive selection read starts");
+        app.textFlow("jsel");
+        check(until([&]{return app.m_wordBackend.values["translatedText"].toString()=="设置";}),"hotkey resumes after cancelling icon read");
+        check(!readerOverlap->load()&&!app.m_iconReading&&!app.m_selectionReading,"icon and hotkey never overlap selection readers");
+        report["wordIconReadSerialization"]=true;app.m_foreground=originalForeground;app.closeWord();
         auto firstRead=std::make_shared<std::atomic_int>(0);
         app.m_readSelection=[firstRead](POINT,HWND,Cancel){
             if(firstRead->fetch_add(1)==0)return Selection{};

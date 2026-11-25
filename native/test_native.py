@@ -233,6 +233,8 @@ def launch(program, args, data, output, initial=None, gpu=False):
         env.pop("QT_QUICK_BACKEND", None);env["QSG_RHI_BACKEND"] = "d3d11"
     else:
         env["QT_QUICK_BACKEND"] = "software"
+    if "--scale" in sys.argv:
+        env["QT_SCALE_FACTOR"] = sys.argv[sys.argv.index("--scale")+1]
     output.mkdir(parents=True, exist_ok=True)
     try:
         with (output / "stderr.log").open("wb") as diagnostics:
@@ -331,10 +333,14 @@ def main():
                 "locale":"zh", "appearance":{"theme":"light","renderer":"d3d11" if "--gpu" in sys.argv else "software","locale":"zh"},
                 "settings":{"provider":"zvo","fallbackEnabled":False}, "capabilities":{"hostHotkeys":True},
                 "probePointerFixtures":pointer_fixtures, "probeDictionaryEndpoint":base,
-                "probeMemory":"--memory" in sys.argv
+                "probeMemory":"--memory" in sys.argv, "probeWindowFrame":"--window-frame" in sys.argv
             }, "--gpu" in sys.argv)
             report=json.loads((out/"report.json").read_text(encoding="utf-8"))
             assert report["passed"], report
+            if "--window-frame" in sys.argv:
+                print(json.dumps(report["frames"]))
+                server.shutdown()
+                return
             assert report["qtVersion"].startswith("6.12.") and not report["qtBundled"], report
             if "--memory" in sys.argv:
                 print(json.dumps({k:v for k,v in report.items() if k.endswith("Memory") or k.endswith("Ms") or k in ("passed","idleWordEngineRetained")},ensure_ascii=True))

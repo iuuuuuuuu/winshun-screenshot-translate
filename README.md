@@ -1,4 +1,4 @@
-# 截图翻译 0.4.21
+# 截图翻译 0.4.22
 
 WinShun 原生翻译插件，支持截图翻译、剪贴板翻译、划词翻译和鼠标指词 OCR。**不需要安装 Python、PySide6 或 Qt。**
 
@@ -28,9 +28,9 @@ Google 和 Edge 默认入口均支持一次提交多个片段。同一渠道限�
 
 需要 **Windows 10/11 x64、WinShun 0.23.0 或更新版本**，以及系统已安装的 OCR 语言包。
 
-1. 从 [0.4.21 发布页](https://github.com/iuuuuuuuu/winshun-screenshot-translate/releases/tag/v0.4.21) 下载 `iuuuuuuuu.screenshot-translate-0.4.21.wsplugin`。
+1. 从 [0.4.22 发布页](https://github.com/iuuuuuuuu/winshun-screenshot-translate/releases/tag/v0.4.22) 下载 `iuuuuuuuu.screenshot-translate-0.4.22.wsplugin`。
 2. 打开 WinShun 设置 → 插件 → 从压缩包安装，选择这个文件，查看并允许所需权限。
-3. 更新后检查插件卡片版本为 **0.4.21**。新版通过检查后由官方插件库自动同步；安装和每次更新仍需用户确认。
+3. 更新后检查插件卡片版本为 **0.4.22**。新版通过检查后由官方插件库自动同步；安装和每次更新仍需用户确认。
 
 从 0.3.3 / 0.4.0 升级继续使用原有渠道、密钥、代理、热键及偏好；不需要重新安装 Python 依赖。原先明确清空或自定义的热键优先于新版默认值，请在插件设置中检查。不要同时启用早期本地 `winshun.screenshot-translate` 与当前社区版。
 

@@ -34,6 +34,7 @@ def main():
     env = dict(os.environ)
     env.pop('ELECTRON_RUN_AS_NODE', None)
     env['WS_APP_DIR'] = str(Path(os.environ['LOCALAPPDATA'])/'Programs/WinShun')
+    env['WS_QT_DIR'] = env['WS_APP_DIR']
     process = None
     try:
         with (out/'browser.log').open('wb') as log:

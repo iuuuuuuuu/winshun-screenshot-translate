@@ -8,6 +8,7 @@
 #include <QTimer>
 #include <QVariantMap>
 #include <QJsonArray>
+#include <QProcess>
 #include <map>
 namespace st {
 class Backend : public QObject {
@@ -60,6 +61,7 @@ private:
     void placeWord();
     void ensureRaw();
     void updateSelectionMonitor();
+    void startSelectionPrimer();
     void selectionGesture(POINT point,DWORD timestamp,USHORT flags);
     void readIconSelection();
     void hideSelectionIcon();
@@ -120,6 +122,8 @@ private:
     Backend m_iconBackend;
     View m_icon;
     QTimer m_iconDelay,m_iconWatch;
+    QTimer m_primerWatchdog,m_primerRestart;
+    QProcess m_selectionPrimer; // destroyed before the timers used by its callbacks
     Cancel m_iconCancel;
     Selection m_iconSelection;
     QPoint m_iconDown,m_iconPoint,m_iconPreviousClick;

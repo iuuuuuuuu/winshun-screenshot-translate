@@ -125,6 +125,22 @@ App::App(ws::captureplugin::Protocol& protocol,QString appDir,QJsonObject initia
             DWORD(GetTickCount()-m_iconShown)>15000)hideSelectionIcon();
     });
     QObject::connect(&m_iconBackend,&Backend::invoked,this,[this](const QString& action,const QVariant&){if(action=="translate")translateIconSelection();});
+    m_primerWatchdog.setSingleShot(true);m_primerRestart.setSingleShot(true);
+    QObject::connect(&m_selectionPrimer,&QProcess::started,this,[this]{
+        m_selectionPrimer.write("{\"prime\":true,\"watch\":true}\n");m_primerWatchdog.start(4000);
+    });
+    QObject::connect(&m_selectionPrimer,&QProcess::readyReadStandardOutput,this,[this]{
+        m_selectionPrimer.readAllStandardOutput();m_primerWatchdog.start(4000);
+    });
+    QObject::connect(&m_selectionPrimer,&QProcess::readyReadStandardError,this,[this]{m_selectionPrimer.readAllStandardError();});
+    QObject::connect(&m_primerWatchdog,&QTimer::timeout,this,[this]{m_selectionPrimer.kill();});
+    QObject::connect(&m_selectionPrimer,&QProcess::finished,this,[this]{
+        m_primerWatchdog.stop();m_primerRestart.start(60000);
+    });
+    QObject::connect(&m_selectionPrimer,&QProcess::errorOccurred,this,[this](QProcess::ProcessError error){
+        if(error==QProcess::FailedToStart){m_primerWatchdog.stop();m_primerRestart.start(60000);}
+    });
+    QObject::connect(&m_primerRestart,&QTimer::timeout,this,&App::startSelectionPrimer);
     m_idleTimer.setSingleShot(true);
     QObject::connect(&m_idleTimer,&QTimer::timeout,this,&App::reclaimIdle);
     used();
@@ -489,8 +505,25 @@ void App::ensureRaw()
 }
 void App::updateSelectionMonitor()
 {
+    startSelectionPrimer();
     if(m_settings.value("selectionIconEnabled").toBool(true))ensureRaw();
     else{hideSelectionIcon();m_iconPressed=false;if(!m_pin&&(!m_word.window||!m_word.window->isVisible()))m_raw.reset();}
+}
+void App::startSelectionPrimer()
+{
+    bool enabled=m_settings.value("selectionIconEnabled").toBool(true)||!m_settings.value("selectionHotkey").toString().isEmpty();
+    if(!enabled){m_primerWatchdog.stop();m_primerRestart.stop();m_selectionPrimer.kill();return;}
+    if(m_selectionPrimer.state()!=QProcess::NotRunning)return;
+    wchar_t desktop[256]{};DWORD size=0;
+    if(!GetUserObjectInformationW(GetThreadDesktop(GetCurrentThreadId()),UOI_NAME,desktop,sizeof desktop,&size))return;
+    const auto name=QString::fromWCharArray(desktop);
+    m_selectionPrimer.setCreateProcessArgumentsModifier([name](QProcess::CreateProcessArguments* args){
+        args->flags|=CREATE_NO_WINDOW;
+        auto startup=reinterpret_cast<STARTUPINFOW*>(args->startupInfo);
+        startup->lpDesktop=const_cast<wchar_t*>(reinterpret_cast<const wchar_t*>(name.utf16()));
+        startup->dwFlags|=STARTF_USESHOWWINDOW;startup->wShowWindow=SW_HIDE;
+    });
+    m_selectionPrimer.start(QCoreApplication::applicationDirPath()+"/ScreenshotTranslate.exe",{"--selection-worker"});
 }
 void App::hideSelectionIcon()
 {
@@ -534,6 +567,8 @@ void App::readIconSelection()
     background([reader,at,target,cancel]{return reader(POINT{at.x(),at.y()},target,cancel);},
         [this,epoch,cancel,target](Selection selection,QString error){
             m_iconReading=false;
+            auto pending=m_selectionPendingEpoch;
+            if(pending&&pending==m_wordEpoch){m_selectionPendingEpoch=0;readSelection();return;}
             if(cancel->load()||epoch!=m_iconEpoch||!error.isEmpty()||selection.text.trimmed().isEmpty()||
                 m_selector||m_wordPinned||m_wordEditing||
                 GetAncestor(m_foreground(),GA_ROOT)!=GetAncestor(target,GA_ROOT))return;
@@ -687,8 +722,8 @@ void App::textFlow(const QString& command,bool retry)
     if(!retry)m_wordRequestPoint=point;
     // Snapshot the source HWND before creating or showing the popup. Browser
     // focus and hit-testing may otherwise refer to our own editable window.
-    if(command=="jsel"&&!retry){
-        m_selectionTarget=selectionTarget();
+    if(command=="jsel"){
+        if(!retry)m_selectionTarget=selectionTarget();
         m_selectionAttempts=0;
     }
     if(command=="ocr"&&m_word.window)m_word.window->hide();
@@ -819,6 +854,15 @@ void App::readSelection(bool follow)
     if(!m_word.window||!m_word.window->isVisible()||m_wordEditing||(follow&&!m_wordPinned))return;
     // Keep a pinned window's polling out of the foreground read and its retry delays.
     if(follow&&m_wordMode=="jsel"&&m_wordSource.isEmpty()&&m_wordBackend.values.value("loading").toBool())return;
+    if(m_iconReading){
+        // A hotkey takes priority over the passive icon, but must wait until
+        // its cancelled worker has exited before querying the same provider.
+        if(!follow){
+            if(m_iconCancel)m_iconCancel->store(true);
+            m_selectionPendingEpoch=m_wordEpoch;
+        }
+        return;
+    }
     if(m_selectionReading){
         // Repeated hotkeys (including close/reopen) replace the old request.
         // Wait for its worker to be reaped before starting the latest one.
