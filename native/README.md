@@ -1,4 +1,6 @@
-# 截图翻译 0.4.32：原生版构建与验证
+# 截图翻译 0.4.33：原生版构建与验证
+
+0.4.33 增加 Firefox 多节点、正反向和小译图标点击后最终选区回归；`--window-memory` 用两个独立进程验证三种窗口各自恢复尺寸、最大化还原和屏幕边界。界面回归覆盖共享标题栏、浅深主题选中文字、紧凑底栏和小尺寸排版，继续使用私有桌面与本地合成数据。
 
 0.4.32 的 `--core` 增加真实 SSE 分包、中文 UTF-8、思考过滤、断流/截断、400 兼容、429 单次请求、长文流式顺序、历史去重/上限/关闭/导出、PDF/前缀/命名和静音 SAPI 合成回归。SAPI 测试输出到内存，禁止播放到用户设备。完整 UI 回归增加历史收藏/打开、PDF 单次目标语言、命名、流式首字和静音朗读状态；全部使用私有桌面和本地服务夹具。
 
@@ -24,7 +26,7 @@ Firefox 选区回归：`python -B native/test_selection_firefox.py --driver <gec
 ## 安装和回退
 
 在 WinShun 设置 → 插件 → 从压缩包安装，选择
-`iuuuuuuuu.screenshot-translate-0.4.32.wsplugin`。运行时不检查或启动 Python。
+`iuuuuuuuu.screenshot-translate-0.4.33.wsplugin`。运行时不检查或启动 Python。
 包内包括启动器、应用 DLL、少量 Visual C++ 依赖、许可和文档；DLL 内包含 QML 控件与授权图标字体。
 现有渠道、热键、代理、偏好和 DPAPI 密钥格式保持兼容，不迁移或删除用户的数据目录。
 
@@ -46,6 +48,9 @@ WinShun 会创建受保护的插件副本并重新启动插件，名称旁出现
 启动日志中的 `selection-reader=administrator` / `standard` 表示插件实际运行权限。
 
 ## 界面与操作
+
+- 设置、独立翻译面板、历史与收藏各自记忆窗口大小，记录在数据目录的 `window-sizes.json`，调整后自动保存，重启后恢复。最大化单独记录，还原时使用最后的普通尺寸；换到较小屏幕时按当前可用区域收拢。
+- 后续新增可调整大小的独立窗口，必须使用共享 `WindowFrame`，设置唯一的 `windowSizeKey`，并通过 `WindowSizeMemory::show` 打开。`App::view` 自动接入保存；不同窗口不能共用 key，也不要在打开时重新写死尺寸。划词、剪贴板翻译、鼠标 OCR 等 `AdaptiveWindow` 小窗不接入此规则，继续由内容和屏幕大小决定尺寸。
 
 - `Alt+Shift+T` / `jst` 框选；`Ctrl+Enter` 全屏；`Shift+Enter` 当前窗口。
 - 宿主支持时使用热键托管；独立插件宿主不提供此能力时，沿用官方截图插件的

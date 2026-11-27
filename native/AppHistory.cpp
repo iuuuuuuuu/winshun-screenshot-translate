@@ -1,4 +1,5 @@
 #include "App.h"
+#include "WindowSizeMemory.h"
 #include <QDateTime>
 #include <QDir>
 #include <QStandardPaths>
@@ -53,9 +54,8 @@ void App::showHistory()
     used();
     try{publishHistory();}catch(const std::exception& e){m_historyBackend.update({{"status",QString::fromUtf8(e.what())}});}
     if(!m_historyView.window)m_historyView=view("qrc:/ui/qml/History.qml",&m_historyBackend);
-    auto screen=QGuiApplication::screenAt(m_mouse());if(!screen)screen=QGuiApplication::primaryScreen();auto area=screen->availableGeometry();
-    auto window=m_historyView.window;window->setScreen(screen);window->resize(std::min(860,area.width()-24),std::min(680,area.height()-40));
-    window->setPosition(area.center()-QPoint(window->width()/2,window->height()/2));window->show();window->requestActivate();
+    auto screen=QGuiApplication::screenAt(m_mouse());if(!screen)screen=QGuiApplication::primaryScreen();
+    WindowSizeMemory::show(m_historyView.window,screen);
 }
 void App::historyAction(const QString& name,const QVariant& value)
 {

@@ -6,12 +6,16 @@ Window {
     objectName: "translation-history"
     visible: false; width: 860; height: 680; minimumWidth: 600; minimumHeight: 440
     color: Theme.page; title: t("翻译历史与收藏", "Translation history")
+    flags: Qt.Window | Qt.FramelessWindowHint
+    property real cornerRadius: 8
+    readonly property string windowSizeKey: "history"
     function t(zh,en) { return backend.state.chinese ? zh : en }
     property bool confirmClear: false
     Timer { id: searchDelay; interval: 180; onTriggered: backend.action("search",searchInput.text) }
     onClosing: event => { event.accepted=false; backend.action("close",null) }
+    WindowFrame { id: frame; hostWindow: window; buttonPrefix: "history"; chinese: !!backend.state.chinese }
     Column {
-        id: header; x: 20; y: 18; width: parent.width-40; spacing: 10
+        id: header; x: 20; y: frame.titleHeight + 10; width: parent.width-40; spacing: 10
         Row { spacing: 8
             FlatButton { objectName: "history-recording"; text: window.t("复制时记录", "Record on copy"); highlighted: !!backend.state.recording; onClicked: backend.action("recording",!backend.state.recording) }
             FlatButton { objectName: "history-filter"; text: window.t("只看收藏", "Favorites"); highlighted: !!backend.state.favoritesOnly; onClicked: backend.action("favoritesOnly",!backend.state.favoritesOnly) }
@@ -44,7 +48,7 @@ Window {
     ListScrollBar { anchors.right: parent.right; anchors.top: list.top; anchors.bottom: list.bottom; flickable: list }
     Column {
         id: footer; x: 20; width: parent.width-40; anchors.bottom: parent.bottom; anchors.bottomMargin: 16; spacing: 8
-        TextEdit { objectName: "history-status"; width: parent.width; height: contentHeight; readOnly: true; selectByMouse: true; textFormat: TextEdit.PlainText; wrapMode: TextEdit.Wrap; font.pixelSize: 12; color: Theme.subtext; text: backend.state.status || "" }
+        TextEdit { selectionColor: Theme.textSelection; selectedTextColor: Theme.text; objectName: "history-status"; width: parent.width; height: contentHeight; readOnly: true; selectByMouse: true; textFormat: TextEdit.PlainText; wrapMode: TextEdit.Wrap; font.pixelSize: 12; color: Theme.subtext; text: backend.state.status || "" }
         Row { spacing: 8
             FlatButton { objectName: "history-csv"; text: window.t("导出 CSV", "Export CSV"); enabled: list.count>0; onClicked: backend.action("export","csv") }
             FlatButton { objectName: "history-anki"; text: window.t("导出 Anki", "Export Anki"); enabled: list.count>0; onClicked: backend.action("export","anki") }

@@ -10,6 +10,7 @@ Rectangle {
     property string glyph
     property string trailingGlyph // after the text (a drop-down's chevron)
     property int textPixelSize: Theme.fontBody
+    property int glyphPixelSize: 14
     property real maximumTextWidth: -1
     property bool highlighted: false
     property bool flat: false // no background until hovered
@@ -46,7 +47,7 @@ Rectangle {
             anchors.verticalCenter: parent.verticalCenter
             visible: button.glyph.length > 0
             glyph: button.glyph
-            size: 14
+            size: button.glyphPixelSize
             color: button.foreground
         }
         Text {

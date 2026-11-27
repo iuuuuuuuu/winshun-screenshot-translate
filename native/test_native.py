@@ -353,6 +353,16 @@ def main():
             assert counts.get("/mymemory-temporary") == 2 and counts.get("/mymemory-quota") == 1, counts
             assert counts.get("/mymemory-wave") == 16 and counts.get("/google-client") == 1, counts
             print((out/"stdout.jsonl").read_text(encoding="utf-8"))
+        elif "--window-memory" in sys.argv:
+            for phase in ('write','read'):
+                launch(build/"ScreenshotTranslate.exe",["--probe"],data,out/phase,{
+                    "dataDir":str(data), "probeOutput":str(out/phase), "probeRuntime":str(Path(os.environ["LOCALAPPDATA"])/"Programs/WinShun"),
+                    "locale":"zh", "appearance":{"theme":"light","renderer":"d3d11" if "--gpu" in sys.argv else "software","locale":"zh"},
+                    "settings":{"provider":"zvo","fallbackEnabled":False}, "capabilities":{"hostHotkeys":True},
+                    "probeWindowMemory":phase}, "--gpu" in sys.argv)
+                report=json.loads((out/phase/"report.json").read_text(encoding="utf-8"))
+                assert report['passed'],report.get('error')
+            print(json.dumps({'passed':True,'independentWindowSizes':True,'processRestart':True}))
         else:
             pointer_fixtures=[]
             if "--pointer-fixture" in sys.argv:

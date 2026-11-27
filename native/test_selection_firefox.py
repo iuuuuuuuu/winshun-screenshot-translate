@@ -5,6 +5,7 @@ profile or accessibility settings are changed. Requires Mozilla geckodriver.
 """
 import argparse
 import ctypes
+from http.server import ThreadingHTTPServer
 import json
 import os
 from pathlib import Path
@@ -17,7 +18,7 @@ import urllib.parse
 import uuid
 
 import requests
-from test_native import NativeProcess, api, w
+from test_native import NativeProcess, Server, api, w
 
 
 def main():
@@ -27,6 +28,7 @@ def main():
     parser.add_argument('--build', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--without-primer', action='store_true', help='Reproduce the cold Firefox accessibility failure')
+    parser.add_argument('--icon-click', action='store_true', help='Verify the actual QML icon refreshes a late Firefox selection')
     args = parser.parse_args()
     api('user32', 'SetProcessDpiAwarenessContext', w.BOOL, w.HANDLE)(ctypes.c_void_p(-4))
     args.output.mkdir(parents=True, exist_ok=True)
@@ -100,6 +102,9 @@ def main():
         report['primerEnabled'] = primer is not None
         for name, x, y in [('primary-cold', 100, 100), ('primary-retry', 100, 100), ('primary-reselect', 100, 100),
                             ('secondary', 2700, 100), ('secondary-repeat', 2700, 100),
+                            ('inline-release', 100, 100), ('inline-reverse', 100, 100),
+                            ('inline-partial', 100, 100), ('inline-indented', 100, 100),
+                            ('inline-shadow', 100, 100), ('inline-shadow-reverse', 100, 100),
                             ('long-scrolled', 100, 100), ('long-focus-restored', 100, 100),
                             ('long-over-100k', 100, 100)]:
             command('POST', '/window/rect', {'x': x, 'y': y, 'width': 800, 'height': 500})
@@ -130,6 +135,25 @@ def main():
                     command('POST', '/url', {'url': 'data:text/html,<title>Temporary focus fixture</title>Other fixture'})
                     command('DELETE', '/window')
                     command('POST', '/window', {'handle': original})
+            if name.startswith('inline-'):
+                expected = command('POST', '/execute/sync', {'script': r'''
+                const source = document.getElementById('source');
+                source.innerHTML = '<a href="#author">iuuuuuuuu</a> released this <relative-time>17 minutes ago</relative-time>';
+                if(arguments[0] === 'inline-indented' || arguments[0].startsWith('inline-shadow'))
+                    source.innerHTML = '\n      <a href="#author">iuuuuuuuu</a>\n\n    released this\n\n      <relative-time>\n        27 Nov 11:09\n      </relative-time>\n  ';
+                if(arguments[0].startsWith('inline-shadow')) {
+                    const time = source.querySelector('relative-time');
+                    time.textContent = '17 minutes ago';
+                    time.attachShadow({mode:'open'}).innerHTML = '<span><slot></slot></span>';
+                }
+                const selection = window.getSelection(); selection.removeAllRanges();
+                const first = source.querySelector('a').firstChild;
+                const time = source.querySelector('relative-time');
+                const last = time.firstChild;
+                if(arguments[0].endsWith('reverse')) selection.setBaseAndExtent(last, last.length, first, 0);
+                else if(arguments[0] === 'inline-partial') selection.setBaseAndExtent(first, 3, last, 7);
+                else selection.setBaseAndExtent(first, 0, last, last.length);
+                return selection.toString();''', 'args': [name]})
             expected = command('POST', '/execute/sync', {'script': 'return window.getSelection().toString()', 'args': []})
             assert expected, 'Browser itself cleared the fixture selection'
             expected = expected.replace('\r\n', '\n')
@@ -165,12 +189,72 @@ def main():
                                         'expected': expected[max(0, mismatch-30):mismatch+50]}
             report['cases'].append(result)
             print(json.dumps({k: v for k, v in result.items() if k != 'text'} | {'textLength': len(result.get('text', ''))}), flush=True)
+        if args.icon_click:
+            for reverse in (False, True):
+                icon_out = args.output.resolve()/('icon-reverse' if reverse else 'icon-forward')
+                icon_out.mkdir(exist_ok=True)
+                # Model the accessibility tree publishing the drag's final
+                # endpoint after the first non-empty selection was captured.
+                initial = command('POST', '/execute/sync', {'script': '''
+                const source=document.getElementById('source'); source.style.whiteSpace='normal';
+                source.innerHTML='<a href="#author">iuuuuuuuu</a> released this <relative-time>17 minutes ago</relative-time>';
+                window.scrollTo(0,0); const selection=window.getSelection();
+                selection.setBaseAndExtent(source.firstChild.firstChild,0,source.childNodes[1],10);
+                return selection.toString();''', 'args': []})
+                server=ThreadingHTTPServer(('127.0.0.1',0),Server)
+                server.daemon_threads=True
+                threading.Thread(target=server.serve_forever,daemon=True).start()
+                try:
+                    with tempfile.TemporaryDirectory(prefix='FirefoxIconQA-') as temporary:
+                        data=Path(temporary)
+                        (data/'services.json').write_text(json.dumps({'version':2,'profiles':{
+                            'google':{'endpoint':f'http://127.0.0.1:{server.server_port}/google'}}}),encoding='utf-8')
+                        icon_env=dict(env,QT_QUICK_BACKEND='software',WS_DATA_DIR=str(data))
+                        for key in ('HTTPS_PROXY','HTTP_PROXY','ALL_PROXY','OPENAPI_TRANSLATE_PROXY'):
+                            icon_env.pop(key,None)
+                        with (icon_out/'stderr.log').open('wb') as log:
+                            probe=NativeProcess([str(args.build.resolve()/'ScreenshotTranslate.exe'),'--probe'],icon_env,desktop_name,log)
+                        chunks=[]
+                        drain=threading.Thread(target=lambda:chunks.append(probe.stdout.read()),daemon=True);drain.start()
+                        try:
+                            params={'dataDir':str(data),'probeOutput':str(icon_out),'probeRuntime':str(runtime),
+                                'locale':'zh','appearance':{'theme':'light','renderer':'software'},
+                                'settings':{'provider':'google','fallbackEnabled':False},'capabilities':{'hostHotkeys':True},
+                                'probeFirefoxTarget':str(target),'probeInitialSelection':initial,
+                                'probeFinalSelection':'iuuuuuuuu released this 17 minutes ago'}
+                            probe.stdin.write(json.dumps({'jsonrpc':'2.0','id':1,'method':'initialize','params':params}).encode()+b'\n')
+                            probe.stdin.flush()
+                            deadline=time.monotonic()+10
+                            while not (icon_out/'icon-ready.json').exists():
+                                assert time.monotonic()<deadline, 'Native Firefox icon did not appear'
+                                time.sleep(.05)
+                            final=command('POST','/execute/sync',{'script': '''
+                            const source=document.getElementById('source'), first=source.firstChild.firstChild,
+                                last=source.querySelector('relative-time').firstChild, selection=window.getSelection();
+                            if(arguments[0]) selection.setBaseAndExtent(last,last.length,first,0);
+                            else selection.setBaseAndExtent(first,0,last,last.length);
+                            return selection.toString();''','args':[reverse]})
+                            assert final==params['probeFinalSelection']
+                            (icon_out/'click-ready').touch()
+                            code=probe.wait(15);drain.join(3)
+                            result=json.loads((icon_out/'report.json').read_text(encoding='utf-8'))
+                            assert code==0 and result['passed'],result.get('error')
+                            report.setdefault('iconCases',[]).append({'reverse':reverse,'passed':True,
+                                'initialLength':len(initial),'finalLength':len(final)})
+                        finally:
+                            probe.stdin.close()
+                            try: probe.wait(2)
+                            except subprocess.TimeoutExpired: probe.kill();probe.wait()
+                            drain.join(3);probe.close()
+                            (icon_out/'stdout.jsonl').write_bytes(b''.join(chunks))
+                finally:
+                    server.shutdown();server.server_close()
         report['passed'] = all(case['passed'] for case in report['cases'])
         if primer:
             primer.stdin.close()
             report['primerExitedOnParentClose'] = primer.wait(3) == 0
             assert report['primerExitedOnParentClose']
-        assert report['passed'], report
+        assert report['passed'], [{k: c[k] for k in ('name', 'difference') if k in c} for c in report['cases'] if not c['passed']]
     finally:
         (args.output/'report.json').write_text(json.dumps(report, indent=2), encoding='utf-8')
         if primer:

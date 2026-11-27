@@ -49,7 +49,7 @@ AdaptiveWindow {
             text: backend.state.translatedText; readOnly: true; selectByMouse: true; persistentSelection: true
             textFormat: TextEdit.PlainText
             color: Theme.text; font.family: "Segoe UI"; font.pixelSize: 16; wrapMode: TextEdit.Wrap
-            selectionColor: Theme.textSelection
+            selectionColor: Theme.textSelection; selectedTextColor: Theme.text
         }
     }
     ListScrollBar {

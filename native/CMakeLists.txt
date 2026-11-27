@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(ScreenshotTranslate VERSION 0.4.32 LANGUAGES CXX)
+project(ScreenshotTranslate VERSION 0.4.33 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_AUTOMOC ON)
 find_package(Qt6 6.12 REQUIRED COMPONENTS Core Gui Qml Quick)
@@ -18,7 +18,7 @@ add_executable(ScreenshotTranslate Launcher.cpp)
 set_target_properties(ScreenshotTranslate PROPERTIES AUTOMOC OFF MSVC_RUNTIME_LIBRARY MultiThreaded)
 target_link_libraries(ScreenshotTranslate PRIVATE version)
 qt_add_library(ScreenshotTranslateApp SHARED
-    Main.cpp App.cpp AppHistory.cpp App.h History.cpp History.h TextTools.cpp TextTools.h Speech.cpp Speech.h Services.cpp Services.h AiStream.cpp AiStream.h Dictionary.cpp Dictionary.h Http.cpp Http.h Desktop.cpp Desktop.h Probe.cpp Probe.h
+    Main.cpp App.cpp AppHistory.cpp App.h WindowSizeMemory.cpp WindowSizeMemory.h History.cpp History.h TextTools.cpp TextTools.h Speech.cpp Speech.h Services.cpp Services.h AiStream.cpp AiStream.h Dictionary.cpp Dictionary.h Http.cpp Http.h Desktop.cpp Desktop.h Probe.cpp Probe.h
     vendor/protocol/Protocol.cpp vendor/protocol/Protocol.h
     vendor/capture/PinWindow.cpp vendor/capture/PinTools.cpp vendor/capture/Geometry.cpp
     vendor/capture/SmartRedact.cpp
@@ -29,7 +29,7 @@ target_link_options(ScreenshotTranslateApp PRIVATE /DEBUG /MAP)
 target_link_libraries(ScreenshotTranslateApp PRIVATE Qt6::Gui Qt6::Quick Qt6::Qml
     windowsapp ole32 oleaut32 user32 gdi32 imm32 crypt32 dwmapi shell32 winhttp psapi elscore sapi)
 set(shared_qml)
-foreach(name Theme FlatButton InputBox ChoiceTabs ToolButton ServiceRow LanguageMenu ServiceTip)
+foreach(name Theme FlatButton InputBox ChoiceTabs ToolButton ServiceRow LanguageMenu ServiceTip WindowFrame)
     configure_file("${CMAKE_CURRENT_SOURCE_DIR}/../qml/WinShun/${name}.qml" "${CMAKE_CURRENT_BINARY_DIR}/shared/${name}.qml" COPYONLY)
     set(file "${CMAKE_CURRENT_BINARY_DIR}/shared/${name}.qml")
     set_source_files_properties("${file}" PROPERTIES QT_RESOURCE_ALIAS "${name}.qml")

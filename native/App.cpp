@@ -1,5 +1,6 @@
 #include "App.h"
 #include "Probe.h"
+#include "WindowSizeMemory.h"
 #include "TextTools.h"
 #include <QFile>
 #include <QRegularExpression>
@@ -69,10 +70,12 @@ void roundWindow(QQuickWindow* w)
     if(w->property("cornerRadius").toReal()<=0||w->property("roundedMaskInstalled").toBool())return;
     w->setProperty("roundedMaskInstalled",true);
     auto update=[w]{
+        if(w->windowState()==Qt::WindowMaximized||w->windowState()==Qt::WindowFullScreen){w->setMask({});return;}
         QPainterPath path;path.addRoundedRect(QRectF(0,0,w->width(),w->height()),w->property("cornerRadius").toReal(),w->property("cornerRadius").toReal());
         w->setMask(QRegion(path.toFillPolygon().toPolygon()));
     };
     QObject::connect(w,&QWindow::widthChanged,w,update);QObject::connect(w,&QWindow::heightChanged,w,update);
+    QObject::connect(w,&QWindow::windowStateChanged,w,update);
     QObject::connect(w,&QWindow::screenChanged,w,update);QObject::connect(w,&QWindow::visibleChanged,w,update);update();
 }
 QPoint boundedPosition(QQuickWindow* window,QPoint point)
@@ -273,6 +276,7 @@ View App::view(const QString& file,Backend* backend)
         delete obj;throw std::runtime_error("无法创建 WinShun 界面");
     }
     obj->setParent(v.engine.get());roundWindow(v.window);
+    WindowSizeMemory::install(v.window,m_services->directory());
     if(Probe::requested())std::fprintf(stderr,"[ui-timing] %s component=%lld create=%lld native=%lld ms\n",qPrintable(file),compiled,created-compiled,elapsed.elapsed()-created);
     return v;
 }
@@ -667,7 +671,12 @@ void App::translateIconSelection()
     if(m_iconSelection.text.trimmed().isEmpty())return;
     auto selection=m_iconSelection;auto point=m_iconPoint;auto target=m_iconTarget;
     hideSelectionIcon();m_selectionTarget=target;
-    openWord("jsel",point,selection.area);translateWord(selection.text);
+    openWord("jsel",point,selection.area);
+    // A browser may still be publishing the final drag endpoint when the
+    // passive icon first reads it. Confirm the selected range on click; keep
+    // the earlier snapshot only if the source no longer exposes a selection.
+    m_iconClickFallback=selection;m_wordRequestPoint=point;m_selectionAttempts=0;
+    readSelection();
 }
 void App::closePin()
 {
@@ -892,6 +901,7 @@ void App::textFlow(const QString& command,bool retry)
 }
 void App::openWord(QString mode,QPoint anchor,QRect selection)
 {
+    m_iconClickFallback={};
     m_copySelectionTimer.stop();
     hideSelectionIcon();
     used();
@@ -1055,6 +1065,10 @@ void App::readSelection(bool follow)
             auto pending=m_selectionPendingEpoch;m_selectionPendingEpoch=0;
             if(pending&&pending==m_wordEpoch){readSelection();return;}
             if(epoch!=m_wordEpoch||selectionCancel->load()||(!follow&&cancel->load())||m_wordEditing||!m_word.window->isVisible())return;
+            if(!follow&&!m_iconClickFallback.text.isEmpty()){
+                if(!error.isEmpty()||selection.text.trimmed().isEmpty()){selection=m_iconClickFallback;error.clear();}
+                m_iconClickFallback={};
+            }
             auto text=selection.text.trimmed();
             if(follow){
                 if(m_followBaseline){m_followBaseline=false;m_lastSelection=text;return;}
@@ -1194,15 +1208,10 @@ void App::showPanel(const QString& text)
     used();
     if(!m_panel.window)m_panel=view("qrc:/ui/qml/Panel.qml",&m_panelBackend);
     auto screen=QGuiApplication::screenAt(m_mouse());if(!screen)screen=QGuiApplication::primaryScreen();
-    auto area=screen->availableGeometry();m_panel.window->setScreen(screen);
-    m_panel.window->setMaximumSize(QSize(std::min(1280,area.width()),std::min(1000,area.height())));
-    if(!m_panel.window->isVisible()){
-        m_panel.window->resize(std::min(960,area.width()-24),std::min(760,area.height()-40));
-        m_panel.window->setPosition(area.center()-QPoint(m_panel.window->width()/2,m_panel.window->height()/2));
-    }
+    auto area=screen->availableGeometry();
     m_panelBackend.update({{"menuLeft",area.left()},{"menuRight",area.right()},{"menuTop",area.top()},{"menuBottom",area.bottom()}});
     if(!text.isEmpty())panelAction("input",text);
-    m_panel.window->show();m_panel.window->requestActivate();
+    WindowSizeMemory::show(m_panel.window,screen);
 }
 void App::saveTextTools()
 {
@@ -1420,7 +1429,7 @@ void App::aiAction(const QString& name,const QVariant& value)
 void App::showSettings()
 {
     used();
-    if(m_config.window&&m_config.window->isVisible()){m_config.window->requestActivate();return;}
+    if(m_config.window&&m_config.window->isVisible()){WindowSizeMemory::show(m_config.window,m_config.window->screen());return;}
     ++m_configEpoch;m_drafts={};m_tests.clear();m_batch=false;
     m_routingDraft=m_services->routing();
     for(auto p:providers)m_drafts[p]=m_services->profile(p);
@@ -1434,7 +1443,8 @@ void App::showSettings()
     if(!m_config.window)m_config=view("qrc:/qt/qml/WinShun/Settings.qml",&m_configBackend);
     m_config.window->setProperty("iconOptionsOpen",false);
     if(auto scroll=m_config.window->findChild<QObject*>("settings-scroll"))scroll->setProperty("contentY",0);
-    m_config.window->show();m_config.window->requestActivate();
+    auto screen=QGuiApplication::screenAt(m_mouse());if(!screen)screen=QGuiApplication::primaryScreen();
+    WindowSizeMemory::show(m_config.window,screen);
 }
 void App::configSelect(const QString& p)
 {

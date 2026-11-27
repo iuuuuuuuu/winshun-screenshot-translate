@@ -1,5 +1,6 @@
 #include "Probe.h"
 #include "App.h"
+#include "WindowSizeMemory.h"
 #include <QElapsedTimer>
 #include <QEventLoop>
 #include <QJsonDocument>
@@ -148,6 +149,35 @@ void hoverItem(QQuickWindow* window,QQuickItem* item)
     QMouseEvent move(QEvent::MouseMove,point,window->mapToGlobal(point.toPoint()),Qt::NoButton,Qt::NoButton,Qt::NoModifier);
     QCoreApplication::sendEvent(window,&move);pump(20);
 }
+void windowFrame(QQuickWindow* window,const QString& prefix,const QString& out)
+{
+    check(window&&window->flags().testFlag(Qt::FramelessWindowHint),"utility window uses shared custom frame");
+    check(!window->flags().testFlag(Qt::WindowStaysOnTopHint)&&
+        !(GetWindowLongPtrW(HWND(window->winId()),GWL_EXSTYLE)&WS_EX_TOPMOST),"utility window is not always on top");
+    const auto originalSize=window->size();
+    auto item=[&](const QString& suffix){return visualItem(window->contentItem(),prefix+suffix);};
+    check(item("-title-drag")&&item("-resize-10"),"shared frame has title dragging and bottom-right resizing");
+    auto close=item("-close");hoverItem(window,close);
+    check(close->property("color").value<QColor>()==QColor("#C42B1C"),"utility close button visibly changes on hover");
+    window->grabWindow().save(out+"/"+prefix+"-close-hover.png");
+    auto p=close->mapToScene(QPointF(close->width()/2,close->height()/2))*window->devicePixelRatio();
+    auto hwnd=HWND(window->winId());
+    PostMessageW(hwnd,WM_LBUTTONDOWN,MK_LBUTTON,MAKELPARAM(qRound(p.x()),qRound(p.y())));pump(20);
+    check(close->property("pressed").toBool()&&close->property("color").value<QColor>()==QColor("#B82028"),"utility close press is visibly darker");
+    // Moving out before release cancels the close, as it does for a real button.
+    PostMessageW(hwnd,WM_MOUSEMOVE,MK_LBUTTON,MAKELPARAM(40,100));pump(10);
+    PostMessageW(hwnd,WM_LBUTTONUP,0,MAKELPARAM(40,100));pump(20);
+    check(window->isVisible(),"dragging away cancels close");
+    click(window,item("-maximize"));
+    check(until([&]{return window->windowState()==Qt::WindowMaximized;}),"shared maximize button works");
+    check(window->mask().isEmpty(),"maximized utility window has no rounded clipping");
+    click(window,item("-maximize"));
+    check(until([&]{return window->windowState()==Qt::WindowNoState;}),"shared restore button works");
+    check(!window->mask().isEmpty(),"restored utility window regains rounded corners");
+    click(window,item("-minimize"));
+    check(until([&]{return window->windowState()==Qt::WindowMinimized;}),"shared minimize button works");
+    window->showNormal();window->resize(originalSize);pump(60);
+}
 }
 bool Probe::privateDesktop()
 {
@@ -186,10 +216,72 @@ void Probe::run(App& app,const QJsonObject& params)
         report["loadedModulePaths"]=modulePaths;report["runtimeDirectory"]=runtime;
         report["qtBundled"]=runtime.compare(QDir::cleanPath(QCoreApplication::applicationDirPath()+"/runtime"),Qt::CaseInsensitive)==0;
         report["startupMemory"]=memory();
+        if(params.contains("probeWindowMemory")){
+            const bool write=params.value("probeWindowMemory")=="write";
+            app.showSettings();app.showPanel();app.showHistory();pump(60);
+            const QList<QPair<QQuickWindow*,QSize>> windows{{app.m_config.window,{820,600}},
+                {app.m_panel.window,{900,660}},{app.m_historyView.window,{720,510}}};
+            if(write){
+                for(const auto& entry:windows)entry.first->resize(entry.second);
+                // Maximize immediately after resizing, before the disk debounce.
+                app.m_panel.window->showMaximized();pump(50);
+                app.configAction("close",{});app.panelAction("close",{});app.historyAction("close",{});
+                app.dispose(app.m_config);pump(60);
+                QFile file(app.m_services->directory()+"/window-sizes.json");check(file.open(QIODevice::ReadOnly),"window sizes saved before close");
+                const auto saved=QJsonDocument::fromJson(file.readAll()).object();
+                report["savedWindowSizes"]=saved;
+                check(saved["settings"].toObject()["width"]==820&&saved["history"].toObject()["width"]==720&&
+                    saved["translation-panel"].toObject()["width"]==900&&saved["translation-panel"].toObject()["height"]==660&&
+                    saved["translation-panel"].toObject()["maximized"].toBool(),"window sizes are independent and maximize preserves normal dimensions");
+            }else{
+                check(app.m_panel.window->windowState()==Qt::WindowMaximized,"maximized panel restored after process restart");
+                click(app.m_panel.window,visualItem(app.m_panel.window->contentItem(),"panel-maximize"));pump(60);
+                for(const auto& entry:windows)check(entry.first->size()==entry.second,"each window restores its own size after restart");
+                app.showHistory();app.showPanel();
+                check(app.m_historyView.window->size()==QSize(720,510)&&app.m_panel.window->size()==QSize(900,660),"opening an already visible window keeps its size");
+                app.openWord("jsel",{400,180});
+                check(!app.m_word.window->findChild<WindowSizeMemory*>(),"adaptive translation popup has no persistent size controller");app.closeWord();
+                app.m_config.window->grabWindow().save(out+"/settings-remembered.png");
+                app.m_panel.window->grabWindow().save(out+"/panel-remembered.png");
+                app.m_historyView.window->grabWindow().save(out+"/history-remembered.png");
+                app.configAction("close",{});app.panelAction("close",{});app.historyAction("close",{});
+                app.dispose(app.m_config);pump(40);
+                const auto path=app.m_services->directory()+"/window-sizes.json";
+                QFile file(path);check(file.open(QIODevice::ReadOnly),"size file available for monitor bounds fixture");
+                auto saved=QJsonDocument::fromJson(file.readAll()).object();file.close();
+                saved["settings"]=QJsonObject{{"width",10000},{"height",10000}};atomicJson(path,saved);
+                app.showSettings();pump(60);
+                check(app.m_config.window->screen()->availableGeometry().contains(app.m_config.window->geometry()),"restoring a large saved size is bounded by the current monitor");
+                app.configAction("close",{});report["windowSizeMonitorBounds"]=true;
+            }
+            report["independentWindowSizes"]=true;report["phase"]=params.value("probeWindowMemory");report["passed"]=true;
+            atomicJson(out+"/report.json",report);QCoreApplication::exit(0);return;
+        }
+        if(params.contains("probeFirefoxTarget")){
+            const auto target=HWND(quintptr(params.value("probeFirefoxTarget").toString().toULongLong()));
+            wchar_t browserDesktop[256]{},ownDesktop[256]{};DWORD bytes=0;
+            GetUserObjectInformationW(GetThreadDesktop(GetWindowThreadProcessId(target,nullptr)),UOI_NAME,browserDesktop,sizeof browserDesktop,&bytes);
+            GetUserObjectInformationW(GetThreadDesktop(GetCurrentThreadId()),UOI_NAME,ownDesktop,sizeof ownDesktop,&bytes);
+            check(IsWindow(target)&&QString::fromWCharArray(browserDesktop)==QString::fromWCharArray(ownDesktop),"Firefox fixture is on this private desktop");
+            app.m_foreground=[target]{return target;};app.m_iconTarget=target;app.m_iconPoint={400,280};
+            app.readIconSelection();check(until([&]{return app.m_icon.window&&app.m_icon.window->isVisible();},6000),"Firefox selection shows actual icon");
+            report["initialSelection"]=app.m_iconSelection.text;
+            check(app.m_iconSelection.text==params.value("probeInitialSelection").toString().trimmed(),"Firefox icon captures the initial partial range");
+            atomicJson(out+"/icon-ready.json",{{"ready",true}});
+            check(until([&]{return QFile::exists(out+"/click-ready");},15000),"Firefox publishes final selection before click");
+            click(app.m_icon.window,visualItem(app.m_icon.window->contentItem(),"translate-selection-icon"));
+            check(until([&]{return !app.m_wordBackend.values.value("loading").toBool();},6000),"Firefox icon click completes local translation");
+            check(app.m_wordSource==params.value("probeFinalSelection").toString(),"Firefox icon click refreshes final complete range");
+            check(!app.m_wordBackend.values.value("translatedText").toString().isEmpty(),"Firefox selected text reaches translation service");
+            pump(200);app.m_word.window->grabWindow().save(out+"/firefox-icon-result.png");
+            report["firefoxIconFinalRange"]=true;report["passed"]=true;atomicJson(out+"/report.json",report);
+            app.closeWord();QCoreApplication::exit(0);return;
+        }
         if(params.value("probeSettings").toBool()){
             QElapsedTimer elapsed;elapsed.start();app.showSettings();
             report["settingsCreateMs"]=double(elapsed.elapsed());
             auto window=app.m_config.window;check(window,"settings window exists");
+            windowFrame(window,"settings",out);report["settingsSharedFrame"]=true;
             window->grabWindow().save(out+"/settings-home.png");
             report["uiRenderer"]=window->rendererInterface()->graphicsApi()==QSGRendererInterface::Software?"software":"d3d11";
             report["settingsFirstImageMs"]=double(elapsed.elapsed());
@@ -223,7 +315,9 @@ void Probe::run(App& app,const QJsonObject& params)
             app.configAction("endpoint","https://unsaved.invalid");
             app.configAction("close",{});elapsed.restart();app.showSettings();window->grabWindow();
             report["settingsReopenMs"]=double(elapsed.elapsed());
-            check(app.m_config.window==window,"settings reuses view until idle");app.configSelect("google");
+            check(app.m_config.window==window,"settings reuses view until idle");
+            check(!(GetWindowLongPtrW(HWND(window->winId()),GWL_EXSTYLE)&WS_EX_TOPMOST),"reopened settings remains a normal window");
+            report["settingsNotTopmost"]=true;app.configSelect("google");
             check(app.m_configBackend.values.value("endpoint")==savedEndpoint,"reopening discards cancelled draft");
             report["settingsMemory"]=memory();report["passed"]=true;
             atomicJson(out+"/report.json",report);app.configAction("close",{});QCoreApplication::exit(0);return;
@@ -233,6 +327,11 @@ void Probe::run(App& app,const QJsonObject& params)
             app.openWord("jsel",{400,180});app.translateWord("Hello + 100%");
             check(until([&]{return !app.m_wordBackend.values["loading"].toBool();}),"popup translation ready");pump(200);
             auto word=app.m_word.window;
+            for(auto name:{"word-history","word-speak-source","word-speak-target"}){
+                auto action=visualItem(word->contentItem(),name);
+                check(action&&action->property("textPixelSize").toInt()==12&&action->property("glyphPixelSize").toInt()==12,"word footer matches auxiliary text and icon size");
+            }
+            word->grabWindow().save(out+"/word-compact-footer.png");report["wordCompactFooter"]=true;
             check(word->opacity()==1,"popup opening animation finishes");
             auto closeButton=word->findChild<QQuickItem*>("word-close");
             hoverItem(word,closeButton);
@@ -266,6 +365,16 @@ void Probe::run(App& app,const QJsonObject& params)
             auto meaning=word->findChild<QQuickItem*>("word-meaning");
             auto translationScroll=word->findChild<QQuickItem*>("word-scroll");
             auto toggle=word->findChild<QQuickItem*>("word-source-toggle");
+            for(auto theme:{"light","dark"}){
+                app.appearance({{"theme",theme}});QMetaObject::invokeMethod(word,"focusEditor");pump(180);
+                QMetaObject::invokeMethod(source,"selectAll");QMetaObject::invokeMethod(meaning,"selectAll");pump(40);
+                const auto expected=QColor(QString(theme)=="dark"?"#F3F3F3":"#1B1B1B");
+                for(auto field:{source,meaning})check(field->property("selectedTextColor").value<QColor>()==expected,"selected source and translation retain readable foreground in both themes");
+                word->grabWindow().save(out+"/word-selected-"+theme+".png");
+            }
+            report["wordSelectionReadableBothThemes"]=true;
+            app.appearance({{"theme","light"}});QMetaObject::invokeMethod(source,"deselect");QMetaObject::invokeMethod(meaning,"deselect");
+            QMetaObject::invokeMethod(word,"resetInteraction");pump(180);
             check(!toggle->isVisible(),"short source has no expand control");
             app.m_wordBackend.update({{"sourceText","First line\nSecond line\nThird line"}});pump(180);
             check(preview->property("lineCount").toInt()==3&&!toggle->isVisible(),"exactly three source lines have no expand control");
@@ -827,7 +936,7 @@ void Probe::run(App& app,const QJsonObject& params)
         check(until([&]{return recovered->ready.load();},4000)&&recovered->error.isEmpty()&&recovered->selection.text=="Hello","selection works after a stalled provider");
         report["wordSelectionTimeoutRecovery"]=true;
         // Read the fixture selection without any translation, then click the
-        // actual passive QML icon after changing the source selection.
+        // actual passive QML icon after the source publishes its final range.
         app.m_settings["provider"]="google";
         // Private desktops cannot become the user's foreground desktop. Inject
         // only that identity; still read the real EDIT through the worker and
@@ -847,10 +956,16 @@ void Probe::run(App& app,const QJsonObject& params)
         check(app.m_icon.window->flags().testFlag(Qt::WindowDoesNotAcceptFocus)&&GetForegroundWindow()==foregroundBefore,"selection icon does not steal foreground");
         auto screen=app.m_icon.window->screen();check(screen->availableGeometry().contains(app.m_icon.window->geometry()),"selection icon stays within monitor work area");
         app.m_icon.window->grabWindow().save(out+"/selection-icon.png");
-        SendMessageW(edit,EM_SETSEL,6,11);
+        SendMessageW(edit,EM_SETSEL,0,11);
         click(app.m_icon.window,app.m_icon.window->findChild<QQuickItem*>("translate-selection-icon"));
         check(until([&]{return !app.m_wordBackend.values.value("loading").toBool();}),"selection icon click translates");
-        check(app.m_wordSource=="Hello"&&!app.m_wordBackend.values.value("translatedText").toString().isEmpty()&&!app.m_icon.window->isVisible(),"icon uses captured text even if source selection changes");
+        check(app.m_wordSource=="Hello world"&&!app.m_wordBackend.values.value("translatedText").toString().isEmpty()&&!app.m_icon.window->isVisible(),"icon confirms final selection instead of translating the early partial snapshot");
+        app.closeWord();SendMessageW(edit,EM_SETSEL,0,5);app.m_iconTarget=edit;app.readIconSelection();
+        check(until([&]{return app.m_icon.window->isVisible();},6000),"icon captures fallback before source clears selection");
+        SendMessageW(edit,EM_SETSEL,0,0);
+        click(app.m_icon.window,app.m_icon.window->findChild<QQuickItem*>("translate-selection-icon"));
+        check(until([&]{return !app.m_wordBackend.values.value("loading").toBool();})&&app.m_wordSource=="Hello","icon retains snapshot when source clears selection on click");
+        report["selectionIconConfirmsFinalRange"]=true;
         app.closeWord();SendMessageW(edit,EM_SETSEL,0,0);
         app.m_iconTarget=edit;app.readIconSelection();check(until([&]{return !app.m_iconReading;},6000)&&!app.m_icon.window->isVisible(),"empty selection shows no icon");
         auto iconReader=app.m_readSelection;
@@ -1548,6 +1663,7 @@ void Probe::run(App& app,const QJsonObject& params)
         // Exercise the real panel QML: debounce, editing, cancellation and independent lifetime.
         app.m_settings["provider"]="zvo";app.m_settings["fallbackEnabled"]=false;
         app.showPanel();pump(50);check(app.m_panel.window&&app.m_panel.window->isVisible(),"independent translation panel opens");
+        windowFrame(app.m_panel.window,"panel",out);report["panelSharedFrame"]=true;
         app.m_services->save({{"youdao",QJsonObject{{"endpoint",dictionaryBase+"/word-dictionary"},{"enabled",true}}}});
         auto panelInput=app.m_panel.window->findChild<QQuickItem*>("panel-input");check(panelInput,"panel input exists");
         app.panelAction("panelMode","translate");app.panelAction("explain",false);typeDraft(app.m_panel.window,"hello","panel-input");
@@ -1581,6 +1697,9 @@ void Probe::run(App& app,const QJsonObject& params)
         check(app.m_panelBackend.values.value("definitionProvider").toString().contains("ECDICT"),"panel uses enabled downloaded dictionary");
         app.appearance({{"theme","dark"}});pump(40);app.m_panel.window->grabWindow().save(out+"/panel-dark.png");
         app.m_panel.window->resize(600,520);pump(40);app.m_panel.window->grabWindow().save(out+"/panel-small.png");
+        auto definitionCard=app.m_panel.window->findChild<QQuickItem*>("panel-definitions-card");
+        auto panelFooter=app.m_panel.window->findChild<QQuickItem*>("panel-footer");
+        check(definitionCard->y()+definitionCard->height()<=panelFooter->y()-10,"small panel reserves footer space below definitions");
         check(app.m_panel.window->findChild<QQuickItem*>("panel-submit")->isVisible(),"small panel retains translate button");
         app.appearance({{"theme","light"}});
         app.m_panel.window->resize(960,760);app.panelAction("panelMode","auto");typeDraft(app.m_panel.window,"beautiful","panel-input");app.translatePanel();
@@ -1657,12 +1776,15 @@ void Probe::run(App& app,const QJsonObject& params)
         check(app.history().rows({},true).size()==1,"favorite captures completed translation");
         click(app.m_panel.window,visualItem(app.m_panel.window->contentItem(),"panel-history"));pump(80);
         check(app.m_historyView.window&&app.m_historyView.window->isVisible()&&app.m_historyBackend.values.value("rows").toList().size()==1,"history window lists favorite");
+        windowFrame(app.m_historyView.window,"history",out);report["historySharedFrame"]=true;
         auto historyId=app.history().rows()[0].toObject()["id"].toString();
         app.m_historyView.window->grabWindow().save(out+"/history-favorites.png");
         click(app.m_historyView.window,visualItem(app.m_historyView.window->contentItem(),"history-open-0"));
         check(!app.m_panelBackend.values.value("autoTranslate").toBool()&&!app.m_panelBackend.values.value("loading").toBool()&&app.m_panelRecord["id"]==historyId,"history opens without new network request");
         app.historyAction("search","missing query");check(app.m_historyBackend.values.value("rows").toList().isEmpty(),"history search filters UI");
-        app.historyAction("search","");app.historyAction("remove",historyId);app.historyAction("close",{});
+        app.historyAction("search","");app.historyAction("remove",historyId);
+        click(app.m_historyView.window,visualItem(app.m_historyView.window->contentItem(),"history-close"));
+        check(!app.m_historyView.window||!app.m_historyView.window->isVisible(),"shared history close button closes window");
         auto savedAi=app.m_services->profile("ai");
         app.m_services->save({{"ai",QJsonObject{{"endpoint",dictionaryBase+"/ai-stream"},{"apiKey","fixture-key"},{"model","good"}}}});
         app.m_settings["provider"]="ai";app.panelAction("input","Streaming a new sentence.");app.translatePanel();
@@ -1679,7 +1801,8 @@ void Probe::run(App& app,const QJsonObject& params)
         app.panelAction("input","");app.translatePanel();check(!app.m_panelBackend.values.value("loading").toBool(),"empty panel stops work");
         app.m_settings["provider"]="mymemory";app.panelAction("explain",false);typeDraft(app.m_panel.window,"close while blocked","panel-input");
         app.translatePanel();pump(80);auto closingPanel=app.m_panelCancel;
-        app.panelAction("close",{});pump(40);check(!app.m_panel.window&&closingPanel->load(),"panel closes and cancels pending work");
+        click(app.m_panel.window,visualItem(app.m_panel.window->contentItem(),"panel-close"));pump(40);
+        check(!app.m_panel.window&&closingPanel->load(),"shared panel close button cancels pending work");
         app.showSettings();app.configSelect("ai");pump(30);
         auto initialChannels=app.m_configBackend.values.value("aiChannels").toList().size();
         app.aiAction("aiAdd",{});check(app.m_configBackend.values.value("aiChannels").toList().size()==initialChannels+1,"AI channel added");

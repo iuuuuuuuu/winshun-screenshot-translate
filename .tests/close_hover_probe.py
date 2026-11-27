@@ -13,9 +13,9 @@ isolate()
 runtime = (Path(os.environ["LOCALAPPDATA"]) / "WinShun/plugins/iuuuuuuuu.screenshot-translate"
            if "--installed" in sys.argv else repo)
 sys.path.insert(0, str(runtime))
-from PySide6.QtCore import QCoreApplication, QEvent, QObject, QPointF, Qt, qInstallMessageHandler
+from PySide6.QtCore import QCoreApplication, QEvent, QObject, QPointF, Qt, QUrl, qInstallMessageHandler
 from PySide6.QtGui import QEnterEvent, QMouseEvent, QKeyEvent
-from PySide6.QtQml import QQmlExpression, qmlContext
+from PySide6.QtQml import QQmlComponent, QQmlExpression, qmlContext, qmlEngine
 from main import App, VERSION
 from ui import Pin, Settings
 from fixtures import image_fixture
@@ -47,8 +47,20 @@ def exercise(owner, view, name):
     hovered = [item for item in button.findChildren(QObject)
                if "HoverHandler" in item.metaObject().className() and item.property("hovered")]
     assert hovered, "Synthetic mouse must really hover over the close button"
-    tooltip = QQmlExpression(qmlContext(button), button, "ToolTip.visible")
-    assert tooltip.evaluate()[0] is False and not tooltip.hasError(), tooltip.error().toString()
+    # The shared title bar intentionally has no QtQuick.Controls import.
+    # Inspect the actual attached tooltip in a test context that owns its
+    # imports, rather than depending on the button's caller importing Controls.
+    component = QQmlComponent(qmlEngine(button))
+    component.setData(b'''import QtQuick
+import QtQuick.Controls
+QtObject {
+    required property var target
+    readonly property bool tooltipVisible: target.ToolTip.visible
+}''', QUrl())
+    tooltip = component.createWithInitialProperties({"target": button})
+    assert tooltip is not None, component.errors()
+    assert tooltip.property("tooltipVisible") is False
+    tooltip.deleteLater()
     label = QQmlExpression(qmlContext(button), button, "Accessible.name")
     assert label.evaluate()[0] in ("关闭 · Esc", "关闭")
     assert window.grabWindow().save(str(output / (name + ".png")))

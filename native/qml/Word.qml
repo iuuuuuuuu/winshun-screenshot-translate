@@ -297,7 +297,7 @@ AdaptiveWindow {
                 TapHandler { acceptedButtons: Qt.LeftButton; onPressedChanged: if (pressed) wordWindow.focusMeaning() }
                 onSelectionStartChanged: wordWindow.selectionChanged("target")
                 onSelectionEndChanged: wordWindow.selectionChanged("target")
-                font.family: "Segoe UI"; font.pixelSize: 16; color: Theme.text; selectionColor: Theme.textSelection
+                font.family: "Segoe UI"; font.pixelSize: 16; color: Theme.text; selectionColor: Theme.textSelection; selectedTextColor: Theme.text
                 onTextChanged: { reveal.stop(); if (text && !backend.state.loading && wordWindow.animations && wordWindow.visible) reveal.restart(); else opacity = 1 }
                 NumberAnimation { id: reveal; target: meaning; property: "opacity"; from: 0.35; to: 1; duration: 120; easing.type: Easing.OutCubic }
             }
@@ -356,9 +356,9 @@ AdaptiveWindow {
     }
     Row {
         x: 12; y: parent.height - 36; spacing: 5
-        ToolButton { objectName: "word-history"; glyph: "\uE81C"; tip: backend.state.chinese ? "历史与收藏" : "History"; onClicked: backend.action("history",null) }
-        ToolButton { objectName: "word-speak-source"; text: backend.state.chinese ? "原文" : "Source"; glyph: backend.state.speaking ? "\uE71A" : "\uE767"; tip: backend.state.chinese ? (backend.state.speaking ? "停止朗读" : "朗读原文") : "Read original / stop"; enabled: !!backend.state.sourceText; onClicked: backend.action(backend.state.speaking ? "stopSpeech" : "speech",true) }
-        ToolButton { objectName: "word-speak-target"; text: backend.state.chinese ? "译文" : "Target"; glyph: backend.state.speaking ? "\uE71A" : "\uE767"; tip: backend.state.chinese ? (backend.state.speaking ? "停止朗读" : "朗读译文") : "Read translation / stop"; enabled: !!backend.state.translatedText && !backend.state.loading; onClicked: backend.action(backend.state.speaking ? "stopSpeech" : "speech",false) }
+        ToolButton { objectName: "word-history"; textPixelSize: 12; glyphPixelSize: 12; glyph: "\uE81C"; tip: backend.state.chinese ? "历史与收藏" : "History"; onClicked: backend.action("history",null) }
+        ToolButton { objectName: "word-speak-source"; textPixelSize: 12; glyphPixelSize: 12; text: backend.state.chinese ? "原文" : "Source"; glyph: backend.state.speaking ? "\uE71A" : "\uE767"; tip: backend.state.chinese ? (backend.state.speaking ? "停止朗读" : "朗读原文") : "Read original / stop"; enabled: !!backend.state.sourceText; onClicked: backend.action(backend.state.speaking ? "stopSpeech" : "speech",true) }
+        ToolButton { objectName: "word-speak-target"; textPixelSize: 12; glyphPixelSize: 12; text: backend.state.chinese ? "译文" : "Target"; glyph: backend.state.speaking ? "\uE71A" : "\uE767"; tip: backend.state.chinese ? (backend.state.speaking ? "停止朗读" : "朗读译文") : "Read translation / stop"; enabled: !!backend.state.translatedText && !backend.state.loading; onClicked: backend.action(backend.state.speaking ? "stopSpeech" : "speech",false) }
     }
     ProviderMenu {
         id: providerMenu; objectName: "word-provider-menu"; hostWindow: wordWindow; anchorItem: providerButton

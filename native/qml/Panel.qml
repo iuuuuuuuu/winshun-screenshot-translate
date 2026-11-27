@@ -9,6 +9,9 @@ Window {
     minimumWidth: 600; minimumHeight: 520
     title: t("翻译面板 · Win顺", "Translation · WinShun")
     color: Theme.page
+    flags: Qt.Window | Qt.FramelessWindowHint
+    property real cornerRadius: 8
+    readonly property string windowSizeKey: "translation-panel"
     property bool chinese: backend.state.chinese
     property bool automatic: backend.state.autoTranslate !== false
     readonly property bool lookup: backend.state.panelPage === "lookup"
@@ -25,8 +28,9 @@ Window {
     Connections { target: backend; function onChanged() { panel.sync() } }
     Timer { id: debounce; interval: 350; onTriggered: panel.submit() }
     Shortcut { sequence: "Ctrl+Return"; enabled: panel.visible; onActivated: panel.submit() }
+    WindowFrame { id: frame; hostWindow: panel; buttonPrefix: "panel"; chinese: panel.chinese }
     Column {
-        id: header; x: 22; y: 18; width: parent.width-44; spacing: 12
+        id: header; x: 22; y: frame.titleHeight + 10; width: parent.width-44; spacing: 12
         Item {
             width: parent.width; height: 36
             Text { anchors.verticalCenter: parent.verticalCenter; visible: panel.width >= 740; text: panel.t("翻译面板","Translation"); color: Theme.text; font.pixelSize: 21; font.weight: Font.DemiBold }
@@ -69,7 +73,7 @@ Window {
         anchors.top: header.bottom; anchors.topMargin: 16
         anchors.left: parent.left; anchors.leftMargin: 22
         anchors.right: parent.right; anchors.rightMargin: 22
-        height: Math.max(170, panel.height - header.height - 58 - (definitions.visible ? definitions.height + 12 : 0) - footer.height)
+        height: Math.max(0, footer.y - y - 12 - (definitions.visible ? definitions.height + 12 : 0))
         Rectangle {
             id: sourceCard; width: (parent.width - 12)/2; height: parent.height
             color: Theme.card; radius: Theme.largeCardRadius; border.color: Theme.cardBorder
@@ -119,8 +123,8 @@ Window {
                 model: backend.state.sentenceMode ? (backend.state.sentenceRows || []) : []
                 delegate: Column {
                     required property var modelData; width: sentences.width; spacing: 6
-                    TextEdit { width: parent.width; height: contentHeight; text: modelData.original; readOnly: true; selectByMouse: true; wrapMode: TextEdit.Wrap; textFormat: TextEdit.PlainText; color: Theme.subtext; font.pixelSize: 14 }
-                    TextEdit { width: parent.width; height: contentHeight; text: modelData.translated || panel.t("等待翻译…","Pending…"); readOnly: true; selectByMouse: true; wrapMode: TextEdit.Wrap; textFormat: TextEdit.PlainText; color: modelData.translated ? Theme.text : Theme.faint; font.pixelSize: 17 }
+                    TextEdit { selectionColor: Theme.textSelection; selectedTextColor: Theme.text; width: parent.width; height: contentHeight; text: modelData.original; readOnly: true; selectByMouse: true; wrapMode: TextEdit.Wrap; textFormat: TextEdit.PlainText; color: Theme.subtext; font.pixelSize: 14 }
+                    TextEdit { selectionColor: Theme.textSelection; selectedTextColor: Theme.text; width: parent.width; height: contentHeight; text: modelData.translated || panel.t("等待翻译…","Pending…"); readOnly: true; selectByMouse: true; wrapMode: TextEdit.Wrap; textFormat: TextEdit.PlainText; color: modelData.translated ? Theme.text : Theme.faint; font.pixelSize: 17 }
                     Rectangle { width: parent.width; height: 1; color: Theme.cardBorder }
                 }
             }
@@ -218,7 +222,8 @@ Window {
         }
     }
     Rectangle {
-        id: definitions; visible: !panel.lookup && !panel.naming && backend.state.explain; x: 22; width: parent.width-44; height: Math.min(190,panel.height*.25)
+        id: definitions; objectName: "panel-definitions-card"; visible: !panel.lookup && !panel.naming && backend.state.explain; x: 22; width: parent.width-44
+        height: Math.min(190, panel.height*.25, Math.max(84, footer.y - comparison.y - 24 - 170))
         anchors.top: comparison.bottom; anchors.topMargin: 12
         color: Theme.card; radius: Theme.largeCardRadius; border.color: Theme.cardBorder
         Text { x: 16; y: 12; text: panel.t("释义与用法","Meaning and usage"); color: Theme.subtext; font.pixelSize: 12 }
@@ -226,13 +231,13 @@ Window {
         Flickable {
             id: definitionScroll; x: 16; y: 40; width: parent.width-32; height: parent.height-64
             contentWidth: width; contentHeight: Math.max(height,definition.contentHeight); clip: true; boundsBehavior: Flickable.StopAtBounds
-            TextEdit { id: definition; objectName: "panel-definition"; width: parent.width; height: Math.max(definitionScroll.height,contentHeight); readOnly: true; selectByMouse: true; wrapMode: TextEdit.Wrap; textFormat: TextEdit.PlainText; color: Theme.text; font.pixelSize: 15; text: backend.state.definition || backend.state.definitionStatus || panel.t("词语显示词义与用法；句子可由已配置的 AI 渠道解释。","Words show meanings and usage; configured AI services can explain sentences.") }
+            TextEdit { selectionColor: Theme.textSelection; selectedTextColor: Theme.text; id: definition; objectName: "panel-definition"; width: parent.width; height: Math.max(definitionScroll.height,contentHeight); readOnly: true; selectByMouse: true; wrapMode: TextEdit.Wrap; textFormat: TextEdit.PlainText; color: Theme.text; font.pixelSize: 15; text: backend.state.definition || backend.state.definitionStatus || panel.t("词语显示词义与用法；句子可由已配置的 AI 渠道解释。","Words show meanings and usage; configured AI services can explain sentences.") }
         }
         ListScrollBar { parent: definitions; anchors.top: definitionScroll.top; anchors.bottom: definitionScroll.bottom; anchors.right: parent.right; flickable: definitionScroll }
         Text { x: 16; anchors.bottom: parent.bottom; anchors.bottomMargin: 7; width: parent.width-32; elide: Text.ElideRight; text: backend.state.definitionProvider || ""; color: Theme.subtext; font.pixelSize: 11 }
     }
     Item {
-        id: footer; x: 22; anchors.bottom: parent.bottom; anchors.bottomMargin: 14; width: parent.width-44; height: 38
+        id: footer; objectName: "panel-footer"; x: 22; anchors.bottom: parent.bottom; anchors.bottomMargin: 14; width: parent.width-44; height: 38
         Text { anchors.verticalCenter: parent.verticalCenter; width: parent.width-translateButton.width-(backend.state.loading ? 95 : 16); wrapMode: Text.Wrap; text: backend.state.status || backend.state.notice || (backend.state.panelMode === "auto" ? panel.t("中英词语查词 · 句子翻译 · 候选词可点击","Chinese/English terms → dictionary · Sentences → translation") : panel.lookup ? panel.t("候选词点击查详情 · 句子单词点击定位原文","Click alternatives for details · Click sentence words to select") : panel.t("Ctrl+Enter 翻译 · 查词查看词典候选","Ctrl+Enter to translate · Words for dictionary alternatives")); color: backend.state.status && !backend.state.loading ? Theme.danger : Theme.subtext; font.pixelSize: 12 }
         FlatButton { visible: backend.state.loading; anchors.right: translateButton.left; anchors.rightMargin: 8; text: panel.t("停止","Stop"); onClicked: { debounce.stop(); backend.action("stop",null) } }
         FlatButton { id: translateButton; objectName: "panel-submit"; anchors.right: parent.right; highlighted: true; text: panel.naming ? panel.t("生成命名","Generate names") : panel.lookup ? (backend.state.loading ? panel.t("重新查词","Look up again") : panel.t("查词","Look up")) : (backend.state.loading ? panel.t("重新翻译","Translate again") : panel.t("翻译","Translate")); enabled: input.text.trim().length > 0 && !input.inputMethodComposing; onClicked: panel.submit() }

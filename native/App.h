@@ -171,6 +171,7 @@ private:
     QProcess m_selectionPrimer; // destroyed before the timers used by its callbacks
     Cancel m_iconCancel;
     Selection m_iconSelection;
+    Selection m_iconClickFallback;
     QPoint m_iconDown,m_iconPoint,m_iconPreviousClick;
     HWND m_iconTarget=nullptr;
     DWORD m_iconClickTime=0,m_iconShown=0;

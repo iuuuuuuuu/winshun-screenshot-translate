@@ -9,8 +9,10 @@ Window {
     width: 940; height: 700
     minimumWidth: 720; minimumHeight: 520
     title: backend.state.chinese ? "截图翻译设置 · Win顺" : "Screenshot Translate · WinShun"
-    flags: Qt.Window | Qt.WindowStaysOnTopHint | Qt.FramelessWindowHint
+    flags: Qt.Window | Qt.FramelessWindowHint
     color: Theme.page
+    property real cornerRadius: 8
+    readonly property string windowSizeKey: "settings"
     property bool chinese: backend.state.chinese
     property string provider: backend.state.provider
     property bool home: backend.state.home || false
@@ -64,32 +66,10 @@ Window {
         anchors.fill: parent
         focus: true
         Keys.onEscapePressed: backend.action("close", null)
-        Rectangle {
-            anchors.fill: parent; color: "transparent"; radius: 8
-            border.width: 1; border.color: Theme.cardBorder
-        }
-        Item {
-            id: chrome
-            width: parent.width; height: 36
-            Text {
-                x: 18; anchors.verticalCenter: parent.verticalCenter
-                text: window.title; color: Theme.subtext; font.pixelSize: 12
-            }
-            MouseArea {
-                anchors.fill: parent
-                onPressed: window.startSystemMove()
-                onDoubleClicked: window.visibility === Window.Maximized ? window.showNormal() : window.showMaximized()
-            }
-            ToolButton {
-                objectName: "settings-close"; closeButton: true
-                anchors.right: parent.right; anchors.rightMargin: 8
-                glyph: "\uE8BB"; tip: window.t("关闭", "Close"); tipEnabled: false
-                onClicked: backend.action("close", null)
-            }
-        }
+        WindowFrame { id: chrome; hostWindow: window; buttonPrefix: "settings"; chinese: window.chinese }
         Column {
             id: heading
-            x: 24; y: chrome.height + 10
+            x: 24; y: chrome.titleHeight + 10
             width: parent.width - 48; spacing: 6
             Text { text: window.t("截图翻译", "Screenshot Translate"); color: Theme.text; font.pixelSize: 24; font.weight: Font.Bold }
             Text {
@@ -619,11 +599,6 @@ Window {
                     onClicked: { key.focus = false; backend.action("save", null) }
                 }
             }
-        }
-        MouseArea {
-            anchors.right: parent.right; anchors.bottom: parent.bottom
-            width: 14; height: 14; cursorShape: Qt.SizeFDiagCursor
-            onPressed: window.startSystemResize(Qt.RightEdge | Qt.BottomEdge)
         }
     }
 }
