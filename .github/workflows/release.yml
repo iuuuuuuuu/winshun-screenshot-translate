@@ -76,6 +76,7 @@ jobs:
             .test-output/selection-release/native/
             .test-output/firefox-release/
       - name: 保留安装包、校验值与开发验证程序
+        if: always() && steps.package.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
           name: 截图翻译原生包

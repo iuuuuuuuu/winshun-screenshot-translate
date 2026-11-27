@@ -228,4 +228,6 @@ Qt/WinShun 和 Phosphor 的许可见 THIRD_PARTY_NOTICES.md 和 native/vendor/LI
 
 ### 通用取词回归
 
+正式发布使用 `native/test_selection_release.py` 在 GitHub 独立 Windows 测试机运行真实复制、Ctrl+Insert、格式还原、取消和新复制优先检查；脚本拒绝在普通开发机执行会改变前台窗口的测试。发布流程随后验证 Firefox 跨 Shadow DOM 正反向选区、小译点击、快捷键读取和 147689 字符长文。任何真实复制项目失败都会阻止通过发布检查。
+
 `python -B native/test_native.py --build <build> --selection-copy --output <report>` 检查完整复制优先、空选区不发按键、焦点不匹配、取消和手动复制接续。运行环境允许剪贴板访问时，额外用私有桌面的真实 EDIT 控件检查部分选区与超过十万字的尾部；若被系统拒绝，报告明确输出 `nativeClipboardTest: false`，只将权限拒绝回退标为通过，不能据此声称真实复制已通过。UI 回归通过 `native/test_native_runner.py` 检查通用复制接续和过期图标缓存。

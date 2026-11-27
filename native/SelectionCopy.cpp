@@ -269,14 +269,18 @@ SelectionCopyResult copySelection(const SourceWindow& source,Cancel cancel,Selec
         }else{
             const HWND recipient=route==CopyRoute::RootMessage?source.root:source.target;
             const UINT message=route==CopyRoute::ApplicationCommand?WM_APPCOMMAND:WM_COPY;
+            // Copying a cross-page browser selection can synchronously format
+            // HTML on the browser thread. A 200 ms message timeout aborted
+            // valid 147k-character selections on slower Windows machines.
+            const UINT messageTimeout=firefoxCopyTarget(source.root)?2000:500;
             SetLastError(ERROR_SUCCESS);
             const auto sent=SendMessageTimeoutW(recipient,message,message==WM_APPCOMMAND?WPARAM(source.target):0,
-                message==WM_APPCOMMAND?MAKELPARAM(0,APPCOMMAND_COPY):0,SMTO_ABORTIFHUNG|SMTO_BLOCK,200,&handled);
+                message==WM_APPCOMMAND?MAKELPARAM(0,APPCOMMAND_COPY):0,SMTO_ABORTIFHUNG|SMTO_BLOCK,messageTimeout,&handled);
             const auto sendError=GetLastError();
             if(qEnvironmentVariableIsSet("ST_SELECTION_TRACE"))std::fprintf(stderr,"[selection-copy] route=%d sent=%d error=%lu sequenceChanged=%d\n",int(route),bool(sent),sendError,GetClipboardSequenceNumber()!=transaction.baseline);
             if(!sent&&sendError==ERROR_ACCESS_DENIED)continue;
             if(!sent){timedOut=true;waitMs=900;}
-            if(firefoxCopyTarget(source.root)||cached==route||(message==WM_APPCOMMAND&&handled))waitMs=700;
+            if(firefoxCopyTarget(source.root)||cached==route||(message==WM_APPCOMMAND&&handled))waitMs=1200;
         }
         QElapsedTimer timer;timer.start();
         do{
@@ -284,14 +288,14 @@ SelectionCopyResult copySelection(const SourceWindow& source,Cancel cancel,Selec
             // After issuing copy, cancellation still waits for the response so
             // the original clipboard can be restored before this thread exits.
             Sleep(10);
-        }while(timer.elapsed()<waitMs&&budget.elapsed()<1200);
+        }while(timer.elapsed()<waitMs&&budget.elapsed()<3500);
         if(transaction.changedElsewhere||transaction.copiedSequence){
             if(!transaction.copiedText.isEmpty()&&!transaction.changedElsewhere)rememberRoute(source,route);
             break;
         }
         forgetRoute(source,route);
         if(timedOut)return stopped("原窗口复制响应超时，请稍后重新选中文字；也可手动复制翻译");
-        if(budget.elapsed()>=1200)break;
+        if(budget.elapsed()>=3500)break;
     }
     if(!transaction.restore())return stopped("读取结束，但剪贴板被占用而未能还原，请检查剪贴板");
     if(cancel->load())return {};
