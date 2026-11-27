@@ -164,7 +164,8 @@ void Probe::run(App& app,const QJsonObject& params)
     try{
         check(privateDesktop(),"private desktop required");check(!out.isEmpty(),"probe output required");QDir().mkpath(out);
         report["qtVersion"]=qVersion();
-        report["uiRenderer"]="software";
+        report["uiRenderer"]=qEnvironmentVariable("QT_QUICK_BACKEND")=="software"||params.value("appearance").toObject().value("renderer")=="software"?"software":"d3d11";
+        report["fontPlatform"]=qEnvironmentVariable("QT_QPA_PLATFORM");
         report["hostRenderer"]=params.value("appearance").toObject().value("renderer");
         QStringList modules;QJsonObject modulePaths;bool python=false;
         auto runtime=QDir::cleanPath(params.value("probeRuntime").toString(QCoreApplication::applicationDirPath()+"/runtime"));
@@ -185,6 +186,48 @@ void Probe::run(App& app,const QJsonObject& params)
         report["loadedModulePaths"]=modulePaths;report["runtimeDirectory"]=runtime;
         report["qtBundled"]=runtime.compare(QDir::cleanPath(QCoreApplication::applicationDirPath()+"/runtime"),Qt::CaseInsensitive)==0;
         report["startupMemory"]=memory();
+        if(params.value("probeSettings").toBool()){
+            QElapsedTimer elapsed;elapsed.start();app.showSettings();
+            report["settingsCreateMs"]=double(elapsed.elapsed());
+            auto window=app.m_config.window;check(window,"settings window exists");
+            window->grabWindow().save(out+"/settings-home.png");
+            report["uiRenderer"]=window->rendererInterface()->graphicsApi()==QSGRendererInterface::Software?"software":"d3d11";
+            report["settingsFirstImageMs"]=double(elapsed.elapsed());
+            report["settingsDpr"]=window->devicePixelRatio();
+            QPointer<QQuickItem> row=visualItem(window->contentItem(),"queue-drag-google");
+            check(row,"queue row exists");
+            elapsed.restart();app.m_configBackend.update({{"message","Saved fixture"}});pump(1);
+            report["unrelatedUpdateKeepsRows"]=bool(row);
+            report["unrelatedUpdateMs"]=double(elapsed.elapsed());
+            auto queue=app.m_configBackend.values.value("queue").toList();
+            auto changed=queue[1].toMap();changed["detail"]="Updated connection status";queue[1]=changed;
+            app.m_configBackend.update({{"queue",queue}});pump(1);
+            check(row&&row==visualItem(window->contentItem(),"queue-drag-google"),"status refresh keeps existing queue controls");
+            report["queueRefreshKeepsRows"]=true;
+            QJsonArray tabs;
+            for(auto provider:{"google","edge","ai","ecdict","microsoft"}){
+                elapsed.restart();app.configSelect(provider);
+                auto frame=window->grabWindow();
+                tabs.append(QJsonObject{{"provider",provider},{"ms",double(elapsed.elapsed())}});
+                check(!frame.isNull(),"provider tab renders");frame.save(out+"/settings-"+provider+".png");
+            }
+            report["settingsTabs"]=tabs;
+            elapsed.restart();app.configAction("home",{});window->grabWindow();
+            report["settingsHomeMs"]=double(elapsed.elapsed());
+            auto scroll=window->findChild<QQuickItem*>("settings-scroll");check(scroll,"settings scroll exists");
+            elapsed.restart();
+            for(int i=0;i<40;++i){scroll->setProperty("contentY",i*4);window->grabWindow();}
+            report["settingsScroll40FramesMs"]=double(elapsed.elapsed());
+            app.configAction("save",{});check(window->isVisible(),"save keeps settings open");
+            app.configSelect("google");const auto savedEndpoint=app.m_configBackend.values.value("endpoint");
+            app.configAction("endpoint","https://unsaved.invalid");
+            app.configAction("close",{});elapsed.restart();app.showSettings();window->grabWindow();
+            report["settingsReopenMs"]=double(elapsed.elapsed());
+            check(app.m_config.window==window,"settings reuses view until idle");app.configSelect("google");
+            check(app.m_configBackend.values.value("endpoint")==savedEndpoint,"reopening discards cancelled draft");
+            report["settingsMemory"]=memory();report["passed"]=true;
+            atomicJson(out+"/report.json",report);app.configAction("close",{});QCoreApplication::exit(0);return;
+        }
         if(params.value("probeWordPopup").toBool()){
             const auto initialSettings=app.m_settings;
             app.openWord("jsel",{400,180});app.translateWord("Hello + 100%");
@@ -349,7 +392,7 @@ void Probe::run(App& app,const QJsonObject& params)
             check(app.m_word.engine&&app.m_trimCount->load()==trims,"sleep resume holds trimming until next use");
             app.used();check(!app.m_holdAfterResume,"next use releases sleep hold");
             report["idlePreservesPinnedAndResume"]=true;
-            report["passed"]=true;atomicJson(out+"/report.json",report);ExitProcess(0);
+            report["passed"]=true;atomicJson(out+"/report.json",report);QCoreApplication::exit(0);return;
         }
         QImage fixture(820,380,QImage::Format_RGB32);fixture.fill(Qt::white);
         QPainter paint(&fixture);QFont font("Segoe UI");font.setPixelSize(24);paint.setFont(font);paint.setPen(QColor("#1B1B1B"));
@@ -431,7 +474,8 @@ void Probe::run(App& app,const QJsonObject& params)
         check(unobscured(),"loading indicator leaves word unobscured");
         app.m_status.window->grabWindow().save(out+"/loading-word.png");
         auto beforeMove=app.m_status.window->position();
-        SendMessageW(app.m_pin->hwnd(),WM_KEYDOWN,VK_RIGHT,0);app.place();pump(20);
+        for(int step=0;step<4;++step)SendMessageW(app.m_pin->hwnd(),WM_KEYDOWN,VK_RIGHT,0);
+        app.place();pump(20);
         check(app.m_status.window->position()!=beforeMove&&unobscured(),"indicator follows word movement");
         auto zoomWord=[&](double target){
             for(int i=0;i<80&&std::abs(app.m_pin->zoom()-target)>.001;++i){
@@ -750,10 +794,15 @@ void Probe::run(App& app,const QJsonObject& params)
         auto originalForeground=app.m_foreground;app.m_foreground=[parent]{return parent;};
         auto foregroundBefore=GetForegroundWindow();pump(50);
         app.m_iconTarget=edit;app.m_iconPoint={560,340};
-        auto providerBefore=app.m_services->queue(app.m_settings);
+        auto healthSnapshot=[&]{
+            auto queue=app.m_services->queue(app.m_settings);
+            for(int i=0;i<queue.size();++i){auto entry=queue[i].toObject();entry.remove("retrySeconds");entry.remove("probeSeconds");queue[i]=entry;}
+            return queue;
+        };
+        auto providerBefore=healthSnapshot();
         app.readIconSelection();
         check(until([&]{return app.m_icon.window&&app.m_icon.window->isVisible();},6000),"selection icon appears after native selection read");
-        check(app.m_iconSelection.text=="Hello"&&app.m_services->queue(app.m_settings)==providerBefore,"selection alone sends no translation");
+        check(app.m_iconSelection.text=="Hello"&&healthSnapshot()==providerBefore,"selection alone sends no translation");
         check(app.m_icon.window->flags().testFlag(Qt::WindowDoesNotAcceptFocus)&&GetForegroundWindow()==foregroundBefore,"selection icon does not steal foreground");
         auto screen=app.m_icon.window->screen();check(screen->availableGeometry().contains(app.m_icon.window->geometry()),"selection icon stays within monitor work area");
         app.m_icon.window->grabWindow().save(out+"/selection-icon.png");
@@ -764,7 +813,7 @@ void Probe::run(App& app,const QJsonObject& params)
         app.closeWord();SendMessageW(edit,EM_SETSEL,0,0);
         app.m_iconTarget=edit;app.readIconSelection();check(until([&]{return !app.m_iconReading;},6000)&&!app.m_icon.window->isVisible(),"empty selection shows no icon");
         auto iconReader=app.m_readSelection;
-        const auto beforeLanguageFilter=app.m_services->queue(app.m_settings);
+        const auto beforeLanguageFilter=healthSnapshot();
         const auto originalIconLanguage=app.m_settings.value("selectionIconDefaultLanguage"),originalIconTarget=app.m_settings.value("target");
         auto checkIconLanguage=[&](QString text,bool expected){
             app.hideSelectionIcon();
@@ -781,7 +830,7 @@ void Probe::run(App& app,const QJsonObject& params)
         app.m_settings["selectionIconDefaultLanguage"]="auto";app.m_settings["target"]="en";
         checkIconLanguage("Please translate this sentence accurately.",false);
         app.m_settings["target"]=originalIconTarget;app.m_settings["selectionIconDefaultLanguage"]=originalIconLanguage;
-        check(app.m_services->queue(app.m_settings)==beforeLanguageFilter,"language filtering sends no translation requests");
+        check(healthSnapshot()==beforeLanguageFilter,"language filtering sends no translation requests");
         app.m_settings["selectionIconDefaultLanguage"]="en";
         app.m_readSelection=[](POINT,HWND,Cancel){return Selection{"Hello",{500,320,120,20},{580,320,40,20}};};
         app.dispatch({},"hotkey",{{"key",app.m_settings.value("selectionHotkey")}});
@@ -826,6 +875,32 @@ void Probe::run(App& app,const QJsonObject& params)
         check(!app.m_iconReading&&!app.m_icon.window->isVisible(),"disabled selection icon never reads");
         app.m_settings["selectionIconEnabled"]=true;app.updateSelectionMonitor();
         report["selectionIcon"]=true;report["selectionIconCapturedText"]=true;report["selectionIconNoAutoRequest"]=true;report["selectionIconCancellation"]=true;
+        // Flutter compatibility never sends keys or touches the shared desktop
+        // clipboard. Inject only clipboard metadata/text in this private test.
+        const auto originalNeedsCopy=app.m_needsSelectionCopy;
+        const auto originalSequence=app.m_clipboardSequence,originalOwner=app.m_clipboardOwnerProcess;
+        const auto originalClipboard=app.m_readClipboard;
+        auto copySequence=std::make_shared<DWORD>(10),copyOwner=std::make_shared<DWORD>(GetCurrentProcessId());
+        auto copied=std::make_shared<QString>("old clipboard must never be sent");
+        app.m_needsSelectionCopy=[](HWND){return true;};
+        app.m_clipboardSequence=[copySequence]{return *copySequence;};app.m_clipboardOwnerProcess=[copyOwner]{return *copyOwner;};
+        app.m_readClipboard=[copied]{return *copied;};app.m_readSelection=[](POINT,HWND,Cancel){return Selection{};};
+        app.m_selectionTarget=edit;app.m_foreground=[parent]{return parent;};
+        app.m_selectionClipboardBaseline=10;app.openWord("jsel",{400,180});app.readSelection();
+        check(until([&]{return app.m_wordBackend.values.value("awaitingSelectionCopy").toBool();}),"unsupported selection offers copy compatibility");
+        pump(150);check(app.m_wordSource.isEmpty(),"copy compatibility never translates old clipboard");
+        *copySequence=11;*copyOwner=0;app.readCopiedSelection();check(app.m_wordSource.isEmpty(),"unrelated clipboard owner ignored");
+        *copySequence=12;*copyOwner=GetCurrentProcessId();*copied="Fresh copy from Flutter.";app.readCopiedSelection();
+        check(until([&]{return !app.m_wordBackend.values.value("loading").toBool();}),"new copied selection translates");
+        check(app.m_wordSource==*copied&&!app.m_copySelectionTimer.isActive(),"new source copy completes waiting without synthetic input");
+        app.m_selectionClipboardBaseline=12;app.openWord("jsel",{400,180});app.readSelection();
+        check(until([&]{return app.m_copySelectionTimer.isActive();}),"copy wait can restart");
+        app.m_copySelectionDeadline=GetTickCount64()-1;app.readCopiedSelection();
+        check(!app.m_copySelectionTimer.isActive()&&app.m_wordSource.isEmpty(),"copy wait expires without using clipboard");
+        app.closeWord();check(!app.m_copySelectionTimer.isActive(),"closing cancels copy wait");
+        app.m_needsSelectionCopy=originalNeedsCopy;app.m_clipboardSequence=originalSequence;app.m_clipboardOwnerProcess=originalOwner;
+        app.m_readClipboard=originalClipboard;app.m_readSelection=iconReader;
+        report["flutterCopyCompatibility"]=true;
         app.m_foreground=originalForeground;DestroyWindow(parent);report["wordRealEditSelection"]=true;
         // Production hotkey routes, actual QML windows and Windows OCR. Only
         // input text/cursor/pixels are injected; never alter the Owner clipboard.
@@ -1195,9 +1270,10 @@ void Probe::run(App& app,const QJsonObject& params)
         report["wordMousePhraseOcr"]=true;
         QJsonArray spacingAttempts;
         for(auto expected:{QString("hi,i ma you baby"),QString("hi,i ma you ba by")}){
-            QImage smallText(240,50,QImage::Format_RGB32);smallText.fill(Qt::white);
-            QPainter draw(&smallText);QFont smallFont("Segoe UI");smallFont.setPixelSize(13);
-            draw.setFont(smallFont);draw.setPen(QColor("#1B1B1B"));draw.drawText(16,30,expected);draw.end();
+            // Fixed source pixels: the app's GDI/FreeType UI renderer must not
+            // change the external screenshot whose OCR spacing we verify.
+            QImage smallText(expected.endsWith("ba by")?":/fixtures/ocr-spaces.png":":/fixtures/ocr-word.png");
+            check(!smallText.isNull(),"fixed OCR spacing fixture loads");
             app.m_capture=[smallText](const QRect& area){
                 QImage image(area.size(),QImage::Format_RGB32);image.fill(Qt::white);QPainter p(&image);
                 p.drawImage(QPoint(100,100)-area.topLeft(),smallText);return image;
@@ -1219,9 +1295,8 @@ void Probe::run(App& app,const QJsonObject& params)
             QString prefix=chineseMajority?"这是中文说明，":"Now translate the ";
             QString minority=chineseMajority?"hello world":"中文";
             QString suffix=chineseMajority?" 是要翻译的英文。":" words in this sentence.";
-            QImage mixedText(650,60,QImage::Format_RGB32);mixedText.fill(Qt::white);
-            QPainter draw(&mixedText);QFont mixedFont("Microsoft YaHei UI");mixedFont.setPixelSize(18);
-            draw.setFont(mixedFont);draw.setPen(QColor("#1B1B1B"));draw.drawText(16,32,prefix+minority+suffix);draw.end();
+            QImage mixedText(chineseMajority?":/fixtures/ocr-mixed-chinese.png":":/fixtures/ocr-mixed-english.png");
+            check(!mixedText.isNull(),"fixed mixed-language OCR fixture loads");
             mixedText.save(out+(chineseMajority?"/word-mixed-chinese-source.png":"/word-mixed-english-source.png"));
             app.m_capture=[mixedText,out](const QRect& area){
                 QImage image(area.size(),QImage::Format_RGB32);image.fill(Qt::white);QPainter p(&image);
@@ -1229,7 +1304,7 @@ void Probe::run(App& app,const QJsonObject& params)
                 image.save(out+"/word-mixed-capture.png");return image;
             };
             for(bool onMinority:{true,false}){
-                int x=122+(onMinority?qRound(QFontMetricsF(mixedFont).horizontalAdvance(prefix)):0);
+                int x=onMinority?(chineseMajority?250:280):122;
                 app.m_mouse=[x] {return QPoint(x,125);};
                 app.dispatch({},"hotkey",{{"key","Alt+Shift+O"}});
                 check(until([&]{return app.m_word.window->isVisible()&&!app.m_wordBackend.values["loading"].toBool();},10000),"mixed-language OCR complete");
@@ -1268,9 +1343,8 @@ void Probe::run(App& app,const QJsonObject& params)
             QStringList lines=chinese?QStringList{"这是一段需要翻译的","连续换行中文内容。"}:
                 QStringList{"Please translate this","whole sentence across","three lines."};
             QString expected=lines.join(chinese?QString():QString(" "));
-            QImage wrapped(300,118,QImage::Format_RGB32);wrapped.fill(Qt::white);
-            QPainter draw(&wrapped);QFont font(chinese?"Microsoft YaHei UI":"Segoe UI");font.setPixelSize(18);draw.setFont(font);draw.setPen(QColor("#1B1B1B"));
-            for(int i=0;i<lines.size();++i)draw.drawText(16,32+i*27,lines[i]);draw.end();
+            QImage wrapped(chinese?":/fixtures/ocr-wrapped-chinese.png":":/fixtures/ocr-wrapped-english.png");
+            check(!wrapped.isNull(),"fixed wrapped OCR fixture loads");
             app.m_capture=[wrapped](const QRect& area){
                 QImage image(area.size(),QImage::Format_RGB32);image.fill(Qt::white);QPainter p(&image);
                 p.drawImage(QPoint(100,100)-area.topLeft(),wrapped);return image;
@@ -1376,6 +1450,42 @@ void Probe::run(App& app,const QJsonObject& params)
             app.m_settings["provider"]="deepl";app.closeWord();
         }
         app.openPin(fixture,{100,100,820,380});app.m_blocks={{"Hello + 100%",QRectF(20,20,180,32),24}};
+        app.m_settings["provider"]="google";
+        const QString wrapped="Quantization uses 1.25-\nbit weights and improves\ninference speed.";
+        app.m_blocks={{wrapped,QRectF(20,20,600,110),24}};
+        app.translatePin("en","zh");
+        check(until([&]{return !app.m_busy;}),"wrapped OCR translation completes");
+        check(app.m_data.value("translated").toString()=="翻译：Quantization uses 1.25-bit weights and improves inference speed.","translation service receives normalized OCR paragraph");
+        check(app.m_data.value("source").toString()==wrapped&&app.m_blocks.first().text==wrapped,"OCR original text and geometry retain source wraps");
+        report["ocrWrapsNormalizedBeforeRequest"]=true;
+        const auto pinSettings=app.m_settings;
+        // Let the result label's width and toolbar position reach the painted
+        // frame before clicking; native input must target the visible layout.
+        pump(120);
+        click(app.m_bar.window,app.m_bar.window->findChild<QQuickItem*>("toolbar-provider-button"));
+        auto pinMenu=app.m_bar.window->findChild<QQuickWindow*>("pin-provider-menu");
+        check(pinMenu&&pinMenu->isVisible(),"screenshot service menu opens");
+        pinMenu->grabWindow().save(out+"/pin-provider-menu.png");
+        click(pinMenu,visualItem(pinMenu->contentItem(),"word-provider-option-google"));
+        check(until([&]{return !app.m_busy;}),"screenshot chosen service completes");
+        check(app.m_pinProviderChoice=="google"&&app.m_settings==pinSettings,"screenshot service choice is local to capture");
+        const auto pinGoogle=app.m_services->profile("google");auto delayedPin=pinGoogle;
+        delayedPin["endpoint"]=dictionaryBase+"/google-slow";app.m_services->save({{"google",delayedPin}});
+        const auto priorPin=app.m_pin->image();const auto priorText=app.m_pinBackend.values.value("translatedText");
+        app.pinAction("provider","google");pump(40);
+        check(app.m_busy&&app.m_pinBackend.values.value("providerSwitching").toBool()&&app.m_pin->image()==priorPin,"screenshot switch shows loading and retains image");
+        check(app.m_bar.window->findChild<QQuickItem*>("pin-provider-spinner")->isVisible(),"screenshot switch spinner is visible");
+        app.pinAction("provider","edge");check(app.m_pinProviderChoice=="google","pending screenshot switch ignores duplicate selection");
+        app.m_bar.window->grabWindow().save(out+"/pin-provider-loading.png");
+        check(until([&]{return !app.m_busy;},4000)&&!app.m_pinBackend.values.value("providerSwitching").toBool(),"screenshot switch success unlocks menu");
+        auto failedPin=pinGoogle;failedPin["endpoint"]=dictionaryBase+"/auth-fail";app.m_services->save({{"google",failedPin}});
+        app.pinAction("provider","google");check(until([&]{return !app.m_busy;},4000),"screenshot failed switch settles");
+        check(app.m_pinBackend.values.value("providerSwitchError").toBool()&&app.m_pinBackend.values.value("translatedText")==priorText&&app.m_pin->image()==priorPin,"screenshot failure keeps prior text and image");
+        app.m_bar.window->grabWindow().save(out+"/pin-provider-failed.png");
+        app.m_services->save({{"google",pinGoogle}});app.pinAction("provider",QString());
+        check(until([&]{return !app.m_busy;},4000)&&app.m_pinProviderChoice.isEmpty(),"screenshot automatic mode restores configured routing");
+        report["screenshotProviderSwitching"]=true;
+        app.m_settings["provider"]="deepl";app.m_blocks={{"Hello + 100%",QRectF(20,20,180,32),24}};
         app.translatePin("en","zh",{"Hello + 100%"});
         check(until([&]{return !app.m_busy;}),"fallback screenshot result complete");
         check(app.m_bar.window->findChild<QQuickItem*>("toolbar-provider")->property("text").toString()=="渠道：Google · 已降级","screenshot displays actual fallback provider");
@@ -1524,6 +1634,6 @@ void Probe::run(App& app,const QJsonObject& params)
     }catch(const std::exception& e){report["passed"]=false;report["error"]=QString::fromUtf8(e.what());}
     try{atomicJson(out+"/report.json",report);}catch(...){}
     app.closeWord();app.closePin();app.configAction("close",{});
-    ExitProcess(code);
+    QCoreApplication::exit(code);
 }
 }

@@ -105,7 +105,8 @@ class Server(http.server.BaseHTTPRequestHandler):
                 assert body[1] == 'wt_lib' and body[0][1:] == ['en','zh-CN']
                 result = [['译：'+text for text in body[0][0]]]
             else:
-                assert path.endswith('/translatetext') and query.get('to') == ['zh-Hans']
+                assert path.endswith('/translatetext')
+                assert bool(query.get('to')) if path.startswith('/batch-edge-ui') else query.get('to') == ['zh-Hans']
                 assert query.get('isEnterpriseClient') == ['false']
                 assert not self.headers.get('Authorization')
                 assert all(isinstance(text,str) for text in body)
@@ -248,7 +249,7 @@ def launch(program, args, data, output, initial=None, gpu=False):
                 process.stdin.write(json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": initial}).encode()+b"\n")
                 process.stdin.flush()
             try:
-                code = process.wait(timeout=660 if "--dictionary-download" in args else 75)
+                code = process.wait(timeout=660 if "--dictionary-download" in args else 180 if initial else 75)
             except subprocess.TimeoutExpired:
                 process.kill();process.wait();reader.join(5);process.close()
                 raise RuntimeError("Native private probe timed out")
@@ -273,6 +274,11 @@ def main():
         data = Path(temp)
         profiles = {p: {"endpoint": base+"/"+p, "secret": "", "model": "", "region": ""}
                     for p in ("zvo", "google", "mymemory")}
+        if not any(flag in sys.argv for flag in ("--core","--live","--live-fallback","--dictionary-live","--ocr-image")):
+            # The settings "test all" button must not depend on public APIs.
+            profiles.update({"edge":{"endpoint":base+"/batch-edge-ui/translatetext"},
+                             "sogou":{"endpoint":base+"/sogou-ui"},
+                             "youdao":{"endpoint":base+"/youdao-dictionary"}})
         (data/"services.json").write_text(json.dumps({"version":2,"profiles":profiles}),encoding="utf-8")
         out = ROOT/".test-output"/("native-gpu" if "--gpu" in sys.argv else "native-software")
         if "--output" in sys.argv:out=Path(sys.argv[sys.argv.index("--output")+1]).resolve()
@@ -334,10 +340,14 @@ def main():
                 "settings":{"provider":"zvo","fallbackEnabled":False}, "capabilities":{"hostHotkeys":True},
                 "probePointerFixtures":pointer_fixtures, "probeDictionaryEndpoint":base,
                 "probeMemory":"--memory" in sys.argv, "probeWindowFrame":"--window-frame" in sys.argv,
-                "probeWordPopup":"--word-popup" in sys.argv
+                "probeWordPopup":"--word-popup" in sys.argv, "probeSettings":"--settings" in sys.argv
             }, "--gpu" in sys.argv)
             report=json.loads((out/"report.json").read_text(encoding="utf-8"))
             assert report["passed"], report
+            if "--settings" in sys.argv:
+                print(json.dumps({k:v for k,v in report.items() if k.startswith("settings") or k.startswith("unrelated") or k in ("passed","uiRenderer","fontPlatform")},ensure_ascii=True))
+                server.shutdown()
+                return
             if "--word-popup" in sys.argv:
                 print(json.dumps({"passed":report["passed"],"wordPopupInteractions":report["wordPopupInteractions"]}))
                 server.shutdown()

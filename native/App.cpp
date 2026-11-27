@@ -1,4 +1,5 @@
 #include "App.h"
+#include "Probe.h"
 #include <QUuid>
 #include "CaptureKeys.h"
 #include <QClipboard>
@@ -115,6 +116,8 @@ App::App(ws::captureplugin::Protocol& protocol,QString appDir,QJsonObject initia
     QObject::connect(&m_configBackend,&Backend::invoked,this,&App::configAction);
     QObject::connect(&m_position,&QTimer::timeout,this,&App::place);m_position.setInterval(50);
     m_readClipboard=[] {return QGuiApplication::clipboard()->text().trimmed();};
+    m_copySelectionTimer.setInterval(100);
+    QObject::connect(&m_copySelectionTimer,&QTimer::timeout,this,&App::readCopiedSelection);
     m_mouse=[] {POINT p{};GetPhysicalCursorPos(&p);return QPoint(p.x,p.y);};
     m_wordBackend.update({{"chinese",m_chinese},{"dark",m_dark},{"pinned",false},{"editing",false},{"loading",false},
         {"sourceText",""},{"translatedText",""},{"status",""},{"provider",""},{"mode","clip"}});
@@ -245,16 +248,21 @@ void App::appearance(const QJsonObject& params)
 }
 View App::view(const QString& file,Backend* backend)
 {
+    QElapsedTimer elapsed;elapsed.start();
     View v;v.engine=std::make_unique<QQmlEngine>();v.engine->addImportPath(m_appDir+"/qml");
     v.engine->rootContext()->setContextProperty("backend",backend);
     QQmlComponent component(v.engine.get(),QUrl(file));
+    const auto compiled=elapsed.elapsed();
     auto obj=component.create();v.window=qobject_cast<QQuickWindow*>(obj);
+    const auto created=elapsed.elapsed();
     if(!v.window){
         std::fprintf(stderr,"QML view %s: status=%d type=%s error=%s\n",qPrintable(file),int(component.status()),
             obj?obj->metaObject()->className():"null",qPrintable(component.errorString()));
         delete obj;throw std::runtime_error("无法创建 WinShun 界面");
     }
-    obj->setParent(v.engine.get());roundWindow(v.window);return v;
+    obj->setParent(v.engine.get());roundWindow(v.window);
+    if(Probe::requested())std::fprintf(stderr,"[ui-timing] %s component=%lld create=%lld native=%lld ms\n",qPrintable(file),compiled,created-compiled,elapsed.elapsed()-created);
+    return v;
 }
 void App::dispose(View& v)
 {
@@ -462,7 +470,8 @@ void App::openPin(QImage image,QRect area)
     m_pinBackend.update({{"translatedText",""},{"sourceText",""},{"ready",false},{"loading",true},{"comparison",false},{"fullText",false},
         {"provider",m_chinese?"等待翻译":"Awaiting translation"},{"providerNote",""},{"providerFallback",false},{"source","auto"},{"target","zh"},
         {"captureWidth",area.width()/captureScreen->devicePixelRatio()},{"captureHeight",area.height()/captureScreen->devicePixelRatio()},
-        {"loadingStage","recognize"},{"status",""}});
+        {"loadingStage","recognize"},{"status",""},{"providerSwitching",false},{"providerSwitchError",false}});
+    publishProviders(m_pinBackend,m_pinProviderChoice,m_pinProviderProfiles);
     ws::capture::PinWindow::Host host;
     host.closed=[this](auto*){QTimer::singleShot(0,this,[this]{closePin();});};
     host.copy=[this](auto*){pinAction("copy",false);};
@@ -503,9 +512,12 @@ void App::ensureRaw()
             // Screenshot pin preferences and other plugin windows do not keep
             // an unpinned word popup open.
             const bool insideWord=insideView(m_word);
-            if(m_word.window&&m_word.window->isVisible()&&!m_wordPinned&&!insideWord&&LONG(timestamp-m_wordOpened)>=150)closeWord();
+            const bool copyingSource=m_copySelectionTimer.isActive()&&
+                GetAncestor(WindowFromPoint(point),GA_ROOT)==GetAncestor(m_selectionTarget,GA_ROOT);
+            if(m_word.window&&m_word.window->isVisible()&&!m_wordPinned&&!insideWord&&!copyingSource&&LONG(timestamp-m_wordOpened)>=150)closeWord();
             if(insideWord)return;
             if(m_word.window)QMetaObject::invokeMethod(m_word.window,"dismissProviderMenu");
+            if(m_bar.window&&!insideView(m_bar))QMetaObject::invokeMethod(m_bar.window,"dismissProviderMenu");
             if(m_pin&&contains(m_pin->hwnd()))return;
             for(auto v:{&m_bar,&m_status,&m_config,&m_text,&m_menu})if(insideView(*v))return;
             DWORD pid=0;auto clicked=WindowFromPoint(point);GetWindowThreadProcessId(clicked,&pid);
@@ -632,6 +644,7 @@ void App::closePin()
     if(!m_settings.value("selectionIconEnabled").toBool(true)&&(!m_word.window||!m_word.window->isVisible()))m_raw.reset();
     m_pin.reset();m_selector.reset();dispose(m_bar);dispose(m_status);dispose(m_text);dispose(m_menu);
     m_original={};m_translated={};m_blocks.clear();m_data={};
+    m_pinProviderChoice.clear();m_pinProviderProfiles.clear();m_pinRequestParts.clear();
 }
 void App::status(QString text,bool loading)
 {
@@ -647,21 +660,30 @@ void App::recognizePin()
         if(!error.isEmpty()||blocks.isEmpty()){status(error.isEmpty()?"没有识别到文字":error,false);m_busy=false;return;}
         m_blocks=blocks;QStringList parts;for(auto b:blocks)parts<<b.text;
         m_source=detect(parts.join('\n'));m_target=targetFor(parts.join('\n'),m_settings.value("target").toString());
-        m_busy=false;translatePin(m_source,m_target,parts);
+        m_busy=false;translatePin(m_source,m_target);
     });
 }
 void App::translatePin(QString source,QString target,QStringList parts)
 {
     if(!m_pin||m_busy)return;
     if(source.isEmpty())source=m_source;if(target.isEmpty())target=m_target;
-    if(parts.isEmpty())for(auto b:m_blocks)parts<<b.text;
-    m_busy=true;m_pinBackend.update({{"loadingStage","translate"},{"provider",m_chinese?"正在选择渠道…":"Selecting service…"},{"providerNote",""},{"providerFallback",false}});
+    if(parts.isEmpty())for(auto b:m_blocks)parts<<screenshotTranslationText(b.text);
+    if(parts.isEmpty())return;
+    m_pinRequestParts=parts;
+    m_busy=true;m_pinBackend.update({{"loadingStage","translate"},{"provider",m_chinese?"正在选择渠道…":"Selecting service…"},{"providerNote",""},{"providerFallback",false},{"providerSwitchError",false}});
     status(m_chinese?"正在翻译…":"Translating…");m_source=source;m_target=target;
     m_pinBackend.update({{"source",source},{"target",target},{"ready",true}});
     auto services=m_services;auto settings=m_settings;auto cancel=m_cancel;auto epoch=m_epoch;
+    if(!m_pinProviderChoice.isEmpty()&&m_pinProviderProfiles.contains(m_pinProviderChoice)){
+        const auto profile=m_pinProviderProfiles.value(m_pinProviderChoice);
+        settings["provider"]=profile.value("provider");settings["fallbackEnabled"]=false;
+        settings["requestedChannelId"]=profile.value("channelId");settings["requestedModel"]=profile.value("model");
+    }
     background([services,settings,parts,source,target,cancel]{return services->translate(settings,parts,source,target,cancel).json(parts);},
         [this,parts,cancel,epoch](QJsonObject data,QString error){
             if(!m_pin||cancel->load()||epoch!=m_epoch)return;m_busy=false;
+            const bool switchFailed=m_pinBackend.values.value("providerSwitching").toBool()&&!error.isEmpty();
+            m_pinBackend.update({{"providerSwitching",false},{"providerSwitchError",switchFailed}});
             if(!error.isEmpty()){m_pinBackend.update({{"provider",m_chinese?"渠道请求失败":"Service failed"}});status(error,false);return;}
             QStringList original;for(auto b:m_blocks)original<<b.text;
             data["source"]=original.join('\n');m_data=data;
@@ -687,6 +709,7 @@ void App::place()
 {
     if(!m_pin||!m_bar.window)return;
     auto area=m_pin->pictureRect();auto s=screenAt(area.center());POINT c{area.center().x(),area.center().y()};auto work=monitorRect(c,true);
+    m_bar.window->setProperty("availableArea",s->availableGeometry());
     m_pinBackend.update({{"captureWidth",area.width()/s->devicePixelRatio()},{"captureHeight",area.height()/s->devicePixelRatio()}});
     if(m_bar.window->screen()!=s)m_bar.window->setScreen(s);
     auto size=m_bar.window->size()*s->devicePixelRatio();
@@ -717,7 +740,22 @@ void App::pinAction(const QString& name,const QVariant& value)
     try{
         if(name=="close")closePin();
         else if(name=="retry"){closePin();shot("region");}
-        else if(name=="settings")showSettings();
+        else if(name=="settings"||name=="providerSettings")showSettings();
+        else if(name=="providerMenu"){
+            if(value.toBool()){
+                publishProviders(m_pinBackend,m_pinProviderChoice,m_pinProviderProfiles);
+                if(m_bar.window)if(auto menu=m_bar.window->findChild<QQuickWindow*>("pin-provider-menu"))roundWindow(menu);
+            }
+        }
+        else if(name=="provider"){
+            if(!m_pin||m_busy||m_blocks.isEmpty())return;
+            publishProviders(m_pinBackend,m_pinProviderChoice,m_pinProviderProfiles);
+            const auto id=value.toString();
+            if(!id.isEmpty()&&!m_pinProviderProfiles.contains(id))return;
+            m_pinProviderChoice=id;publishProviders(m_pinBackend,m_pinProviderChoice,m_pinProviderProfiles);
+            m_pinBackend.update({{"providerSwitching",true},{"providerSwitchError",false}});
+            translatePin(m_source,m_target,m_pinRequestParts);
+        }
         else if(name=="copyText"){
             auto text=value.toString();if(!text.isEmpty())m_protocol.tool("clipboard_copy",{{"text",text}});
         }
@@ -772,6 +810,7 @@ void App::textFlow(const QString& command,bool retry)
             if(target||!IsWindow(m_selectionTarget))m_selectionTarget=target;
         }
         m_selectionAttempts=0;
+        m_selectionClipboardBaseline=m_clipboardSequence();
     }
     if(command=="ocr"&&m_word.window)m_word.window->hide();
     if(command!="ocr")openWord(command,point);
@@ -815,6 +854,7 @@ void App::textFlow(const QString& command,bool retry)
 }
 void App::openWord(QString mode,QPoint anchor,QRect selection)
 {
+    m_copySelectionTimer.stop();
     hideSelectionIcon();
     used();
     if(m_selectionCancel)m_selectionCancel->store(true);
@@ -827,7 +867,7 @@ void App::openWord(QString mode,QPoint anchor,QRect selection)
     m_followBaseline=m_wordPinned&&mode!="jsel";
     m_wordBackend.update({{"mode",mode},{"sourceText",""},{"translatedText",""},{"alignmentSource",""},{"alignmentRows",QVariantList()},
         {"providerSwitching",false},{"providerSwitchError",false},{"provider",""},{"providerNote",""},{"providerFallback",false},{"loading",true},
-        {"status",mode=="jsel"?"正在读取选中文字…":mode=="ocr"?"正在识别鼠标处的短句…":"正在翻译…"}});
+        {"awaitingSelectionCopy",false},{"status",mode=="jsel"?"正在读取选中文字…":mode=="ocr"?"正在识别鼠标处的短句…":"正在翻译…"}});
     publishWordProviders();
     if(!m_word.window){
         m_word=view("qrc:/ui/qml/Word.qml",&m_wordBackend);
@@ -856,6 +896,7 @@ void App::placeWord()
 }
 void App::closeWord()
 {
+    m_copySelectionTimer.stop();
     used();
     if(m_selectionCancel)m_selectionCancel->store(true);
     m_selectionPendingEpoch=0;
@@ -864,7 +905,7 @@ void App::closeWord()
     if(m_wordCancel)m_wordCancel->store(true);++m_wordEpoch;
     m_wordPinned=false;m_wordPlacementFrozen=false;m_followSelection.stop();m_wordSource.clear();m_lastSelection.clear();
     m_wordProviderChoice.clear();m_wordProviderProfiles.clear();
-    m_wordBackend.update({{"pinned",false},{"loading",false},{"providerSwitching",false}});
+    m_wordBackend.update({{"pinned",false},{"loading",false},{"providerSwitching",false},{"awaitingSelectionCopy",false}});
     if(!m_pin&&!m_settings.value("selectionIconEnabled").toBool(true))m_raw.reset();
 }
 void App::editWord(bool editing)
@@ -872,6 +913,7 @@ void App::editWord(bool editing)
     if(m_wordEditing==editing)return;
     m_wordEditing=editing;m_wordBackend.update({{"editing",editing}});
     if(editing){
+        m_copySelectionTimer.stop();m_wordBackend.update({{"awaitingSelectionCopy",false}});
         m_followSelection.stop();
     }else if(m_wordPinned&&m_word.window&&m_word.window->isVisible())m_followSelection.start();
 }
@@ -956,6 +998,15 @@ void App::readSelection(bool follow)
                 if(!error.isEmpty()||text.isEmpty())return;
                 if(text==m_lastSelection||text==m_wordSource)return;
             }else if(!error.isEmpty()||text.isEmpty()){
+                // Flutter SelectionArea can paint a selection without exposing
+                // a Windows TextPattern. Wait only for a NEW user copy from
+                // the original app; never send Ctrl+C or read stale clipboard.
+                if(error.isEmpty()&&m_needsSelectionCopy(m_selectionTarget)){
+                    m_copySelectionDeadline=GetTickCount64()+15000;
+                    m_wordBackend.update({{"loading",false},{"awaitingSelectionCopy",true},
+                        {"status",m_chinese?"此应用没有提供可读取的选区。请在原窗口点“复制”或按 Ctrl+C，15 秒内复制的文字会自动翻译。":"This app does not expose selected text. Copy in the original window within 15 seconds to translate it automatically."}});
+                    m_copySelectionTimer.start();readCopiedSelection();return;
+                }
                 // A provider may publish the selection just after the hotkey.
                 // Keep the original target and do not repeat timeouts or access errors.
                 if(error.isEmpty()&&m_selectionAttempts<2){
@@ -974,11 +1025,34 @@ void App::readSelection(bool follow)
             translateWord(text);
         });
 }
+void App::readCopiedSelection()
+{
+    if(!m_copySelectionTimer.isActive())return;
+    if(!m_word.window||!m_word.window->isVisible()||!IsWindow(m_selectionTarget)||GetTickCount64()>=m_copySelectionDeadline){
+        m_copySelectionTimer.stop();m_wordBackend.update({{"awaitingSelectionCopy",false},
+            {"status",m_chinese?"等待复制已结束。可重新按划词快捷键，再在原窗口复制文字。":"Copy wait ended. Use the selection shortcut again, then copy in the original window."}});return;
+    }
+    const auto sequence=m_clipboardSequence();if(sequence==m_selectionClipboardBaseline)return;
+    DWORD targetPid=0;GetWindowThreadProcessId(m_selectionTarget,&targetPid);
+    // Copying somewhere else, switching apps, or an external clipboard update
+    // cannot submit unrelated text to a translation provider.
+    if(!targetPid||m_clipboardOwnerProcess()!=targetPid||
+        GetAncestor(m_foreground(),GA_ROOT)!=GetAncestor(m_selectionTarget,GA_ROOT)){
+        m_selectionClipboardBaseline=sequence;return;
+    }
+    const auto text=m_readClipboard();if(text.isEmpty())return;
+    if(sequence!=m_clipboardSequence())return;
+    m_copySelectionTimer.stop();m_wordBackend.update({{"awaitingSelectionCopy",false}});translateWord(text);
+}
 void App::publishWordProviders()
+{
+    publishProviders(m_wordBackend,m_wordProviderChoice,m_wordProviderProfiles);
+}
+void App::publishProviders(Backend& backend,QString& choice,QHash<QString,QJsonObject>& profiles)
 {
     QVariantList rows{QVariantMap{{"id",""},{"name",m_chinese?"自动 · 跟随设置":"Automatic · follow settings"},
         {"detail",m_chinese?"按已设置的优先级和降级策略翻译":"Use configured priority and fallback"},{"selectable",true}}};
-    m_wordProviderProfiles.clear();
+    profiles.clear();
     for(auto value:m_services->queue(m_settings)){
         const auto row=value.toObject();const auto provider=row.value("provider").toString();
         auto profile=m_services->profile(provider);profile["provider"]=provider;
@@ -996,16 +1070,17 @@ void App::publishWordProviders()
             auto detail=!enabled?(m_chinese?QString("已停用"):QString("Disabled")):problem;
             if(detail.isEmpty()&&row.value("cooling").toBool())detail=m_chinese?"冷却中；不会跳过限流保护":"Cooling down; rate limits remain active";
             rows<<QVariantMap{{"id",id},{"name",name},{"detail",detail},{"selectable",enabled&&problem.isEmpty()}};
-            if(enabled&&problem.isEmpty())m_wordProviderProfiles[id]=candidate;
+            if(enabled&&problem.isEmpty())profiles[id]=candidate;
         }
     }
-    if(!m_wordProviderChoice.isEmpty()&&!m_wordProviderProfiles.contains(m_wordProviderChoice))m_wordProviderChoice.clear();
+    if(!choice.isEmpty()&&!profiles.contains(choice))choice.clear();
     QString name=m_chinese?"自动选择渠道":"Automatic service";
-    for(auto value:rows){auto row=value.toMap();if(row.value("id").toString()==m_wordProviderChoice){name=row.value("name").toString();break;}}
-    m_wordBackend.update({{"providerOptions",rows},{"providerChoice",m_wordProviderChoice},{"providerChoiceLabel",name}});
+    for(auto value:rows){auto row=value.toMap();if(row.value("id").toString()==choice){name=row.value("name").toString();break;}}
+    backend.update({{"providerOptions",rows},{"providerChoice",choice},{"providerChoiceLabel",name}});
 }
 void App::translateWord(QString text,bool retainResult)
 {
+    m_copySelectionTimer.stop();m_wordBackend.update({{"awaitingSelectionCopy",false}});
     text=text.trimmed();if(m_wordCancel)m_wordCancel->store(true);m_wordCancel=token();auto cancel=m_wordCancel;auto epoch=++m_wordEpoch;
     m_wordSource=text;m_wordBackend.update({{"sourceText",text},
         {"loading",!text.isEmpty()},{"status",text.isEmpty()?"没有读取到剪贴板文字":"正在翻译…"}});
@@ -1223,7 +1298,7 @@ void App::aiAction(const QString& name,const QVariant& value)
 void App::showSettings()
 {
     used();
-    if(m_config.window){m_config.window->show();m_config.window->requestActivate();return;}
+    if(m_config.window&&m_config.window->isVisible()){m_config.window->requestActivate();return;}
     ++m_configEpoch;m_drafts={};m_tests.clear();m_batch=false;
     m_routingDraft=m_services->routing();
     for(auto p:providers)m_drafts[p]=m_services->profile(p);
@@ -1234,7 +1309,10 @@ void App::showSettings()
     m_configBackend.update({{"testResults",QVariantList()},{"showTestResults",false},{"testing",false},{"batch",false},{"message",""}});
     configSelect(m_settings.value("provider").toString("ecdict"));
     m_configBackend.update({{"home",true}});publishTests();
-    m_config=view("qrc:/ui/Settings.qml",&m_configBackend);m_config.window->show();m_config.window->requestActivate();
+    if(!m_config.window)m_config=view("qrc:/qt/qml/WinShun/Settings.qml",&m_configBackend);
+    m_config.window->setProperty("iconOptionsOpen",false);
+    if(auto scroll=m_config.window->findChild<QObject*>("settings-scroll"))scroll->setProperty("contentY",0);
+    m_config.window->show();m_config.window->requestActivate();
 }
 void App::configSelect(const QString& p)
 {
@@ -1341,7 +1419,9 @@ void App::configAction(const QString& name,const QVariant& value)
             used();
             if(m_config.window)m_config.window->hide();++m_configEpoch;
             for(auto c:m_testCancels)c->store(true);m_testCancels.clear();m_testQueue.clear();m_testRunning=0;
-            dispose(m_config);m_drafts={};m_testProfiles={};m_configBackend.update({{"apiKey",""},{"aiChannels",QVariantList()}});
+            // Keep the small view warm until the normal idle cleanup. Reload
+            // drafts on reopen, so Cancel still discards all unsaved edits.
+            m_drafts={};m_testProfiles={};m_configBackend.update({{"home",true},{"apiKey",""},{"endpoint",""},{"model",""},{"region",""},{"appId",""},{"aiChannels",QVariantList()}});
         }
     }catch(const std::exception& e){m_configBackend.update({{"message",failure(e)}});}
 }

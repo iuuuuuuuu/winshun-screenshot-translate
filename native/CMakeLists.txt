@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(ScreenshotTranslate VERSION 0.4.29 LANGUAGES CXX)
+project(ScreenshotTranslate VERSION 0.4.30 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_AUTOMOC ON)
 find_package(Qt6 6.12 REQUIRED COMPONENTS Core Gui Qml Quick)
@@ -12,6 +12,8 @@ qt_policy(SET QTP0004 NEW)
 add_compile_definitions(NOMINMAX WIN32_LEAN_AND_MEAN UNICODE _UNICODE)
 add_compile_definitions(ST_VERSION="${PROJECT_VERSION}")
 add_compile_options(/utf-8 /EHsc)
+# Exercise the same UI font in developer probes and the shipped package.
+configure_file(assets/AlibabaPuHuiTi-3-55-Regular.ttf fonts/AlibabaPuHuiTi-3-55-Regular.ttf COPYONLY)
 add_executable(ScreenshotTranslate Launcher.cpp)
 set_target_properties(ScreenshotTranslate PROPERTIES AUTOMOC OFF MSVC_RUNTIME_LIBRARY MultiThreaded)
 target_link_libraries(ScreenshotTranslate PRIVATE version)
@@ -48,12 +50,19 @@ qt_add_qml_module(ScreenshotTranslateApp URI WinShun NO_PLUGIN
 set_target_properties(ScreenshotTranslateApp PROPERTIES QT_QMLCACHEGEN_ARGUMENTS "--only-bytecode")
 set_source_files_properties("${CMAKE_CURRENT_BINARY_DIR}/nativeui/Settings.qml" PROPERTIES QT_RESOURCE_ALIAS Settings.qml)
 set_source_files_properties("${CMAKE_CURRENT_BINARY_DIR}/nativeui/AiChannels.qml" PROPERTIES QT_RESOURCE_ALIAS AiChannels.qml)
+# Cache the large settings UI at build time instead of parsing both pages on
+# every open. They share the host-compatible Quick-only control module.
+qt_target_qml_sources(ScreenshotTranslateApp QML_FILES
+    "${CMAKE_CURRENT_BINARY_DIR}/nativeui/Settings.qml" "${CMAKE_CURRENT_BINARY_DIR}/nativeui/AiChannels.qml")
 set_source_files_properties("${CMAKE_CURRENT_BINARY_DIR}/nativeui/Toolbar.qml" PROPERTIES QT_RESOURCE_ALIAS Toolbar.qml)
 qt_add_resources(ScreenshotTranslateApp "screens" PREFIX "/ui" BASE "${CMAKE_CURRENT_SOURCE_DIR}"
-    FILES "${CMAKE_CURRENT_BINARY_DIR}/nativeui/AiChannels.qml" "${CMAKE_CURRENT_BINARY_DIR}/nativeui/Settings.qml" "${CMAKE_CURRENT_BINARY_DIR}/nativeui/Toolbar.qml"
+    FILES "${CMAKE_CURRENT_BINARY_DIR}/nativeui/Toolbar.qml"
         qml/Status.qml qml/Text.qml qml/PinMenu.qml qml/Word.qml qml/AdaptiveWindow.qml qml/Panel.qml qml/SelectionIcon.qml qml/ProviderMenu.qml)
 qt_add_resources(ScreenshotTranslateApp "fonts" PREFIX "/fonts" BASE "${CMAKE_CURRENT_SOURCE_DIR}/../assets"
     FILES ../assets/Phosphor.ttf)
+qt_add_resources(ScreenshotTranslateApp "probe-fixtures" PREFIX "/fixtures" BASE "${CMAKE_CURRENT_SOURCE_DIR}/fixtures"
+    FILES fixtures/ocr-word.png fixtures/ocr-spaces.png fixtures/ocr-mixed-chinese.png fixtures/ocr-mixed-english.png
+        fixtures/ocr-wrapped-chinese.png fixtures/ocr-wrapped-english.png)
 option(BUILD_NATIVE_TESTS "Build native integration test driver" ON)
 if(BUILD_NATIVE_TESTS)
     qt_add_executable(native_tests Tests.cpp Services.cpp Dictionary.cpp Http.cpp Desktop.cpp

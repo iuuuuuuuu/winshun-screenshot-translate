@@ -4,6 +4,7 @@
 #include "Protocol.h"
 #include "Dictionary.h"
 #include <QQmlEngine>
+#include <QQmlPropertyMap>
 #include <QQuickWindow>
 #include <QTimer>
 #include <QVariantMap>
@@ -13,16 +14,26 @@
 namespace st {
 class Backend : public QObject {
     Q_OBJECT
-    Q_PROPERTY(QVariantMap state READ state NOTIFY changed)
+    Q_PROPERTY(QQmlPropertyMap* state READ state CONSTANT)
 public:
     using QObject::QObject;
-    QVariantMap state() const {return values;}
-    void update(const QVariantMap& v){bool modified=false;for(auto it=v.begin();it!=v.end();++it)if(values.value(it.key())!=it.value()){values[it.key()]=it.value();modified=true;}if(modified)emit changed();}
+    QQmlPropertyMap* state() {return &m_state;}
+    void update(const QVariantMap& v){
+        QVariantHash modified;
+        for(auto it=v.begin();it!=v.end();++it)if(!values.contains(it.key())||values.value(it.key())!=it.value()){
+            values[it.key()]=it.value();modified.insert(it.key(),it.value());
+        }
+        // QML subscribes to each field, so typing or a status message does not
+        // invalidate every provider row and every hidden settings page.
+        if(!modified.isEmpty()){m_state.insert(modified);emit changed();}
+    }
     Q_INVOKABLE void action(const QString& name,const QVariant& value){emit invoked(name,value);}
     QVariantMap values;
 signals:
     void changed();
     void invoked(QString,QVariant);
+private:
+    QQmlPropertyMap m_state;
 };
 struct View {
     std::unique_ptr<QQmlEngine> engine;
@@ -58,7 +69,9 @@ private:
     void editWord(bool editing);
     void translateWord(QString text,bool retainResult=false);
     void publishWordProviders();
+    void publishProviders(Backend& backend,QString& choice,QHash<QString,QJsonObject>& profiles);
     void readSelection(bool follow=false);
+    void readCopiedSelection();
     void placeWord();
     void ensureRaw();
     void updateSelectionMonitor();
@@ -105,6 +118,9 @@ private:
     int m_aiCurrent=0;
     QJsonObject m_testProfiles;
     QTimer m_followSelection;
+    QTimer m_copySelectionTimer;
+    DWORD m_selectionClipboardBaseline=0;
+    quint64 m_copySelectionDeadline=0;
     Cancel m_wordCancel,m_selectionCancel;
     quint64 m_wordEpoch=0,m_selectionPendingEpoch=0;
     int m_selectionAttempts=0;
@@ -115,9 +131,18 @@ private:
     QString m_wordMode,m_wordSource,m_lastSelection;
     QString m_wordProviderChoice;
     QHash<QString,QJsonObject> m_wordProviderProfiles;
+    QString m_pinProviderChoice;
+    QStringList m_pinRequestParts;
+    QHash<QString,QJsonObject> m_pinProviderProfiles;
     HWND m_selectionTarget=nullptr;
     std::function<Selection(POINT,HWND,Cancel)> m_readSelection=[](POINT p,HWND target,Cancel cancel){return isolatedSelection(p,target,cancel);};
     std::function<QString()> m_readClipboard;
+    std::function<DWORD()> m_clipboardSequence=[] {return GetClipboardSequenceNumber();};
+    std::function<DWORD()> m_clipboardOwnerProcess=[] {DWORD pid=0;GetWindowThreadProcessId(GetClipboardOwner(),&pid);return pid;};
+    std::function<bool(HWND)> m_needsSelectionCopy=[](HWND target){
+        wchar_t name[128]{};GetClassNameW(GetAncestor(target,GA_ROOT),name,128);
+        return QString::fromWCharArray(name)=="FLUTTER_RUNNER_WIN32_WINDOW";
+    };
     std::function<QPoint()> m_mouse;
     std::function<HWND()> m_foreground=[] {return GetForegroundWindow();};
     std::unique_ptr<ws::capture::PinWindow> m_pin;

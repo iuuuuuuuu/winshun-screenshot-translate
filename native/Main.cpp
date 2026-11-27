@@ -17,10 +17,14 @@ extern "C" __declspec(dllexport) int screenshotTranslateMain(const wchar_t* appD
     if(!first||first->value("method").toString()!="initialize")return 2;
     auto params=first->value("params").toObject();QString appDir=QString::fromWCharArray(appDirName);
     QCoreApplication::setLibraryPaths({appDir});qputenv("QML_IMPORT_PATH",(appDir+"/qml").toUtf8());
-    // These are small controls, not the capture editor. Software rendering
-    // avoids per-window D3D heaps and waiting for GPU presentation on close.
-    bool software=true;
-    qputenv("QT_QPA_PLATFORM",software?"windows:fontengine=gdi":"windows:fontengine=freetype");qputenv("QT_D3D_NO_VBLANK_THREAD","1");
+    // Follow the renderer already selected by WinShun. Forcing software here
+    // made a large, scrolling settings page behave differently from the host.
+    const auto renderer=params.value("appearance").toObject().value("renderer").toString();
+    const bool software=renderer=="software"||(renderer!="d3d11"&&qEnvironmentVariable("QT_QUICK_BACKEND")=="software");
+    if(!software&&qEnvironmentVariable("QT_QUICK_BACKEND")=="software")qunsetenv("QT_QUICK_BACKEND");
+    qputenv("QT_QPA_PLATFORM",software?"windows:fontengine=gdi":"windows:fontengine=freetype");
+    qputenv("QT_D3D_NO_VBLANK_THREAD","1");
+    if(!qEnvironmentVariableIsSet("QT_D3D_MAX_FRAME_LATENCY"))qputenv("QT_D3D_MAX_FRAME_LATENCY","0");
     int argc=1;char name[]="ScreenshotTranslate";char* argv[]{name,nullptr};QGuiApplication app(argc,argv);
     QGuiApplication::setQuitOnLastWindowClosed(false);
     HICON icon=nullptr;
@@ -37,12 +41,18 @@ extern "C" __declspec(dllexport) int screenshotTranslateMain(const wchar_t* appD
         auto id=QFontDatabase::addApplicationFontFromData(f.readAll());auto families=QFontDatabase::applicationFontFamilies(id);
         if(!families.isEmpty()){QFont font(families[0]);font.setHintingPreference(QFont::PreferVerticalHinting);QGuiApplication::setFont(font);}
     }
+    // The same grayscale policy also keeps glyph edges clean on transparent
+    // popup windows and fractional display scales (no ClearType colour halos).
+    auto uiFont=QGuiApplication::font();
+    uiFont.setStyleStrategy(QFont::StyleStrategy(uiFont.styleStrategy()|QFont::NoSubpixelAntialias));
+    QGuiApplication::setFont(uiFont);
     ws::captureplugin::Protocol protocol(rest);
     try {
         st::App plugin(protocol,appDir,params);
         QObject::connect(&protocol,&ws::captureplugin::Protocol::requested,&plugin,&st::App::dispatch);
         QObject::connect(&protocol,&ws::captureplugin::Protocol::notified,&plugin,[&](auto method,auto params){plugin.dispatch({},method,params);});
-        QObject::connect(&protocol,&ws::captureplugin::Protocol::closed,&app,[]{ExitProcess(0);});
+        // Let Qt release render threads before Windows unloads the GPU DLLs.
+        QObject::connect(&protocol,&ws::captureplugin::Protocol::closed,&app,&QCoreApplication::quit);
         protocol.respond(first->value("id"),QJsonObject{{"protocolVersion","1"},{"name","iuuuuuuuu.screenshot-translate"}});
         HANDLE token=nullptr;TOKEN_ELEVATION elevation{};DWORD size=0;
         if(OpenProcessToken(GetCurrentProcess(),TOKEN_QUERY,&token)){

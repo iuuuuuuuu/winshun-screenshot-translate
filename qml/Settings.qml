@@ -270,10 +270,12 @@ Window {
                         }
                     }
                     Repeater {
-                        model: window.queue
+                        // Status/cooldown updates keep the existing controls.
+                        // The provider at each position may change after a drag.
+                        model: window.queue.length
                         Item {
                             id: queueRow
-                            required property var modelData
+                            readonly property var modelData: window.queue[index]
                             required property int index
                             objectName: "queue-row-" + modelData.provider
                             width: queueRows.width; height: queueRows.rowHeight
@@ -437,7 +439,11 @@ Window {
                                    "Tests use hello without fallback. Unconfigured services are skipped; dictionary misses and cancellation do not reduce weights. Set the preferred service, proxy and recovery interval in WinShun.")
                 }
               }
-              AiChannels { visible: !window.home && window.provider === "ai"; width: scroll.width }
+              Loader {
+                active: !window.home && window.provider === "ai"
+                visible: active; width: scroll.width
+                sourceComponent: AiChannels { width: scroll.width }
+              }
               Rectangle {
                 id: card
                 visible: !window.home && window.provider !== "ai"

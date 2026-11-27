@@ -312,7 +312,7 @@ AdaptiveWindow {
                     onAngleChanged: requestPaint()
                     NumberAnimation on angle { from: 0; to: Math.PI*2; duration: 1000; loops: Animation.Infinite; running: spinner.visible && wordWindow.visible }
                 }
-                Text { width: parent.width - (spinner.visible ? 22 : 0); text: backend.state.status || ""; wrapMode: Text.Wrap; font.pixelSize: 12; color: backend.state.loading ? Theme.subtext : Theme.danger }
+                Text { width: parent.width - (spinner.visible ? 22 : 0); text: backend.state.status || ""; wrapMode: Text.Wrap; font.pixelSize: 12; color: backend.state.loading || backend.state.awaitingSelectionCopy ? Theme.subtext : Theme.danger }
             }
             FlatButton {
                 objectName: "word-retry"; visible: !wordWindow.editing && !backend.state.loading && !!backend.state.status

@@ -151,6 +151,22 @@ void checkWrappedPhrases()
 void checkScreenshotLayout()
 {
     auto check=[](bool yes,const char* message){if(!yes)throw std::runtime_error(message);};
+    check(st::screenshotTranslationText("A sentence wraps\nonto the next line.")=="A sentence wraps onto the next line.","OCR soft wraps join before translation");
+    check(st::screenshotTranslationText("1.25-\nbit and 30B-\nA3B, real-\nworld")=="1.25-bit and 30B-A3B, real-world","printed hyphens preserve model names and compounds");
+    check(st::screenshotTranslationText(QString("trans%1\nlation").arg(QChar(0x00ad)))=="translation","explicit discretionary hyphen is removed");
+    check(st::screenshotTranslationText("第一行文字，\n下一行。\n\n第二段。")=="第一行文字，下一行。\n\n第二段。","CJK wraps have no extra space and blank paragraphs survive");
+    check(st::screenshotTranslationText("List:\n1. First\n2. Second\n• Third")=="List:\n1. First\n2. Second\n• Third","numbered and bullet boundaries survive");
+    check(st::screenshotTranslationText("First paragraph.\r\n\r\nSecond paragraph.")=="First paragraph.\n\nSecond paragraph.","Windows line endings retain paragraphs");
+    auto paragraph=st::groupWords({{"Long sentence continues",{10,10,270,20},20,1},
+        {"over the next row.",{10,42,220,20},20,2},{"Separate paragraph.",{10,115,230,20},20,3}});
+    check(paragraph.size()==2&&st::screenshotTranslationText(paragraph[0].text)=="Long sentence continues over the next row.","paragraph geometry excludes blank paragraph gap");
+    auto bullets=st::groupWords({{"• First item",{10,10,180,20},20,1},{"• Second item",{10,42,180,20},20,2}});
+    check(bullets.size()==2,"OCR bullet items keep separate translation blocks");
+    const auto hyphens=st::groupWords({{"1.25",{10,10,45,20},20,1},{"一",{57,21,9,3},3,1},
+        {"bit quantization",{10,42,180,20},20,2}});
+    check(hyphens.size()==1&&st::screenshotTranslationText(hyphens[0].text)=="1.25-bit quantization","tiny Latin line-end hyphen misread as Han is repaired");
+    const auto han=st::groupWords({{"这是一",{10,10,60,20},20,1},{"段文字",{74,10,60,20},20,1}});
+    check(han.size()==1&&han[0].text=="这是一段文字","real Han text is never changed to hyphens");
     for(bool dark:{false,true}){
         QImage image(400,300,QImage::Format_RGB32);image.fill(dark?QColor(30,30,30):Qt::white);
         QPainter paint(&image);QFont font("Segoe UI");font.setPixelSize(18);paint.setFont(font);

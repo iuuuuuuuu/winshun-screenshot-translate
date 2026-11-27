@@ -110,7 +110,7 @@ class RunnerProcess:
             assert self.hello.wait(10) and not self.failure, self.failure or 'runner hello timed out'
             # Let the runner alone set Qt paths. This catches missing injections.
             extra = [[key, value] for key, value in env.items()
-                     if key.startswith('WS_') and key not in ('WS_QT_DIR', 'WS_QT_QML_DIR')]
+                     if (key.startswith('WS_') and key not in ('WS_QT_DIR', 'WS_QT_QML_DIR')) or key == 'QT_SCALE_FACTOR']
             self.control(dict(op='start', id=1, exe=str(Path(args[0]).resolve()), args=args[1:],
                               cwd=str(Path(args[0]).resolve().parent), env=extra, qtDir=str(host),
                               memoryMB=1024, processes=True, clipboardRead=True, clipboardWrite=True,

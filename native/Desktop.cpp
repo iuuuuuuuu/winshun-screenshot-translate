@@ -314,6 +314,31 @@ QList<Block> filterUiIcons(const QImage& image,const QList<Block>& input)
     }
     QList<Block> result;for(int i=0;i<words.size();++i)if(!excluded.contains(i))result<<words[i];return result;
 }
+QString screenshotTranslationText(const QString& text)
+{
+    // Only call on an OCR paragraph whose rows were grouped geometrically.
+    // Preserve explicit paragraphs and list items, and keep the original text
+    // separately for copying, editing and mapping back to the screenshot.
+    auto lines=QString(text).replace("\r\n","\n").replace('\r','\n').split('\n');
+    QString out;bool paragraphStart=true;
+    const QRegularExpression list("^(?:[-*•●▪◦‣]|\\d+[.)、]|[A-Za-z][.)])\\s");
+    for(auto line:lines){
+        line=line.trimmed();
+        if(line.isEmpty()){if(!out.isEmpty()&&!out.endsWith("\n\n"))out+="\n\n";paragraphStart=true;continue;}
+        if(!out.isEmpty()&&!paragraphStart){
+            if(list.match(line).hasMatch())out+='\n';
+            else if(out.endsWith(QChar(0x00ad)))out.chop(1); // an explicit discretionary hyphen
+            else if(out.endsWith('-')||out.endsWith(QChar(0x2010))||out.endsWith(QChar(0x2011))){
+                // A printed hyphen can be part of a model name or compound;
+                // never guess it away (1.25-bit, 30B-A3B, real-world).
+            }else if(!(cjk(out.back())&&cjk(line.front()))&&
+                !QString(",.!?:;，。！？：；、)]}）】》」』”’").contains(line.front())&&
+                !(QString("，。！？：；、").contains(out.back())&&cjk(line.front())))out+=' ';
+        }
+        out+=line;paragraphStart=false;
+    }
+    return out.trimmed();
+}
 QList<Block> groupWords(QList<Block> words)
 {
     std::sort(words.begin(),words.end(),[](auto& a,auto& b){return a.box.y()==b.box.y()?a.box.x()<b.box.x():a.box.y()<b.box.y();});
@@ -389,8 +414,9 @@ QList<Block> groupWords(QList<Block> words)
             if(!run.text.isEmpty()&&w.box.x()-prev.box.right()>limit)flush();
             if(!fontSizes.isEmpty()&&wordScript(w)&&w.text.size()>=2&&prev.text.size()>=2&&w.box.x()-prev.box.right()>std::min(w.box.height(),prev.box.height())*.3){
                 const auto current=sourceFontPixels(w),previous=fontSizes.back();
-                if((current>previous*1.35&&w.glyphHeight>prev.glyphHeight*1.35)||
-                    (previous>current*1.35&&prev.glyphHeight>w.glyphHeight*1.35))flush();
+                // x-height-only words can be ~30% shorter in the same font.
+                if((current>previous*1.6&&w.glyphHeight>prev.glyphHeight*1.6)||
+                    (previous>current*1.6&&prev.glyphHeight>w.glyphHeight*1.6))flush();
             }
             // Small dots are often returned as fullwidth commas/periods. Only
             // normalize when tightly enclosed by digits in a numeric token.
@@ -398,10 +424,17 @@ QList<Block> groupWords(QList<Block> words)
                 w.box.height()<h*.4&&row[i-1].text.back().isDigit()&&row[i+1].text.front().isDigit()&&
                 w.box.left()-row[i-1].box.right()<h*.3&&row[i+1].box.left()-w.box.right()<h*.3;
             if(numberDot)w.text=w.box.height()>h*.25?",":".";
+            // Windows OCR sometimes calls a thin hyphen a Chinese "一".
+            // Require Latin neighbours and a tiny, wide horizontal glyph.
+            const bool thinHyphen=i>0&&w.text=="一"&&w.box.height()<h*.25&&w.box.width()>w.box.height()*1.8&&
+                row[i-1].text.back().isLetterOrNumber()&&(wordScript(row[i-1])==int(QChar::Script_Latin)+1||numeric(row[i-1].text))&&
+                w.box.left()-row[i-1].box.right()<h*.3&&
+                (i+1==row.size()||(wordScript(row[i+1])==int(QChar::Script_Latin)+1&&row[i+1].box.left()-w.box.right()<h*.3));
+            if(thinHyphen)w.text="-";
             if(run.text.isEmpty())run=w;
             else{
                 bool numericJoin=w.text.front().isDigit()&&(run.text.endsWith('.')||run.text.endsWith(','))&&i>=2&&row[i-2].text.back().isDigit()&&w.box.left()-prev.box.right()<h*.3;
-                if(!numericJoin&&!QString(",.!?:;，。！？：；、)]}）】》」』”’").contains(w.text.front())&&!(cjk(run.text.back())&&cjk(w.text.front()))&&w.box.x()-prev.box.right()>std::max(1.,std::min(prev.box.height(),w.box.height())*.16))run.text+=" ";
+                if(!thinHyphen&&!numericJoin&&!QString(",.!?:;，。！？：；、)]}）】》」』”’").contains(w.text.front())&&!(cjk(run.text.back())&&cjk(w.text.front()))&&w.box.x()-prev.box.right()>std::max(1.,std::min(prev.box.height(),w.box.height())*.16))run.text+=" ";
                 run.text+=w.text;run.box=run.box.united(w.box);
             }
             if(std::any_of(w.text.begin(),w.text.end(),[](QChar c){return c.isLetter();}))fontSizes<<sourceFontPixels(w);
@@ -409,7 +442,7 @@ QList<Block> groupWords(QList<Block> words)
         }flush();
         if(blocks.size()==1){
             auto b=blocks[0];
-            bool list=QRegularExpression("^(?:[-*]|\\d+[.)])\\s").match(b.text).hasMatch();
+            bool list=QRegularExpression("^(?:[-*•●▪◦‣]|\\d+[.)、]|[A-Za-z][.)])\\s").match(b.text).hasMatch();
             if(paragraph>=0&&!list){
                 auto& p=out[paragraph];double gap=b.box.y()-p.box.bottom();
                 if(std::abs(p.box.x()-b.box.x())<=h*.6&&gap>=-2&&gap<=std::max(8.,h)&&std::abs(p.glyphHeight-h)<=3){

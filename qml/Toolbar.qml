@@ -11,12 +11,22 @@ Window {
     flags: Qt.Tool | Qt.WindowStaysOnTopHint | Qt.FramelessWindowHint
     color: Theme.card
     property bool chinese: backend.state.chinese
+    property rect availableArea: Qt.rect(0, 0, 1280, 900)
+    function dismissProviderMenu() { if (providerLoader.item) providerLoader.item.hide() }
+    function openProviderMenu() {
+        if (!backend.state.ready || backend.state.loading) return
+        if (!providerLoader.item) providerLoader.setSource("qrc:/ui/qml/ProviderMenu.qml",
+            {hostWindow: bar, anchorItem: serviceControl, objectName: "pin-provider-menu"})
+        if (providerLoader.item) providerLoader.item.visible ? providerLoader.item.hide() : providerLoader.item.open()
+    }
+    Loader { id: providerLoader }
+    Connections { target: providerLoader.item; function onChosen(id) { backend.action("provider", id) } }
     function t(zh, en) { return chinese ? zh : en }
     component BarButton: ToolButton {
         implicitWidth: text.length ? (bar.chinese ? 49 : 68) : 26; implicitHeight: 26
         textPixelSize: 11
     }
-    onVisibleChanged: if (!visible) { sourceMenu.hide(); targetMenu.hide() }
+    onVisibleChanged: if (!visible) { sourceMenu.hide(); targetMenu.hide(); dismissProviderMenu() }
     Rectangle { anchors.fill: parent; color: "transparent"; radius: 5; border.width: 1; border.color: Theme.controlBorder }
     Item {
         anchors.fill: parent; focus: true
@@ -81,18 +91,32 @@ Window {
                 tip: bar.t("原文 / 译文对照", "Compare source and translation")
                 onClicked: backend.action("compare", null)
             }
-            Text {
-                id: serviceLabel
+            Item {
+                id: serviceControl; objectName: "toolbar-provider-button"
                 anchors.verticalCenter: parent.verticalCenter
-                objectName: "toolbar-provider"
-                text: backend.state.provider
-                color: Theme.subtext; font.pixelSize: 11
-                width: implicitWidth
+                width: serviceLabel.width + 18; height: 26
+                Text {
+                    id: serviceLabel; objectName: "toolbar-provider"
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: backend.state.providerSwitching ? bar.t("正在切换 · ", "Switching · ") + backend.state.providerChoiceLabel
+                        : backend.state.providerSwitchError ? bar.t("切换失败 · ", "Failed · ") + backend.state.providerChoiceLabel : backend.state.provider
+                    color: Theme.subtext; font.pixelSize: 11
+                    width: Math.min(160, implicitWidth); elide: Text.ElideRight
+                }
+                Glyph { anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter; size: 10; glyph: "\uE70D"; color: Theme.subtext; visible: !backend.state.providerSwitching }
+                Canvas {
+                    id: spinner; objectName: "pin-provider-spinner"; anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
+                    width: 12; height: 12; visible: !!backend.state.providerSwitching; property real angle: 0
+                    onAngleChanged: requestPaint()
+                    onPaint: { const ctx=getContext("2d");ctx.reset();ctx.strokeStyle=Theme.accent;ctx.lineWidth=2;ctx.beginPath();ctx.arc(6,6,4,angle,angle+Math.PI*1.4);ctx.stroke() }
+                    NumberAnimation on angle { from: 0; to: Math.PI*2; duration: 900; loops: Animation.Infinite; running: spinner.visible && bar.visible }
+                }
                 HoverHandler { id: serviceHover }
+                TapHandler { enabled: !!backend.state.ready && !backend.state.loading; onTapped: bar.openProviderMenu() }
                 ServiceTip {
                     objectName: "provider-tip"
                     anchorItem: serviceLabel; hovered: serviceHover.hovered
-                    text: backend.state.providerNote || ""
+                    text: backend.state.providerSwitchError ? backend.state.status : backend.state.providerNote || bar.t("点击切换本次翻译渠道", "Click to change service")
                 }
             }
             BarButton {

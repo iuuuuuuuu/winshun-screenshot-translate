@@ -12,6 +12,7 @@ namespace st {
 struct Block { QString text; QRectF box; double glyphHeight=16; int ocrLine=0; double fontPixels=0; };
 QList<Block> filterUiIcons(const QImage& image, const QList<Block>& words);
 QList<Block> groupWords(QList<Block> words);
+QString screenshotTranslationText(const QString& text);
 QList<Block> recognize(const QImage& image, Cancel cancel, bool grouped=true,
     double maxScale=2., bool retryEmpty=true);
 Block recognizeAt(const QImage& image, Cancel cancel, QPointF point);
