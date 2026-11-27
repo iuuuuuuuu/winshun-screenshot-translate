@@ -81,6 +81,7 @@ Window {
                 onDoubleClicked: window.visibility === Window.Maximized ? window.showNormal() : window.showMaximized()
             }
             ToolButton {
+                objectName: "settings-close"; closeButton: true
                 anchors.right: parent.right; anchors.rightMargin: 8
                 glyph: "\uE8BB"; tip: window.t("关闭", "Close"); tipEnabled: false
                 onClicked: backend.action("close", null)

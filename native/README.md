@@ -1,4 +1,4 @@
-# 截图翻译 0.4.30：原生版构建与验证
+# 截图翻译 0.4.31：原生版构建与验证
 
 弹窗交互回归：`python -B native/test_native.py --build <build-or-stage> --runtime <WinShun> --word-popup --output <report-dir>`。覆盖原文三行省略、点击展开编辑、独立滚动与固定收起按钮、收起提交、手动渠道切换、保留旧译文、全局设置不变及原生圆角。精确 AI 模型选择和禁用模型保护由 `--core` 回归覆盖。
 

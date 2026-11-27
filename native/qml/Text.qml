@@ -35,7 +35,7 @@ AdaptiveWindow {
     ToolButton { objectName: "text-copy"; anchors.right: parent.right; anchors.rightMargin: 36; y: 8; glyph: "\uE8C8"
         tip: backend.state.chinese ? "复制选中内容或全部译文" : "Copy selection or translation"
         onClicked: backend.action("copyText", textArea.selectedText || textArea.text) }
-    ToolButton { anchors.right: parent.right; y: 8; glyph: "\uE8BB"; tipEnabled: false; onClicked: textWindow.hide() }
+    ToolButton { objectName: "text-close"; closeButton: true; anchors.right: parent.right; y: 8; glyph: "\uE8BB"; tipEnabled: false; onClicked: textWindow.hide() }
     Flickable {
         id: scroll
         objectName: "text-scroll"

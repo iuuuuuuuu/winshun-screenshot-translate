@@ -3,6 +3,8 @@
 #include <QUuid>
 #include "CaptureKeys.h"
 #include <QClipboard>
+#include <QPropertyAnimation>
+#include <QQuickItem>
 #include <QDateTime>
 #include <QElapsedTimer>
 #include <QGuiApplication>
@@ -874,6 +876,10 @@ void App::openWord(QString mode,QPoint anchor,QRect selection)
         adaptiveWindow(m_word.window,[this]{placeWord();});
     }
     QMetaObject::invokeMethod(m_word.window,"resetInteraction");
+    if(auto fading=m_word.window->findChild<QPropertyAnimation*>("close-fade")){
+        fading->stop();delete fading;
+    }
+    m_word.window->setOpacity(1);m_word.window->contentItem()->setEnabled(true);
     placeWord();m_word.window->show();ensureRaw();
 }
 void App::placeWord()
@@ -894,13 +900,28 @@ void App::placeWord()
     }
     m_word.window->setPosition(boundedPosition(m_word.window,at));
 }
-void App::closeWord()
+void App::closeWord(bool animated)
 {
     m_copySelectionTimer.stop();
     used();
     if(m_selectionCancel)m_selectionCancel->store(true);
     m_selectionPendingEpoch=0;
-    if(m_word.window)m_word.window->hide();
+    if(m_word.window){
+        auto window=m_word.window;
+        QMetaObject::invokeMethod(window,"prepareClose");
+        if(auto fading=window->findChild<QPropertyAnimation*>("close-fade")){
+            fading->stop();delete fading;
+        }
+        BOOL animations=TRUE;SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION,0,&animations,0);
+        if(animated&&animations&&m_wordBackend.values.value("animations").toBool()&&window->isVisible()){
+            window->contentItem()->setEnabled(false);
+            auto fading=new QPropertyAnimation(window,"opacity",window);fading->setObjectName("close-fade");
+            fading->setStartValue(window->opacity());fading->setEndValue(0.);fading->setDuration(100);
+            fading->setEasingCurve(QEasingCurve::InCubic);
+            QObject::connect(fading,&QPropertyAnimation::finished,window,[window]{window->hide();window->setOpacity(1);window->contentItem()->setEnabled(true);});
+            fading->start(QAbstractAnimation::DeleteWhenStopped);
+        }else{window->hide();window->setOpacity(1);window->contentItem()->setEnabled(true);}
+    }
     editWord(false);
     if(m_wordCancel)m_wordCancel->store(true);++m_wordEpoch;
     m_wordPinned=false;m_wordPlacementFrozen=false;m_followSelection.stop();m_wordSource.clear();m_lastSelection.clear();
@@ -919,7 +940,7 @@ void App::editWord(bool editing)
 }
 void App::wordAction(const QString& name,const QVariant& value)
 {
-    if(name=="close")closeWord();
+    if(name=="close")closeWord(value.toBool());
     else if(name=="move")m_wordPlacementFrozen=true;
     else if(name=="edit")editWord(true);
     else if(name=="cancelEdit")editWord(false);

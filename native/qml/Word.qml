@@ -144,6 +144,7 @@ AdaptiveWindow {
     function prepareMove() { providerMenu.hide(); blurEditor(); backend.action("move", null) }
     function restoreSource() { blurSubmit.stop(); backend.action("cancelEdit", null) }
     function dismissProviderMenu() { providerMenu.hide() }
+    function prepareClose() { opening.stop(); blurSubmit.stop(); providerMenu.hide(); resetting = true }
     function chooseProvider(id) {
         if (switchingProvider) return
         blurSubmit.stop(); Qt.inputMethod.commit()
@@ -165,7 +166,7 @@ AdaptiveWindow {
     }
     onActiveChanged: if (!active) scheduleBlur()
     Component.onCompleted: syncSource()
-    onClosing: event => { event.accepted = false; backend.action("close", null) }
+    onClosing: event => { event.accepted = false; backend.action("close", true) }
     NumberAnimation { id: opening; target: wordWindow; property: "opacity"; from: 0; to: 1; duration: 120; easing.type: Easing.OutCubic }
     Timer {
         id: blurSubmit; interval: 150
@@ -205,7 +206,7 @@ AdaptiveWindow {
             tip: backend.state.chinese ? "复制译文" : "Copy translation"
             onClicked: { wordWindow.blurEditor(); backend.action("copy", null) }
         }
-        ToolButton { objectName: "word-close"; glyph: "\uE8BB"; tip: backend.state.chinese ? "关闭" : "Close"; onClicked: backend.action("close", null) }
+        ToolButton { objectName: "word-close"; closeButton: true; glyph: "\uE8BB"; tip: backend.state.chinese ? "关闭" : "Close"; onClicked: backend.action("close", true) }
     }
     Item {
         id: sourceArea; objectName: "word-source-area"

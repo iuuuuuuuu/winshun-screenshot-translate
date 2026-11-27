@@ -16,7 +16,9 @@ Rectangle {
     // false: Tab skips it and Space and Enter do nothing; only a click works
     // (for a button that a key meant for another window must not press).
     property bool keyboardActivation: true
-    readonly property color foreground: highlighted ? Theme.accentText : Theme.text
+    property color foreground: highlighted ? Theme.accentText : Theme.text
+    readonly property bool hovered: enabled && area.containsMouse
+    readonly property bool pressed: enabled && area.pressed
 
     signal clicked()
 

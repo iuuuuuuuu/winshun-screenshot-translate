@@ -64,7 +64,7 @@ private:
     void pinAction(const QString& name,const QVariant& value);
     void textFlow(const QString& command,bool retry=false);
     void openWord(QString mode,QPoint anchor,QRect selection={});
-    void closeWord();
+    void closeWord(bool animated=false);
     void wordAction(const QString& name,const QVariant& value);
     void editWord(bool editing);
     void translateWord(QString text,bool retainResult=false);

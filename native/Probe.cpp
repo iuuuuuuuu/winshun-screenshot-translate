@@ -234,6 +234,32 @@ void Probe::run(App& app,const QJsonObject& params)
             check(until([&]{return !app.m_wordBackend.values["loading"].toBool();}),"popup translation ready");pump(200);
             auto word=app.m_word.window;
             check(word->opacity()==1,"popup opening animation finishes");
+            auto closeButton=word->findChild<QQuickItem*>("word-close");
+            hoverItem(word,closeButton);
+            check(closeButton->property("hovered").toBool()&&closeButton->property("color").value<QColor>()==QColor("#C42B1C"),"close hover has a visible red background");
+            check(closeButton->property("foreground").value<QColor>()==QColor(Qt::white),"close hover keeps white glyph contrast");
+            word->grabWindow().save(out+"/word-close-hover.png");
+            auto closePoint=closeButton->mapToScene(QPointF(closeButton->width()/2,closeButton->height()/2))*word->devicePixelRatio();
+            auto closePosition=MAKELPARAM(qRound(closePoint.x()),qRound(closePoint.y()));
+            PostMessageW(HWND(word->winId()),WM_LBUTTONDOWN,MK_LBUTTON,closePosition);pump(20);
+            check(closeButton->property("pressed").toBool()&&closeButton->property("color").value<QColor>()==QColor("#B82028"),"close press is darker than hover");
+            word->grabWindow().save(out+"/word-close-pressed.png");
+            auto closeEpoch=app.m_wordEpoch;
+            PostMessageW(HWND(word->winId()),WM_LBUTTONUP,0,closePosition);pump(25);
+            check(app.m_wordEpoch==closeEpoch+1,"close cancels the translation immediately");
+            if(word->isVisible()){
+                check(!word->contentItem()->isEnabled()&&word->opacity()<1,"closing popup fades without accepting more clicks");
+                word->grabWindow().save(out+"/word-close-fade.png");
+            }
+            check(until([&]{return !word->isVisible();},350),"close animation finishes promptly");
+            app.openWord("jsel",{400,180});pump(150);
+            app.closeWord(true);pump(20);app.openWord("jsel",{400,180});pump(160);
+            check(word->isVisible()&&word->opacity()==1&&word->contentItem()->isEnabled(),"reopen cancels the previous close animation");
+            app.m_wordBackend.update({{"animations",false}});app.closeWord(true);
+            check(!word->isVisible(),"reduced motion closes immediately");
+            app.m_wordBackend.update({{"animations",true}});app.openWord("jsel",{400,180});app.translateWord("Hello + 100%");
+            check(until([&]{return !app.m_wordBackend.values["loading"].toBool();}),"popup ready after close feedback checks");pump(180);
+            report["closeButtonFeedback"]=true;
             auto preview=word->findChild<QQuickItem*>("word-source-preview");
             auto source=word->findChild<QQuickItem*>("word-editor");
             auto sourceScroll=word->findChild<QQuickItem*>("word-source-scroll");
@@ -1221,8 +1247,9 @@ void Probe::run(App& app,const QJsonObject& params)
         app.closeWord();
         app.m_settings["provider"]="mymemory";app.textFlow("clip");pump(70);auto closeCancel=app.m_wordCancel;timer.restart();
         click(app.m_word.window,app.m_word.window->findChild<QQuickItem*>("word-close"));
-        check(!app.m_word.window->isVisible()&&closeCancel->load()&&!app.m_busy,"word close cancels without blocking screenshot");
+        check(closeCancel->load()&&!app.m_busy,"word close cancels without blocking screenshot");
         report["wordCloseWhileBlockedMs"]=double(timer.elapsed());report["wordCancellation"]=true;
+        check(until([&]{return !app.m_word.window->isVisible();},350),"word close completes its short fade while service is blocked");
         app.m_settings["provider"]="google";
         struct WordResult {QList<Block> words;QString error;std::atomic_bool ready=false;};
         auto recognized=std::make_shared<WordResult>();

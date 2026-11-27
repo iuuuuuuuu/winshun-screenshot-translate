@@ -135,7 +135,7 @@ Window {
                 onClicked: backend.action("text", null)
             }
             BarButton { objectName: "toolbar-settings"; glyph: "\uE713"; tip: bar.t("渠道配置", "Service settings"); onClicked: backend.action("settings", null) }
-            BarButton { objectName: "toolbar-close"; glyph: "\uE8BB"; tip: bar.t("关闭 · Esc", "Close · Esc"); tipEnabled: false; onClicked: backend.action("close", null) }
+            BarButton { objectName: "toolbar-close"; closeButton: true; glyph: "\uE8BB"; tip: bar.t("关闭 · Esc", "Close · Esc"); tipEnabled: false; onClicked: backend.action("close", null) }
         }
     }
 }
