@@ -72,3 +72,11 @@ SOFTWARE.
 
 
 FlatButton.qml and InputBox.qml are copied from LingCore/WinShun tag v0.20.0 (460f7be). ChoiceTabs.qml is the wrapping host control from the local host repair. Theme.qml uses the same host color and radius tokens. Glyph rendering adapts WinShun's Phosphor outline renderer for PySide. The screenshot and service pages are plugin-specific. No host settings data or service credentials are bundled.
+
+
+## IAccessible2
+
+Firefox selection uses C++ COM interface declarations from LinuxA11y/IAccessible2 (BSD-3-Clause).
+Source: https://github.com/LinuxA11y/IAccessible2/tree/master/api
+Only declarations are included; no third-party executable, proxy or service is installed.
+The full license is included in `licenses/IAccessible2.txt` (source: `native/licenses/IAccessible2.txt`).

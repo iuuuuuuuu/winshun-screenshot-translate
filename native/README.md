@@ -1,4 +1,6 @@
-# 截图翻译 0.4.33：原生版构建与验证
+# 截图翻译 0.4.34：原生版构建与验证
+
+0.4.34 增加 Firefox IAccessible2 选区读取，按各节点自身的选中偏移展开链接和内嵌组件。测试覆盖原生 UIA / MSAA 兼容模式、头像、部分链接、段落、字面量 U+FFFC、中文与 emoji、长文及小译点击。测试只使用私有桌面、新浏览器配置和合成页面。
 
 0.4.33 增加 Firefox 多节点、正反向和小译图标点击后最终选区回归；`--window-memory` 用两个独立进程验证三种窗口各自恢复尺寸、最大化还原和屏幕边界。界面回归覆盖共享标题栏、浅深主题选中文字、紧凑底栏和小尺寸排版，继续使用私有桌面与本地合成数据。
 
@@ -26,7 +28,7 @@ Firefox 选区回归：`python -B native/test_selection_firefox.py --driver <gec
 ## 安装和回退
 
 在 WinShun 设置 → 插件 → 从压缩包安装，选择
-`iuuuuuuuu.screenshot-translate-0.4.33.wsplugin`。运行时不检查或启动 Python。
+`iuuuuuuuu.screenshot-translate-0.4.34.wsplugin`。运行时不检查或启动 Python。
 包内包括启动器、应用 DLL、少量 Visual C++ 依赖、许可和文档；DLL 内包含 QML 控件与授权图标字体。
 现有渠道、热键、代理、偏好和 DPAPI 密钥格式保持兼容，不迁移或删除用户的数据目录。
 

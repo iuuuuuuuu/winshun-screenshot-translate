@@ -29,6 +29,8 @@ def main():
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--without-primer', action='store_true', help='Reproduce the cold Firefox accessibility failure')
     parser.add_argument('--icon-click', action='store_true', help='Verify the actual QML icon refreshes a late Firefox selection')
+    parser.add_argument('--uia-mode', type=int, choices=(0,1,2), help='Firefox UIA mode in the temporary test profile only')
+    parser.add_argument('--case', action='append', help='Run only named selection cases')
     args = parser.parse_args()
     api('user32', 'SetProcessDpiAwarenessContext', w.BOOL, w.HANDLE)(ctypes.c_void_p(-4))
     args.output.mkdir(parents=True, exist_ok=True)
@@ -52,6 +54,7 @@ def main():
     report = {'testBoundary': 'Private Firefox, fresh profile, synthetic local text only', 'cases': []}
     def request(method, path, body=None):
         response = http.request(method, base+path, json=body, timeout=40)
+        if not response.ok: print(response.text,flush=True)
         response.raise_for_status()
         return response.json().get('value')
     def command(method, path, body=None):
@@ -68,10 +71,15 @@ def main():
                 if time.monotonic() >= deadline:
                     raise
                 time.sleep(.1)
+        options={'binary':str(args.firefox),'args':['-no-remote']}
+        if args.uia_mode is not None:options['prefs']={'accessibility.uia.enable':args.uia_mode}
         value = request('POST', '/session', {'capabilities': {'alwaysMatch': {
-            'browserName': 'firefox', 'moz:firefoxOptions': {'binary': str(args.firefox), 'args': ['-no-remote']}}}})
+            'browserName': 'firefox', 'moz:firefoxOptions': options}}})
         session = value['sessionId']
         report['browserVersion'] = value['capabilities']['browserVersion']
+        test_profile=Path(value['capabilities']['moz:profile'])
+        report['uiaPreference']={name:[line for line in (test_profile/name).read_text(encoding='utf-8').splitlines() if 'accessibility.uia.' in line]
+            for name in ('user.js','prefs.js') if (test_profile/name).exists()}
         html = '<title>WinShun isolated selection fixture</title><h1>Selection fixture</h1>' + \
                '<div><section><article><p id="source">Please translate this Firefox selection.</p></article></section></div>' + \
                '<input value="Unrelated focus"><p>QQ</p>'
@@ -105,8 +113,14 @@ def main():
                             ('inline-release', 100, 100), ('inline-reverse', 100, 100),
                             ('inline-partial', 100, 100), ('inline-indented', 100, 100),
                             ('inline-shadow', 100, 100), ('inline-shadow-reverse', 100, 100),
+                            ('inline-avatar', 100, 100), ('inline-avatar-partial', 100, 100),
+                            ('inline-github', 100, 100), ('inline-github-no-avatar', 100, 100),
+                            ('inline-links-partial', 100, 100), ('inline-links-reverse', 100, 100),
+                            ('inline-literal-object', 100, 100),
+                            ('blocks-partial',100,100),('blocks-full',100,100),
                             ('long-scrolled', 100, 100), ('long-focus-restored', 100, 100),
                             ('long-over-100k', 100, 100)]:
+            if args.case and name not in args.case:continue
             command('POST', '/window/rect', {'x': x, 'y': y, 'width': 800, 'height': 500})
             expected = 'Please translate this Firefox selection.'
             if name != 'primary-retry':
@@ -139,6 +153,14 @@ def main():
                 expected = command('POST', '/execute/sync', {'script': r'''
                 const source = document.getElementById('source');
                 source.innerHTML = '<a href="#author">iuuuuuuuu</a> released this <relative-time>17 minutes ago</relative-time>';
+                if(arguments[0].startsWith('inline-links'))
+                    source.innerHTML = '<a href="#author">iuuuuuuuu</a> released this <relative-time><a href="#time">1 hour ago</a></relative-time> UNSELECTED';
+                if(arguments[0] === 'inline-literal-object')
+                    source.innerHTML = '<a href="#author">Literal</a> \uFFFC <relative-time>text 😀 中文</relative-time>';
+                if(arguments[0].startsWith('inline-avatar')) {
+                    source.insertAdjacentHTML('afterbegin',"<img alt='@iuuuuuuuu' width='20' height='20'> ");
+                    source.firstChild.src=URL.createObjectURL(new Blob(['<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20"><circle cx="10" cy="10" r="10" fill="blue"/></svg>'],{type:'image/svg+xml'}));
+                }
                 if(arguments[0] === 'inline-indented' || arguments[0].startsWith('inline-shadow'))
                     source.innerHTML = '\n      <a href="#author">iuuuuuuuu</a>\n\n    released this\n\n      <relative-time>\n        27 Nov 11:09\n      </relative-time>\n  ';
                 if(arguments[0].startsWith('inline-shadow')) {
@@ -149,12 +171,46 @@ def main():
                 const selection = window.getSelection(); selection.removeAllRanges();
                 const first = source.querySelector('a').firstChild;
                 const time = source.querySelector('relative-time');
-                const last = time.firstChild;
+                const last = time.querySelector('a')?.firstChild || time.firstChild;
                 if(arguments[0].endsWith('reverse')) selection.setBaseAndExtent(last, last.length, first, 0);
-                else if(arguments[0] === 'inline-partial') selection.setBaseAndExtent(first, 3, last, 7);
+                else if(arguments[0].endsWith('partial')) selection.setBaseAndExtent(first, 3, last, 7);
+                else if(arguments[0] === 'inline-avatar') {const range=document.createRange();range.selectNodeContents(source);selection.addRange(range);}
                 else selection.setBaseAndExtent(first, 0, last, last.length);
                 return selection.toString();''', 'args': [name]})
+            if name.startswith('inline-github'):
+                command('POST','/execute/sync',{'script':r'''
+                const old=document.getElementById('source');const source=document.createElement('div');source.id='source';old.replaceWith(source);
+                source.innerHTML=`
+      <img alt="@iuuuuuuuu" width="20" height="20">
+      <a href="#author">iuuuuuuuu</a>
+
+    released this
+
+      <relative-time class="no-wrap" prefix="" datetime="2026-11-27T11:09:42Z">
+        27 Nov 11:09
+      </relative-time>
+  `;
+                source.querySelector('img').src=URL.createObjectURL(new Blob(['<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20"><circle cx="10" cy="10" r="10" fill="blue"/></svg>'],{type:'image/svg+xml'}));
+                const time=source.querySelector('relative-time');time.style.whiteSpace='nowrap';time.attachShadow({mode:'open'}).innerHTML='<span part="root">1 hour ago</span>';
+                const selection=window.getSelection();selection.removeAllRanges();const range=document.createRange();
+                if(arguments[0].endsWith('no-avatar'))range.setStart(source.querySelector('a').firstChild,0);
+                else range.setStart(source,0);
+                range.setEndAfter(time);selection.addRange(range);
+                ''','args':[name]})
+                snapshot=command('POST','/execute/sync',{'script': '''
+                const s=window.getSelection();return {text:s.toString(),anchor:s.anchorNode?.nodeValue,anchorOffset:s.anchorOffset,focus:s.focusNode?.nodeValue,focusOffset:s.focusOffset};''','args':[]})
+                (args.output/(name+'-dom.json')).write_text(json.dumps(snapshot,indent=2),encoding='utf-8')
+            if name.startswith('blocks-'):
+                command('POST','/execute/sync',{'script': '''
+                const old=document.getElementById('source'), source=document.createElement('div');source.id='source';old.replaceWith(source);
+                source.innerHTML='<p>UNSELECTED BEFORE</p><p id="first">First 😀 <a href="#one">linked words</a>.</p><p id="second">Second <a href="#two">paragraph</a> tail.</p><p>UNSELECTED AFTER</p>';
+                const s=window.getSelection(), first=source.querySelector('#first').firstChild;
+                if(arguments[0]==='blocks-partial')s.setBaseAndExtent(first,6,source.querySelector('#second a').firstChild,4);
+                else s.setBaseAndExtent(first,0,source.querySelector('#second').lastChild,6);
+                ''','args':[name]})
             expected = command('POST', '/execute/sync', {'script': 'return window.getSelection().toString()', 'args': []})
+            if name.startswith('inline-github'):expected='iuuuuuuuu released this 1 hour ago'
+            if name=='inline-avatar':expected='iuuuuuuuu released this 17 minutes ago'
             assert expected, 'Browser itself cleared the fixture selection'
             expected = expected.replace('\r\n', '\n')
             rect = w.RECT()

@@ -9,6 +9,7 @@
 #include <UIAutomation.h>
 #include <wrl/client.h>
 #include "Desktop.h"
+#include "FirefoxSelection.h"
 #include <QCoreApplication>
 #include <QProcess>
 #include <QJsonDocument>
@@ -1143,6 +1144,7 @@ Selection selectionAt(POINT point,HWND target,int warmupMs)
     trace("create automation");
     HRESULT hr=CoInitializeEx(nullptr,COINIT_MULTITHREADED);bool initialized=SUCCEEDED(hr);
     struct Cleanup{bool initialized;~Cleanup(){if(initialized)CoUninitialize();}} cleanup{initialized};
+    if(auto result=firefoxSelection(target?target:GetForegroundWindow());!result.text.isEmpty())return result;
     using Microsoft::WRL::ComPtr;
     ComPtr<IUIAutomation2> automation2;ComPtr<IUIAutomation> automation;ComPtr<IUIAutomationTreeWalker> walker;
     if(SUCCEEDED(CoCreateInstance(__uuidof(CUIAutomation8),nullptr,CLSCTX_INPROC_SERVER,IID_PPV_ARGS(&automation2)))){
@@ -1150,6 +1152,13 @@ Selection selectionAt(POINT point,HWND target,int warmupMs)
     }else if(FAILED(CoCreateInstance(CLSID_CUIAutomation,nullptr,CLSCTX_INPROC_SERVER,IID_PPV_ARGS(&automation))))return {};
     automation->get_RawViewWalker(&walker);
     auto selected=[&](IUIAutomationElement* element)->Selection {
+            if(qEnvironmentVariableIsSet("ST_SELECTION_TRACE")){
+                BSTR description=nullptr;
+                if(SUCCEEDED(element->get_CurrentProviderDescription(&description))&&description){
+                    std::fprintf(stderr,"[selection] provider %s\n",qPrintable(QString::fromWCharArray(description,SysStringLen(description))));
+                    SysFreeString(description);
+                }
+            }
             BOOL password=FALSE;
             if(FAILED(element->get_CurrentIsPassword(&password))||password)return {};
             int pid=0;element->get_CurrentProcessId(&pid);
