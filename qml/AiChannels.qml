@@ -53,6 +53,12 @@ Column {
             InputBox { objectName: "ai-endpoint"; width: parent.width; text: editor.channel.endpoint || ""; placeholder: "https://api.example.com/v1"; onTextChanged: if(inputFocused) editor.field("endpoint",text) }
             Text { text: editor.t("API 密钥 · Windows 加密保存","API key · encrypted by Windows"); color: Theme.subtext; font.pixelSize: 12 }
             InputBox { objectName: "ai-key"; width: parent.width; text: editor.channel.apiKey || ""; echoMode: TextInput.Password; placeholder: editor.t("输入此渠道的 API 密钥","Enter channel API key"); onTextChanged: if(inputFocused) editor.field("apiKey",text) }
+            Row {
+                spacing: 8
+                FlatButton { objectName: "ai-streaming"; text: editor.t("流式显示","Streaming"); highlighted: editor.channel.streaming !== false; onClicked: editor.field("streaming",editor.channel.streaming === false) }
+                FlatButton { objectName: "ai-thinking"; text: editor.t("优先关闭思考","Prefer no reasoning"); highlighted: editor.channel.disableThinking !== false; onClicked: editor.field("disableThinking",editor.channel.disableThinking === false) }
+            }
+            Text { width: parent.width; wrapMode: Text.Wrap; text: editor.t("译文边返回边显示。关闭思考仅用于已适配的服务；服务不支持时会记住兼容方式。","Show translation as it arrives. Reasoning controls apply to supported services; incompatible options are remembered."); color: Theme.faint; font.pixelSize: 12 }
             Rectangle { width: parent.width; height: 1; color: Theme.divider }
             Text { text: editor.t("模型与降级顺序","Models and fallback order"); color: Theme.text; font.pixelSize: 14; font.weight: Font.DemiBold }
             Repeater {

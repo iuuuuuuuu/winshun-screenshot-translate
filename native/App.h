@@ -3,6 +3,8 @@
 #include "PinWindow.h"
 #include "Protocol.h"
 #include "Dictionary.h"
+#include "History.h"
+#include "Speech.h"
 #include <QQmlEngine>
 #include <QQmlPropertyMap>
 #include <QQuickWindow>
@@ -85,6 +87,14 @@ private:
     void showPanel(const QString& text = {});
     void panelAction(const QString& name,const QVariant& value);
     void translatePanel(bool reuse=false);
+    void saveTextTools();
+    HistoryStore& history();
+    void showHistory();
+    void publishHistory();
+    void historyAction(const QString& name,const QVariant& value);
+    void remember(const QJsonObject& data,bool favorite,Backend& feedback);
+    void readAloud(Backend& backend,bool source);
+    void stopSpeech();
     void publishAi();
     void aiAction(const QString& name,const QVariant& value);
     void configSelect(const QString& provider);
@@ -113,6 +123,12 @@ private:
     ws::captureplugin::Protocol& m_protocol;
     Backend m_pinBackend,m_configBackend,m_wordBackend,m_panelBackend;
     View m_bar,m_status,m_config,m_text,m_menu,m_word,m_panel;
+    Backend m_historyBackend;
+    View m_historyView;
+    std::unique_ptr<HistoryStore> m_history;
+    QJsonObject m_wordRecord,m_panelRecord;
+    std::unique_ptr<Speech> m_speech;
+    quint64 m_speechEpoch=0;
     Cancel m_panelCancel;
     quint64 m_panelEpoch=0;
     int m_aiCurrent=0;

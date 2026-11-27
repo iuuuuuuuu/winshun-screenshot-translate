@@ -148,6 +148,30 @@ class Server(http.server.BaseHTTPRequestHandler):
             if text.startswith("Loading and outside"):return "加载期间也能点击外部关闭。"
             if text=="<button>&":return "&lt;button&gt;&amp;"
             return "你好 + 100%" if text == "Hello + 100%" else text if text == "499" else "翻译：" + text
+        if path.startswith("/ai-stream"):
+            model=body['model']
+            key='stream:'+model+(':stream' if body.get('stream') else ':plain')
+            counts[key]=counts.get(key,0)+1
+            if model=='rate':
+                assert counts[key]==1, '429 must never retry compatibility'
+                self.send_response(429);self.end_headers();return
+            if model=='plain' and body.get('stream'):
+                assert counts[key]==1, 'remember incompatible streaming'
+                self.send_response(400);self.end_headers();return
+            parts=json.loads(body['messages'][1]['content'])
+            if not body.get('stream'):
+                result={'choices':[{'message':{'content':json.dumps(['译文:'+t for t in parts])},'finish_reason':'stop'}]}
+                self.send_response(200);self.end_headers();self.wfile.write(json.dumps(result).encode());return
+            self.send_response(200);self.send_header('Content-Type','text/event-stream');self.end_headers()
+            content='<think>不要显示思考</think>'+json.dumps(['译文:'+t for t in parts],ensure_ascii=False)
+            for offset in range(0,len(content),3):
+                event={'choices':[{'index':0,'delta':{'content':content[offset:offset+3],'reasoning_content':'invisible'}}]}
+                wire=('data: '+json.dumps(event,ensure_ascii=False)+'\r\n\r\n').encode()
+                self.wfile.write(wire[:len(wire)//2]);self.wfile.flush()
+                self.wfile.write(wire[len(wire)//2:]);self.wfile.flush();time.sleep(.002 if model=='long' else .02)
+                if model=='broken' and offset>36:return
+            reason='length' if model=='length' else 'stop'
+            self.wfile.write(('data: '+json.dumps({'choices':[{'delta':{},'finish_reason':reason}]})+'\n\ndata: [DONE]\n\n').encode());return
         if path.startswith("/ai-test"):
             model=body["model"]
             definition=body["messages"][0]["content"].startswith("Explain")

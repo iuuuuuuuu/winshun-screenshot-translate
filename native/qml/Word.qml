@@ -17,7 +17,7 @@ AdaptiveWindow {
     property string pendingSelectionSide: ""
     readonly property bool switchingProvider: !!backend.state.providerSwitching
     readonly property bool switchError: !!backend.state.providerSwitchError
-    readonly property real footerHeight: switchingProvider || switchError ? 63 : 43
+    readonly property real footerHeight: switchingProvider || switchError ? 97 : 77
     readonly property real expandedSourceLimit: Math.max(60, Math.min(180, heightLimit * 0.32))
     preferredWidth: 28 + Math.sqrt(1.5 * (Math.min(sourceMeasure.contentHeight, 66) * sourceMeasure.width
                                        + meaningMeasure.contentHeight * meaningMeasure.width))
@@ -184,7 +184,7 @@ AdaptiveWindow {
         }
     }
     MouseArea {
-        x: 1; y: 1; width: parent.width - 107; height: 40
+        x: 1; y: 1; width: parent.width - 140; height: 40
         onPressed: { wordWindow.prepareMove(); wordWindow.startSystemMove() }
     }
     Text {
@@ -196,6 +196,7 @@ AdaptiveWindow {
     }
     Row {
         anchors.right: parent.right; anchors.rightMargin: 6; y: 5; spacing: 1
+        ToolButton { objectName: "word-favorite"; glyph: "\uE734"; tip: backend.state.chinese ? "收藏译文" : "Favorite translation"; enabled: !!backend.state.translatedText && !backend.state.loading; onClicked: backend.action("favorite",null) }
         ToolButton {
             objectName: "word-pin"; glyph: "\uE3E2"; checked: backend.state.pinned
             tip: backend.state.chinese ? (checked ? "取消固定" : "固定并跟随新选区") : "Pin and follow selections"
@@ -297,7 +298,7 @@ AdaptiveWindow {
                 onSelectionStartChanged: wordWindow.selectionChanged("target")
                 onSelectionEndChanged: wordWindow.selectionChanged("target")
                 font.family: "Segoe UI"; font.pixelSize: 16; color: Theme.text; selectionColor: Theme.textSelection
-                onTextChanged: { reveal.stop(); if (text && wordWindow.animations && wordWindow.visible) reveal.restart(); else opacity = 1 }
+                onTextChanged: { reveal.stop(); if (text && !backend.state.loading && wordWindow.animations && wordWindow.visible) reveal.restart(); else opacity = 1 }
                 NumberAnimation { id: reveal; target: meaning; property: "opacity"; from: 0.35; to: 1; duration: 120; easing.type: Easing.OutCubic }
             }
             Row {
@@ -319,13 +320,14 @@ AdaptiveWindow {
                 objectName: "word-retry"; visible: !wordWindow.editing && !backend.state.loading && !!backend.state.status
                 text: backend.state.chinese ? "重试" : "Retry"; height: 28; onClicked: backend.action("retry", null)
             }
+            Text { width: parent.width; visible: !!backend.state.notice; text: backend.state.notice || ""; textFormat: Text.PlainText; wrapMode: Text.Wrap; color: Theme.subtext; font.pixelSize: 12 }
         }
     }
     ListScrollBar { objectName: "word-scrollbar"; flickable: scroll; anchors.right: scroll.right; anchors.top: scroll.top; anchors.bottom: scroll.bottom }
     Rectangle { x: 1; y: parent.height - wordWindow.footerHeight; width: parent.width - 2; height: 1; color: Theme.divider }
     Rectangle {
         id: providerButton; objectName: "word-provider-button"
-        x: 12; y: parent.height - wordWindow.footerHeight + 7; width: parent.width - 24; height: wordWindow.footerHeight - 15; radius: 7
+        x: 12; y: parent.height - wordWindow.footerHeight + 7; width: parent.width - 24; height: wordWindow.footerHeight - 49; radius: 7
         color: providerHover.hovered ? Theme.controlHover : "transparent"
         border.width: providerHover.hovered || providerMenu.visible ? 1 : 0; border.color: Theme.controlBorder
         Text {
@@ -351,6 +353,12 @@ AdaptiveWindow {
         HoverHandler { id: providerHover }
         TapHandler { enabled: !wordWindow.switchingProvider; onTapped: { wordWindow.blurEditor(); providerMenu.visible ? providerMenu.hide() : providerMenu.open() } }
         ServiceTip { objectName: "provider-tip"; anchorItem: serviceLabel; hovered: serviceHover.hovered && !providerMenu.visible; text: backend.state.providerNote || "" }
+    }
+    Row {
+        x: 12; y: parent.height - 36; spacing: 5
+        ToolButton { objectName: "word-history"; glyph: "\uE81C"; tip: backend.state.chinese ? "历史与收藏" : "History"; onClicked: backend.action("history",null) }
+        ToolButton { objectName: "word-speak-source"; text: backend.state.chinese ? "原文" : "Source"; glyph: backend.state.speaking ? "\uE71A" : "\uE767"; tip: backend.state.chinese ? (backend.state.speaking ? "停止朗读" : "朗读原文") : "Read original / stop"; enabled: !!backend.state.sourceText; onClicked: backend.action(backend.state.speaking ? "stopSpeech" : "speech",true) }
+        ToolButton { objectName: "word-speak-target"; text: backend.state.chinese ? "译文" : "Target"; glyph: backend.state.speaking ? "\uE71A" : "\uE767"; tip: backend.state.chinese ? (backend.state.speaking ? "停止朗读" : "朗读译文") : "Read translation / stop"; enabled: !!backend.state.translatedText && !backend.state.loading; onClicked: backend.action(backend.state.speaking ? "stopSpeech" : "speech",false) }
     }
     ProviderMenu {
         id: providerMenu; objectName: "word-provider-menu"; hostWindow: wordWindow; anchorItem: providerButton

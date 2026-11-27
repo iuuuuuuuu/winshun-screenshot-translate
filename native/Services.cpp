@@ -1,5 +1,6 @@
 #include "Services.h"
 #include "Http.h"
+#include "AiStream.h"
 #include "Dictionary.h"
 #include <windows.h>
 #include <wincrypt.h>
@@ -41,7 +42,7 @@ namespace {
 class Unsupported : public std::runtime_error { public: explicit Unsupported(const QString& text):std::runtime_error(text.toUtf8().constData()){} };
 class HttpFailure : public std::runtime_error {
 public:
-    HttpFailure(int status,const QString& header={}):std::runtime_error(QString("HTTP %1").arg(status).toStdString()) {
+    HttpFailure(int status,const QString& header={}):std::runtime_error(QString("HTTP %1").arg(status).toStdString()),status(status) {
         bool ok=false;double value=header.toDouble(&ok);
         if(!ok){
             SYSTEMTIME date{};FILETIME file{};
@@ -53,6 +54,7 @@ public:
         if(ok&&std::isfinite(value))retrySeconds=std::clamp(value,1.0,86400.0);
     }
     double retrySeconds=-1;
+    int status=0;
 };
 QJsonObject readJson(const QString& file, bool strict = false)
 {
@@ -144,6 +146,7 @@ QString fingerprint(const QJsonObject& p)
     }
     if(!field(p,"channelId").isEmpty())quoted<<QString::fromUtf8(QJsonDocument(QJsonArray{p["channelId"]}).toJson(QJsonDocument::Compact));
     if(field(p,"provider")=="google"||field(p,"provider")=="edge")quoted<<"\"batch-protocol-2026-11\"";
+    if(field(p,"provider")=="ai")quoted<<QString("ai-stream-v1:%1:%2").arg(p.value("streaming").toBool(true)).arg(p.value("disableThinking").toBool(true));
     return QCryptographicHash::hash(("[" + quoted.join(", ") + "]").toUtf8(),QCryptographicHash::Sha256).toHex();
 }
 class Http {
@@ -162,7 +165,8 @@ public:
         }
         m_clock.start();
     }
-    QByteArray request(QString url, QJsonValue body = {}, QMap<QByteArray,QByteArray> headers = {}, bool form = false, int cap = 0)
+    QByteArray request(QString url, QJsonValue body = {}, QMap<QByteArray,QByteArray> headers = {}, bool form = false, int cap = 0,
+        std::function<bool(const char*,qint64)> sink={})
     {
         if (!validUrl(url)) fail("服务地址无效");
         if (m_cancel->load()) fail("cancelled");
@@ -186,7 +190,7 @@ public:
                 if(!headers.contains("Content-Type"))headers["Content-Type"]="application/json; charset=utf-8";
             }
         }
-        auto response=nativeRequest(url,bytes,!body.isNull()&&!body.isUndefined(),headers,m_proxy,m_cancel,remaining);
+        auto response=nativeRequest(url,bytes,!body.isNull()&&!body.isUndefined(),headers,m_proxy,m_cancel,remaining,8*1024*1024,sink);
         auto redirect=QUrl(response.location);
         if (m_cancel->load()) fail("cancelled");
         if (response.error==ERROR_WINHTTP_TIMEOUT) fail("翻译超时");
@@ -448,6 +452,7 @@ QJsonObject Services::profile(const QString& p)
     QJsonObject result{{"provider",p},{"apiKey",secret.isEmpty()?QString():QString::fromUtf8(crypt(QByteArray::fromBase64(secret.toLatin1()),true))}};
     for(auto k:{"endpoint","model","region","appId"})result[k]=stored.value(k).toString();
     result["enabled"]=stored.value("enabled").toBool(true);
+    result["streaming"]=stored.value("streaming").toBool(true);result["disableThinking"]=stored.value("disableThinking").toBool(true);
     if(p=="ai"&&stored.contains("channels")){
         auto channels=stored.value("channels").toArray();
         for(int i=0;i<channels.size();++i){auto channel=channels[i].toObject();auto secret=channel.take("secret").toString();
@@ -486,6 +491,7 @@ void Services::save(const QJsonObject& drafts,const QJsonObject& routing)
         auto p=it.value().toObject();QString ep=field(p,"endpoint"),key=field(p,"apiKey");
         if(!ep.isEmpty()&&!validUrl(ep))fail("服务地址无效");
         values[it.key()]=QJsonObject{{"endpoint",ep},{"model",field(p,"model")},{"region",field(p,"region")},{"appId",field(p,"appId")},
+            {"streaming",p.value("streaming").toBool(true)},{"disableThinking",p.value("disableThinking").toBool(true)},
             {"enabled",p.value("enabled").toBool(true)},
             {"secret",key.isEmpty()?QString():QString::fromLatin1(crypt(key.toUtf8()).toBase64())}};
         if(it.key()=="ai"&&p.contains("channels")){
@@ -505,6 +511,7 @@ void Services::save(const QJsonObject& drafts,const QJsonObject& routing)
                 }
                 auto secret=field(c,"apiKey");
                 channels.append(QJsonObject{{"id",id},{"name",field(c,"name")},{"endpoint",url},
+                    {"streaming",c.value("streaming").toBool(true)},{"disableThinking",c.value("disableThinking").toBool(true)},
                     {"enabled",c.value("enabled").toBool(true)},{"models",models},
                     {"secret",secret.isEmpty()?QString():QString::fromLatin1(crypt(secret.toUtf8()).toBase64())}});
             }
@@ -615,7 +622,7 @@ void Services::usage(const QString& text)
 QJsonObject Translation::json(const QStringList& parts) const
 {
     return {{"source",parts.join('\n')},{"translated",segments.join('\n')},{"segments",array(segments)},
-        {"sourceLanguage",source},{"targetLanguage",target},{"provider",provider},{"preferredProvider",preferred},{"fallback",fallback},{"channelId",channelId},{"channelName",channelName},{"model",model}};
+        {"sourceLanguage",source},{"targetLanguage",target},{"provider",provider},{"preferredProvider",preferred},{"fallback",fallback},{"channelId",channelId},{"channelName",channelName},{"model",model},{"preview",preview}};
 }
 QJsonObject Services::lookupWords(const QJsonObject& settings,const QString& text,Cancel cancel,std::function<void(QJsonObject)> progress)
 {
@@ -759,10 +766,28 @@ Translation Services::translate(const QJsonObject& settings,const QStringList& p
         batches<<qMakePair(start,end);start=end;
     }
     if(batches.size()<=1&&units.size()==parts.size())
-        return translateBatch(settings,parts,source,target,cancel,draft);
+        return translateBatch(settings,parts,source,target,cancel,draft,4,progress?[&](const Translation& partial){progress(partial,0,units.size());}:std::function<void(const Translation&)>{});
     Translation combined;combined.source=source;combined.target=target;
     for(int i=0;i<parts.size();++i)combined.segments<<QString();
     if(batches.isEmpty())return combined;
+    if(preferred=="ai"&&progress){
+        // Stream AI batches in source order; regular providers retain their
+        // bounded parallelism below. Never append retry previews to old ones.
+        for(const auto& bounds:batches){
+            const auto start=bounds.first,end=bounds.second;
+            auto mergePreview=[&](const Translation& part,bool preview){
+                auto next=part;next.preview=preview;next.segments=combined.segments;next.fallback=combined.fallback||part.fallback;
+                for(int i=start;i<end&&i-start<part.segments.size();++i){
+                    auto& out=next.segments[owners[i]];if(!out.isEmpty()&&!part.segments[i-start].isEmpty())out+='\n';out+=part.segments[i-start];
+                }
+                progress(next,preview?start:end,units.size());return next;
+            };
+            auto result=translateBatch(settings,units.mid(start,end-start),source,target,cancel,draft,4,
+                [&](const Translation& part){mergePreview(part,true);});
+            combined=mergePreview(result,false);if(cancel->load())fail("cancelled");
+        }
+        return combined;
+    }
     // The first result establishes availability before two bounded workers proceed.
     // Results publish in source order, and errors/cancellation join all work.
     auto job=std::make_shared<std::atomic_bool>(false);
@@ -806,8 +831,10 @@ Translation Services::translate(const QJsonObject& settings,const QStringList& p
 }
 
 Translation Services::translateBatch(const QJsonObject& settings,const QStringList& parts,const QString& source,
-    const QString& target,Cancel cancel,QJsonObject draft,int workers)
+    const QString& target,Cancel cancel,QJsonObject draft,int workers,std::function<void(const Translation&)> preview)
 {
+    const auto deadline=qint64(settings.value("requestDeadline").toDouble());
+    auto checkDeadline=[&]{if(deadline>0&&QDateTime::currentMSecsSinceEpoch()>=deadline)fail("本次截图翻译已超时，请重试或切换渠道");};
     QString preferred=canonicalProvider(settings.value("provider").toString("ecdict"));
     if(preferred=="ai")migrateAi(settings);
     bool fallback=draft.isEmpty()&&settings.value("fallbackEnabled").toBool(true);
@@ -841,6 +868,7 @@ Translation Services::translateBatch(const QJsonObject& settings,const QStringLi
         std::all_of(parts.begin(),parts.end(),[](const auto& text){return dictionaryText(text);});
     for(int pass=0;pass<(fallback?2:1);++pass)for(auto p:choices){
         if(cancel->load())fail("cancelled");
+        checkDeadline();
         p["proxy"]=settings.value("proxy").toString().trimmed();p["definition"]=definition;
         auto problem=configurationProblem(p);
         if(!problem.isEmpty()){
@@ -867,7 +895,7 @@ Translation Services::translateBatch(const QJsonObject& settings,const QStringLi
         std::unique_lock<std::timed_mutex> lane;
         if(gate){
             lane=std::unique_lock<std::timed_mutex>(gate->mutex,std::defer_lock);
-            while(!lane.try_lock_for(std::chrono::milliseconds(25))){if(cancel->load())fail("cancelled");if(total.elapsed()>6000)break;}
+            while(!lane.try_lock_for(std::chrono::milliseconds(25))){if(cancel->load())fail("cancelled");checkDeadline();if(total.elapsed()>6000)break;}
             if(!lane.owns_lock()){last="翻译请求较多，请稍后重试";continue;}
         }
         {
@@ -902,7 +930,6 @@ Translation Services::translateBatch(const QJsonObject& settings,const QStringLi
         }
         const int totalBudget=std::max(18000,requestBudget+6000);
         int budget=std::min(requestBudget,int(totalBudget-total.elapsed()));
-        const auto deadline=qint64(settings.value("requestDeadline").toDouble());
         if(deadline>0)budget=std::min(budget,int(std::max<qint64>(0,deadline-QDateTime::currentMSecsSinceEpoch())));
         if(budget<=0&&!cached)break;
         ++attempted;QElapsedTimer attempt;attempt.start();
@@ -910,11 +937,14 @@ Translation Services::translateBatch(const QJsonObject& settings,const QStringLi
             if(!cached){
                 tried.insert(id);
                 if(gate){
-                    while(std::chrono::steady_clock::now()<gate->next){if(cancel->load())fail("cancelled");std::this_thread::sleep_for(std::chrono::milliseconds(20));}
+                    while(std::chrono::steady_clock::now()<gate->next){if(cancel->load())fail("cancelled");checkDeadline();std::this_thread::sleep_for(std::chrono::milliseconds(20));}
                     gate->next=std::chrono::steady_clock::now()+std::chrono::milliseconds(250);
                 }
                 if(deadline>0)budget=std::min(budget,int(std::max<qint64>(0,deadline-QDateTime::currentMSecsSinceEpoch())));
-                result=route(p,parts,source,target,cancel,budget,workers);
+                auto previewRoute=[&](const Translation& part){if(preview){auto output=part;output.preview=true;
+                    output.preferred=preferred;output.fallback=provider!=preferred||id!=firstIdentity||skipped;
+                    output.channelId=field(p,"channelId");output.channelName=field(p,"channelName");output.model=field(p,"model");preview(output);}};
+                result=route(p,parts,source,target,cancel,budget,workers,previewRoute);
                 if(cancel->load())fail("cancelled");
                 if(draft.isEmpty()){
                     qint64 cost=256;for(const auto& text:result.segments)cost+=text.size()*2;
@@ -947,7 +977,7 @@ Translation Services::translateBatch(const QJsonObject& settings,const QStringLi
     fail("没有启用的翻译渠道或模型，请到设置中启用");
 }
 Translation Services::route(const QJsonObject& p,const QStringList& parts,const QString& source,
-    const QString& target,Cancel cancel,int budget,int workerLimit)
+    const QString& target,Cancel cancel,int budget,int workerLimit,std::function<void(const Translation&)> preview)
 {
     QString provider=field(p,"provider"),key=field(p,"apiKey"),url=endpoint(p);
     if(!providers.contains(provider))fail("未知翻译渠道");
@@ -1133,10 +1163,32 @@ Translation Services::route(const QJsonObject& p,const QStringList& parts,const 
         QJsonObject body{{"model",model},{"temperature",0},{"messages",QJsonArray{
             QJsonObject{{"role","system"},{"content",prompt}},
             QJsonObject{{"role","user"},{"content",QString::fromUtf8(QJsonDocument(array(parts)).toJson(QJsonDocument::Compact))}}}}};
-        auto d=http.json(url,body,{{"Authorization",("Bearer "+key).toUtf8()}}).toObject();
-        auto content=at(d.value("choices").toArray(),0).toObject().value("message").toObject().value("content").toString().trimmed();
-        content.remove(QRegularExpression("^```(?:json)?\\s*|\\s*```$",QRegularExpression::CaseInsensitiveOption));
-        auto doc=QJsonDocument::fromJson(content.toUtf8());if(!doc.isArray())fail("AI 返回格式不正确");result.segments=strings(doc.array());
+        const auto identity=fingerprint(p);bool plain=false;{QMutexLocker lock(&m_lock);plain=m_plainAiRequests.contains(identity);}
+        if(!plain&&p.value("streaming").toBool(true))body["stream"]=true;
+        if(!plain&&p.value("disableThinking").toBool(true)){
+            const auto host=QUrl(url).host().toLower();
+            if(host=="api.deepseek.com")body["thinking"]=QJsonObject{{"type","disabled"}};
+            if(host=="dashscope.aliyuncs.com"||host=="dashscope-intl.aliyuncs.com")body["enable_thinking"]=false;
+        }
+        auto request=[&]{
+            QElapsedTimer published;published.start();
+            AiStream stream([&](const QStringList& rows){if(preview&&!cancel->load()&&published.elapsed()>=50){
+                published.restart();
+                auto partial=result;partial.preview=true;partial.segments=rows;
+                while(partial.segments.size()<parts.size())partial.segments<<QString();
+                if(partial.segments.size()==parts.size())preview(partial);
+            }});
+            http.request(url,body,{{"Authorization",("Bearer "+key).toUtf8()}},false,0,
+                [&](const char* data,qint64 size){stream.feed(data,size);return !cancel->load();});
+            return stream.finish(parts.size());
+        };
+        try{result.segments=request();}catch(const HttpFailure& error){
+            // One compatibility retry only for rejected optional parameters.
+            // A 429/401/5xx goes straight to the shared cooldown/fallback logic.
+            if((error.status!=400&&error.status!=422)||(!body.contains("stream")&&!body.contains("thinking")&&!body.contains("enable_thinking")))throw;
+            body.remove("stream");body.remove("thinking");body.remove("enable_thinking");
+            result.segments=request();QMutexLocker lock(&m_lock);m_plainAiRequests.insert(identity);
+        }
     }
     if(result.segments.size()!=parts.size())fail("服务返回的文本块不完整");
     QRegularExpression number("^\\d+(?:[.,]\\d+)*(?:[%+])?$");

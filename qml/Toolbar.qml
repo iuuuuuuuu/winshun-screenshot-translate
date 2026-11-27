@@ -124,6 +124,7 @@ Window {
                 enabled: backend.state.translatedText.length > 0
                 onClicked: backend.action("copy", false)
             }
+            BarButton { objectName: "toolbar-speech"; glyph: backend.state.speaking ? "\uE71A" : "\uE767"; tip: backend.state.speaking ? bar.t("停止朗读","Stop speech") : bar.t("朗读译文","Read translation"); enabled: !!backend.state.translatedText && !backend.state.loading; onClicked: backend.action(backend.state.speaking ? "stopSpeech" : "speech",false) }
             BarButton {
                 objectName: "toolbar-retry"; glyph: "capture"; tip: bar.t("重新截图", "Capture again")
                 onClicked: backend.action("retry", null)

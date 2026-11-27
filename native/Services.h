@@ -4,6 +4,7 @@
 #include <QStringList>
 #include <QMutex>
 #include <QCache>
+#include <QSet>
 #include <atomic>
 #include <memory>
 #include <functional>
@@ -25,7 +26,7 @@ using Cancel = std::shared_ptr<std::atomic_bool>;
 struct Translation {
     QStringList segments;
     QString source, target, provider, preferred, channelId, channelName, model;
-    bool fallback = false;
+    bool fallback = false, preview = false;
     QJsonObject json(const QStringList& parts) const;
 };
 QString detect(const QString& text);
@@ -56,13 +57,16 @@ public:
         std::function<void(const Translation&,int,int)> progress = {});
 private:
     Translation translateBatch(const QJsonObject& settings,const QStringList& parts,
-        const QString& source,const QString& target,Cancel cancel,QJsonObject draft,int workers=4);
+        const QString& source,const QString& target,Cancel cancel,QJsonObject draft,int workers=4,
+        std::function<void(const Translation&)> preview={});
     Translation route(const QJsonObject& profile, const QStringList& parts,
-        const QString& source, const QString& target, Cancel cancel, int budget, int workers=4);
+        const QString& source, const QString& target, Cancel cancel, int budget, int workers=4,
+        std::function<void(const Translation&)> preview={});
     void usage(const QString& text);
     void recordOutcome(const QJsonObject& profile, bool success, qint64 elapsed, double recovery, const QString& error = {}, double retrySeconds=-1);
     struct RequestGate { std::timed_mutex mutex; std::chrono::steady_clock::time_point next{}; };
     QHash<QString,std::shared_ptr<RequestGate>> m_gates;
+    QSet<QString> m_plainAiRequests;
     struct CachedTranslation { Translation result; qint64 expires; };
     QCache<QByteArray,CachedTranslation> m_results{2*1024*1024};
     QString m_directory;

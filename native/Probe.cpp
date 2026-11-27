@@ -521,7 +521,11 @@ void Probe::run(App& app,const QJsonObject& params)
         app.m_status.window->grabWindow().save(out+"/loading-compact.png");
         check(app.m_status.window->height()<=28&&app.m_status.window->width()<=120&&unobscured(),"compact loading size");
         zoomWord(8);
-        check(!app.m_status.window->property("compact").toBool()&&app.m_status.window->height()<=36,"larger capture loading size");
+        // Compact thresholds are logical pixels, while the fixture is physical.
+        // 320 physical pixels at 150% is legitimately still compact (213 DIP).
+        const auto logicalSize=QSizeF(app.m_pin->pictureRect().size())/app.m_status.window->devicePixelRatio();
+        const bool expectedCompact=logicalSize.width()<220||logicalSize.height()<60;
+        check(app.m_status.window->property("compact").toBool()==expectedCompact&&app.m_status.window->height()<=(expectedCompact?28:36),"larger capture loading size follows monitor scaling");
         zoomWord(.5);
         check(app.m_status.window->size()==QSize(24,24)&&unobscured(),"loading shrinks with capture");
         app.status("无法连接服务；请检查网络或共用代理",false);pump(25);app.place();
@@ -1634,6 +1638,44 @@ void Probe::run(App& app,const QJsonObject& params)
         check(until([&]{return !app.m_panelBackend.values.value("loading").toBool();},10000),"unpunctuated long input finishes");
         check(app.m_panelBackend.values.value("status").toString().isEmpty()&&app.m_panelBackend.values.value("translatedText").toString().count('x')==10001,"unpunctuated input preserves every character beyond old limit");
         report["panelLongDocument"]=true;report["panelSentencePairs"]=500;report["panelLongCharacters"]=document.size();
+        // New text tools stay in the private fixture desktop and synthetic data.
+        const auto targetBeforeTools=app.m_panelBackend.values.value("target");
+        app.panelAction("sentenceMode",false);app.panelAction("autoTranslate",false);
+        app.panelAction("input","en: 你好\n世界");app.panelAction("pdfJoin",true);
+        check(until([&]{return !app.m_panelBackend.values.value("loading").toBool();}),"PDF prefix request finishes");
+        check(app.m_panelBackend.values.value("sourceText")=="en: 你好\n世界"&&app.m_panelBackend.values.value("actualTarget")=="en"&&
+            app.m_panelRecord["source"]=="你好世界"&&app.m_panelBackend.values.value("target")==targetBeforeTools,"PDF prep keeps editor and default target unchanged");
+        app.panelAction("pairSave",{});check(!app.m_panelBackend.values.value("languagePairs").toList().isEmpty(),"custom language pair saved");
+        app.panelAction("pairRemove",0);app.panelAction("pdfJoin",false);
+        app.panelAction("input","getHTTPResponse_userID");app.panelAction("panelMode","naming");pump(40);
+        check(app.m_panelBackend.values.value("namingRows").toList().size()==5&&visualItem(app.m_panel.window->contentItem(),"panel-naming-card")->isVisible(),"naming variants visible");
+        app.m_panel.window->grabWindow().save(out+"/panel-naming.png");
+        app.panelAction("panelMode","translate");app.panelAction("input","Hello history.");app.translatePanel();
+        check(until([&]{return !app.m_panelBackend.values.value("loading").toBool();}),"history source translated");
+        check(app.history().rows().isEmpty(),"queries alone never write history");
+        click(app.m_panel.window,visualItem(app.m_panel.window->contentItem(),"panel-favorite"));
+        check(app.history().rows({},true).size()==1,"favorite captures completed translation");
+        click(app.m_panel.window,visualItem(app.m_panel.window->contentItem(),"panel-history"));pump(80);
+        check(app.m_historyView.window&&app.m_historyView.window->isVisible()&&app.m_historyBackend.values.value("rows").toList().size()==1,"history window lists favorite");
+        auto historyId=app.history().rows()[0].toObject()["id"].toString();
+        app.m_historyView.window->grabWindow().save(out+"/history-favorites.png");
+        click(app.m_historyView.window,visualItem(app.m_historyView.window->contentItem(),"history-open-0"));
+        check(!app.m_panelBackend.values.value("autoTranslate").toBool()&&!app.m_panelBackend.values.value("loading").toBool()&&app.m_panelRecord["id"]==historyId,"history opens without new network request");
+        app.historyAction("search","missing query");check(app.m_historyBackend.values.value("rows").toList().isEmpty(),"history search filters UI");
+        app.historyAction("search","");app.historyAction("remove",historyId);app.historyAction("close",{});
+        auto savedAi=app.m_services->profile("ai");
+        app.m_services->save({{"ai",QJsonObject{{"endpoint",dictionaryBase+"/ai-stream"},{"apiKey","fixture-key"},{"model","good"}}}});
+        app.m_settings["provider"]="ai";app.panelAction("input","Streaming a new sentence.");app.translatePanel();
+        check(until([&]{return app.m_panelBackend.values.value("loading").toBool()&&!app.m_panelBackend.values.value("translatedText").toString().trimmed().isEmpty();},5000),"AI preview appears before complete");
+        app.m_panel.window->grabWindow().save(out+"/panel-streaming.png");
+        check(until([&]{return !app.m_panelBackend.values.value("loading").toBool();},10000)&&app.m_panelRecord["translated"]=="译文:Streaming a new sentence.","streaming final recorded separately");
+        app.m_services->save({{"ai",savedAi}});app.m_settings["provider"]="zvo";
+        app.m_speech=std::make_unique<Speech>(true);app.panelAction("speech",true);
+        check(until([&]{return !app.m_panelBackend.values.value("speaking").toBool();},8000),"speech UI settles after silent synthesis");
+        app.panelAction("stopSpeech",{});check(!app.m_panelBackend.values.value("speaking").toBool(),"speech stop updates UI");
+        app.m_panel.window->resize(600,520);pump(50);app.m_panel.window->grabWindow().save(out+"/panel-tools-small.png");
+        app.m_panel.window->resize(960,760);
+        report["translationHistory"]=true;report["textPreparation"]=true;report["programmingNames"]=true;report["aiStreamingUI"]=true;report["silentSpeechUI"]=true;
         app.panelAction("input","");app.translatePanel();check(!app.m_panelBackend.values.value("loading").toBool(),"empty panel stops work");
         app.m_settings["provider"]="mymemory";app.panelAction("explain",false);typeDraft(app.m_panel.window,"close while blocked","panel-input");
         app.translatePanel();pump(80);auto closingPanel=app.m_panelCancel;

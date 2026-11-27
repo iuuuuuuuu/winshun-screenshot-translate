@@ -160,7 +160,7 @@ HttpResponse nativeRequest(const QString& url,const QByteArray& body,bool post,
         if(error)return failed(error);
         if(!request.bytes)break;
         received+=request.bytes;
-        if(sink){if(!sink(request.buffer.data(),request.bytes))return failed(ERROR_WRITE_FAULT);}
+        if(sink&&response.status>=200&&response.status<300){if(!sink(request.buffer.data(),request.bytes))return failed(ERROR_WRITE_FAULT);}
         else response.body.append(request.buffer.data(),request.bytes);
     }
     return response;

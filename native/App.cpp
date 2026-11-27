@@ -1,5 +1,8 @@
 #include "App.h"
 #include "Probe.h"
+#include "TextTools.h"
+#include <QFile>
+#include <QRegularExpression>
 #include <QUuid>
 #include "CaptureKeys.h"
 #include <QClipboard>
@@ -130,6 +133,12 @@ App::App(ws::captureplugin::Protocol& protocol,QString appDir,QJsonObject initia
         {"translatedText",""},{"definition",""},{"status",""},{"loading",false},{"autoTranslate",true},{"explain",true},
         {"panelMode","auto"},{"panelPage","translate"},{"lookupRows",QVariantList()}});
     QObject::connect(&m_panelBackend,&Backend::invoked,this,&App::panelAction);
+    QObject::connect(&m_historyBackend,&Backend::invoked,this,&App::historyAction);
+    QFile textTools(dir+"/text-tools.json");QJsonObject textPreferences;
+    if(textTools.open(QIODevice::ReadOnly))textPreferences=QJsonDocument::fromJson(textTools.read(256*1024)).object();
+    m_panelBackend.update({{"pdfJoin",textPreferences.value("pdfJoin").toBool()},
+        {"languagePrefix",textPreferences.value("languagePrefix").toBool(true)},
+        {"languagePairs",textPreferences.value("languagePairs").toArray().toVariantList()}});
     m_followSelection.setInterval(450);
     QObject::connect(&m_followSelection,&QTimer::timeout,this,[this]{readSelection(true);});
     m_iconDelay.setSingleShot(true);m_iconDelay.setInterval(160);
@@ -188,7 +197,7 @@ void App::reclaimIdle()
     if(tick-m_idleSince<20000){m_idleTimer.start(int(20000-(tick-m_idleSince)));return;}
     if(!m_idleReleased){
         m_idleReleased=true;
-        dispose(m_word);dispose(m_bar);dispose(m_status);dispose(m_text);dispose(m_menu);dispose(m_config);dispose(m_panel);dispose(m_icon);
+        dispose(m_word);dispose(m_bar);dispose(m_status);dispose(m_text);dispose(m_menu);dispose(m_config);dispose(m_panel);dispose(m_icon);dispose(m_historyView);
         m_original={};m_translated={};m_blocks.clear();m_data={};m_drafts={};m_tests.clear();m_testCancels.clear();
         m_pinBackend.update({{"translatedText",""},{"sourceText",""},{"provider",""},{"providerNote",""}});
         m_wordBackend.update({{"sourceText",""},{"translatedText",""},{"provider",""},{"providerNote",""},{"status",""}});
@@ -245,6 +254,7 @@ void App::appearance(const QJsonObject& params)
     else{serviceNames[4]="Sogou";serviceNames[5]="Youdao";serviceNames[9]="AI translation";}
     m_configBackend.update({{"chinese",m_chinese},{"dark",m_dark},{"names",serviceNames}});
     m_wordBackend.update({{"chinese",m_chinese},{"dark",m_dark}});
+    m_historyBackend.update({{"chinese",m_chinese},{"dark",m_dark}});
     m_panelBackend.update({{"chinese",m_chinese},{"dark",m_dark},{"sourceLabels",labels},{"codes",QStringList{"auto","zh","en","ja","ko","fr","de","es","ru"}}});
     if(m_pin)render();
 }
@@ -432,6 +442,7 @@ void App::dispatch(const QJsonValue& id,const QString& method,const QJsonObject&
             }else if(action.startsWith("copy-")){
                 auto data=params.value("item").toObject().value("data").toObject();
                 effects.append(QJsonObject{{"type","copy"},{"text",data.value(action=="copy-source"?"source":"translated")}});
+                if(data.value("command").toString()!="host-translate")remember(data,false,m_panelBackend);
             }else if(action=="retry-text"){
                 auto data=params.value("item").toObject().value("data").toObject();
                 effects.append(QJsonObject{{"type","setQuery"},{"text","jft "+data.value("source").toString()}});
@@ -660,6 +671,7 @@ void App::translateIconSelection()
 }
 void App::closePin()
 {
+    if(m_pinBackend.values.value("speaking").toBool())stopSpeech();
     used();
     if(m_bar.window)m_bar.window->hide();if(m_status.window)m_status.window->hide();if(m_text.window)m_text.window->hide();if(m_menu.window)m_menu.window->hide();
     if(m_pin)m_pin->setShown(false);
@@ -762,6 +774,8 @@ void App::pinAction(const QString& name,const QVariant& value)
 {
     try{
         if(name=="close")closePin();
+        else if(name=="speech")readAloud(m_pinBackend,value.toBool());
+        else if(name=="stopSpeech")stopSpeech();
         else if(name=="retry"){closePin();shot("region");}
         else if(name=="settings"||name=="providerSettings")showSettings();
         else if(name=="providerMenu"){
@@ -785,6 +799,7 @@ void App::pinAction(const QString& name,const QVariant& value)
         else if(name=="copy"){
             QString text=m_data.value(value.toBool()?"source":"translated").toString();
             if(!text.isEmpty())m_protocol.tool("clipboard_copy",{{"text",text}});
+            if(!m_busy)remember(m_data,false,m_pinBackend);
         }else if(name=="compare"){m_compare=!m_compare;render();}
         else if(name=="saveImage"&&m_pin){
             auto path=qEnvironmentVariable("USERPROFILE")+"/Pictures/WinShun_Translate_"+QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss")+".png";
@@ -923,6 +938,7 @@ void App::placeWord()
 }
 void App::closeWord(bool animated)
 {
+    if(m_wordBackend.values.value("speaking").toBool())stopSpeech();
     m_copySelectionTimer.stop();
     used();
     if(m_selectionCancel)m_selectionCancel->store(true);
@@ -962,6 +978,8 @@ void App::editWord(bool editing)
 void App::wordAction(const QString& name,const QVariant& value)
 {
     if(name=="close")closeWord(value.toBool());
+    else if(name=="speech")readAloud(m_wordBackend,value.toBool());
+    else if(name=="stopSpeech")stopSpeech();
     else if(name=="move")m_wordPlacementFrozen=true;
     else if(name=="edit")editWord(true);
     else if(name=="cancelEdit")editWord(false);
@@ -996,9 +1014,12 @@ void App::wordAction(const QString& name,const QVariant& value)
         }else m_followSelection.stop();
     }else if(name=="retry"){
         if(m_wordSource.isEmpty())textFlow(m_wordMode,true);else translateWord(m_wordSource);
+    }else if(name=="history"){showHistory();
+    }else if(name=="favorite"){if(!m_wordBackend.values.value("loading").toBool())remember(m_wordRecord,true,m_wordBackend);
     }else if(name=="copy"){
         auto text=m_wordBackend.values.value("translatedText").toString();
         if(!text.isEmpty())m_protocol.tool("clipboard_copy",{{"text",text}});
+        if(!m_wordBackend.values.value("loading").toBool())remember(m_wordRecord,false,m_wordBackend);
     }
 }
 void App::readSelection(bool follow)
@@ -1124,6 +1145,7 @@ void App::translateWord(QString text,bool retainResult)
 {
     m_copySelectionTimer.stop();m_wordBackend.update({{"awaitingSelectionCopy",false}});
     text=text.trimmed();if(m_wordCancel)m_wordCancel->store(true);m_wordCancel=token();auto cancel=m_wordCancel;auto epoch=++m_wordEpoch;
+    if(!retainResult)m_wordRecord={};m_wordBackend.update({{"notice",""}});
     m_wordSource=text;m_wordBackend.update({{"sourceText",text},
         {"loading",!text.isEmpty()},{"status",text.isEmpty()?"没有读取到剪贴板文字":"正在翻译…"}});
     if(!retainResult)m_wordBackend.update({{"translatedText",""},{"alignmentSource",""},{"alignmentRows",QVariantList()},
@@ -1153,14 +1175,16 @@ void App::translateWord(QString text,bool retainResult)
                 auto data=result.json(parts);
                 QMetaObject::invokeMethod(this,[this,data,cancel,epoch,done,total,publish]{
                     if(epoch!=m_wordEpoch||cancel->load())return;
-                    publish(data);m_wordBackend.update({{"status",QString("已翻译 %1 / %2 段").arg(done).arg(total)}});
+                    if(m_wordBackend.values.value("providerSwitching").toBool())return;
+                    publish(data);m_wordBackend.update({{"streaming",data.value("preview").toBool()},
+                        {"status",data.value("preview").toBool()?QString("正在接收译文…"):QString("已翻译 %1 / %2 段").arg(done).arg(total)}});
                 },Qt::QueuedConnection);
             }).json(parts);
     },[this,epoch,cancel,command,publish](QJsonObject data,QString error){
         if(epoch!=m_wordEpoch||cancel->load())return;
-        if(error.isEmpty())publish(data);
+        if(error.isEmpty()){publish(data);m_wordRecord=data;}
         const bool switchFailed=m_wordBackend.values.value("providerSwitching").toBool()&&!error.isEmpty();
-        m_wordBackend.update({{"loading",false},{"status",error},{"providerSwitching",false},{"providerSwitchError",switchFailed}});
+        m_wordBackend.update({{"loading",false},{"streaming",false},{"status",error},{"providerSwitching",false},{"providerSwitchError",switchFailed}});
         if(error.isEmpty())m_cache[command]={QDateTime::currentSecsSinceEpoch(),results(data,command)};
     });
 
@@ -1180,22 +1204,55 @@ void App::showPanel(const QString& text)
     if(!text.isEmpty())panelAction("input",text);
     m_panel.window->show();m_panel.window->requestActivate();
 }
+void App::saveTextTools()
+{
+    QJsonObject prefs;for(auto key:{"pdfJoin","languagePrefix","languagePairs"})prefs[key]=QJsonValue::fromVariant(m_panelBackend.values.value(key));
+    try{atomicJson(m_services->directory()+"/text-tools.json",prefs);}catch(const std::exception& e){m_panelBackend.update({{"status",QString::fromUtf8(e.what())}});}
+}
 void App::panelAction(const QString& name,const QVariant& value)
 {
     used();
     if(name=="close"){
+        if(m_panelBackend.values.value("speaking").toBool())stopSpeech();
         if(m_panelCancel)m_panelCancel->store(true);++m_panelEpoch;
         if(m_panel.window)m_panel.window->hide();dispose(m_panel);m_panelBackend.update({{"loading",false}});return;
     }
     if(name=="settings"){showSettings();return;}
-    if(name=="copy"){QGuiApplication::clipboard()->setText(m_panelBackend.values.value(value.toString()).toString());return;}
+    if(name=="speech"){readAloud(m_panelBackend,value.toBool());return;}
+    if(name=="stopSpeech"){stopSpeech();return;}
+    if(name=="history"){showHistory();return;}
+    if(name=="favorite"){if(!m_panelBackend.values.value("loading").toBool())remember(m_panelRecord,true,m_panelBackend);return;}
+    if(name=="copy"){QGuiApplication::clipboard()->setText(m_panelBackend.values.value(value.toString()).toString());
+        if(value.toString()=="translatedText"&&!m_panelBackend.values.value("loading").toBool())remember(m_panelRecord,false,m_panelBackend);return;}
     if(name=="stop"){
         if(m_panelCancel)m_panelCancel->store(true);++m_panelEpoch;
         m_panelBackend.update({{"loading",false},{"status","已停止，已完成译文已保留"}});return;
     }
     if(name=="translate"){translatePanel();return;}
+    if(name=="copyName"){
+        for(const auto& row:m_panelBackend.values.value("namingRows").toList())if(row.toMap().value("value")==value){
+            QGuiApplication::clipboard()->setText(value.toString());m_panelBackend.update({{"notice",m_chinese?"已复制命名":"Name copied"}});return;
+        }return;
+    }
+    if(name=="pdfJoin"||name=="languagePrefix"){
+        m_panelBackend.update({{name,value.toBool()}});saveTextTools();translatePanel();return;
+    }
+    if(name=="pairSave"||name=="pairRemove"){
+        auto rows=m_panelBackend.values.value("languagePairs").toList();
+        if(name=="pairRemove"){int index=value.toInt();if(index>=0&&index<rows.size())rows.removeAt(index);}
+        else{
+            QVariantMap pair{{"source",m_panelBackend.values.value("source")},{"target",m_panelBackend.values.value("target")}};
+            if(!rows.contains(pair)&&rows.size()<6)rows.append(pair);
+        }
+        m_panelBackend.update({{"languagePairs",rows}});saveTextTools();return;
+    }
+    if(name=="pairUse"){
+        auto pair=value.toMap();auto codes=m_panelBackend.values.value("codes").toStringList();
+        if(!codes.contains(pair["source"].toString())||!codes.contains(pair["target"].toString()))return;
+        m_panelBackend.update({{"source",pair["source"]},{"target",pair["target"]}});translatePanel();return;
+    }
     if(name=="panelMode"){
-        if(!QStringList{"auto","translate","lookup"}.contains(value.toString()))return;
+        if(!QStringList{"auto","translate","lookup","naming"}.contains(value.toString()))return;
         m_panelBackend.update({{"panelMode",value}});translatePanel(true);return;
     }
     if(name=="lookupCandidate"){
@@ -1210,6 +1267,8 @@ void App::panelAction(const QString& name,const QVariant& value)
     }
     if(name=="menu")return;
     if(!QStringList{"input","source","target","autoTranslate","explain","sentenceMode"}.contains(name))return;
+    if(name=="input"&&m_panelBackend.values.value("speaking").toBool())stopSpeech();
+    m_panelRecord={};m_panelBackend.update({{"notice",""},{"requestHint",""}});
     if(m_panelCancel)m_panelCancel->store(true);++m_panelEpoch;
     m_panelBackend.update({{name=="input"?"sourceText":name,value},{"loading",false},{"status",""},{"definitionStatus",""},
         {"translatedText",""},{"definition",""},{"provider",""},{"definitionProvider",""},{"detected",""},
@@ -1217,12 +1276,31 @@ void App::panelAction(const QString& name,const QVariant& value)
 }
 void App::translatePanel(bool reuse)
 {
-    auto text=m_panelBackend.values.value("sourceText").toString().trimmed();
+    const auto prepared=prepareText(m_panelBackend.values.value("sourceText").toString(),m_panelBackend.values.value("target").toString(),
+        m_panelBackend.values.value("pdfJoin").toBool(),m_panelBackend.values.value("languagePrefix").toBool());
+    auto text=prepared.text;
     if(m_panelCancel)m_panelCancel->store(true);m_panelCancel=token();auto cancel=m_panelCancel;auto epoch=++m_panelEpoch;
     auto mode=m_panelBackend.values.value("panelMode").toString();auto words=dictionaryWords(text,2);
-    bool lookup=mode=="lookup"||(mode=="auto"&&(chineseDictionaryText(text,8)||(dictionaryText(text)&&words.size()==1&&words[0].toObject().value("count").toInt()==1)));
+    bool lookup=mode=="lookup"||(mode=="auto"&&!prepared.prefixed&&(chineseDictionaryText(text,8)||(dictionaryText(text)&&words.size()==1&&words[0].toObject().value("count").toInt()==1)));
     m_panelBackend.update({{"panelPage",lookup?"lookup":"translate"},{"loading",false},{"status",""}});
     if(text.isEmpty())return;
+    if(mode=="naming"){
+        m_panelRecord={};m_panelBackend.update({{"panelPage","naming"},{"namingRows",QVariantList()},{"namingPhrase",""}});
+        if(text.size()>160||text.contains('\n')){m_panelBackend.update({{"status","命名模式请输入简短含义或一个标识符（160 字以内）"}});return;}
+        const auto phrase=splitIdentifier(text);
+        auto publish=[this,epoch,cancel](const QString& english){
+            if(cancel->load()||epoch!=m_panelEpoch)return;
+            auto rows=namingVariants(english);
+            m_panelBackend.update({{"loading",false},{"namingPhrase",english},{"namingRows",rows.toVariantList()},
+                {"status",rows.isEmpty()?QString("未能生成英文命名，请缩短含义或换渠道"):QString()}});
+        };
+        if(QRegularExpression("^[\\x00-\\x7f]+$").match(phrase).hasMatch()){publish(phrase);return;}
+        auto settings=m_settings;auto services=m_services;m_panelBackend.update({{"loading",true},{"status","正在转换为英文命名…"}});
+        background([services,settings,phrase,cancel]{return services->translate(settings,{phrase},"auto","en",cancel).segments.join(' ');},
+            [this,epoch,cancel,publish](QString result,QString error){if(cancel->load()||epoch!=m_panelEpoch)return;
+                if(error.isEmpty())publish(result);else m_panelBackend.update({{"loading",false},{"status",error}});
+            });return;
+    }
 
     const bool cachedTranslation=reuse&&!lookup&&m_panelBackend.values.value("translationText").toString()==text;
     if(reuse&&lookup&&m_panelBackend.values.value("lookupText").toString()==text)return;
@@ -1253,9 +1331,11 @@ void App::translatePanel(bool reuse)
             publish(data);m_panelBackend.update({{"loading",false},{"status",error},{"lookupText",error.isEmpty()?text:QString()}});
         });return;
     }
-    auto source=m_panelBackend.values.value("source").toString();auto target=targetFor(text,m_panelBackend.values.value("target").toString());
+    auto source=m_panelBackend.values.value("source").toString();auto target=targetFor(text,prepared.target);
+    m_panelBackend.update({{"requestHint",prepared.prefixed?(m_chinese?"本次目标：":"This request: ")+target:QString()}});
     auto settings=m_settings;auto services=m_services;
     if(!cachedTranslation){
+      m_panelRecord={};
       m_panelBackend.update({{"loading",true},{"status","正在翻译…"},{"translatedText",""},{"definition",""},{"definitionStatus",""},
         {"provider",""},{"definitionProvider",""},{"detected",source=="auto"?detect(text):source},{"actualTarget",target}});
       const bool sentenceMode=m_panelBackend.values.value("sentenceMode").toBool();
@@ -1267,7 +1347,7 @@ void App::translatePanel(bool reuse)
           QVariantList rows;auto segments=data.value("segments").toArray();
           if(sentenceMode)for(int i=0;i<parts.size();++i)rows<<QVariantMap{{"original",parts[i]},{"translated",(i<segments.size()?segments[i].toString():QString())}};
           m_panelBackend.update({{"translatedText",data.value("translated").toString()},{"sentenceRows",rows},
-              {"status",QString("已翻译 %1 / %2 段").arg(done).arg(total)},
+              {"status",data.value("preview").toBool()?QString("正在接收译文…"):QString("已翻译 %1 / %2 段").arg(done).arg(total)},
               {"provider",providerLabel(data)},{"providerNote",providerNote(data)},{"providerFallback",data.value("fallback").toBool()}});
       };
       background([this,services,settings,parts,source,target,cancel,publish]{
@@ -1276,7 +1356,7 @@ void App::translatePanel(bool reuse)
           }).json(parts);
       },[this,cancel,epoch,text,publish,parts](QJsonObject data,QString error){
           if(cancel->load()||epoch!=m_panelEpoch)return;
-          if(error.isEmpty())publish(data,parts.size(),parts.size());
+          if(error.isEmpty()){publish(data,parts.size(),parts.size());m_panelRecord=data;}
           m_panelBackend.update({{"loading",false},{"status",error},{"translationText",error.isEmpty()?text:QString()}});
           if(error.isEmpty())m_panelBackend.update({{"detected",data.value("sourceLanguage").toString()}});
       });
@@ -1316,7 +1396,7 @@ void App::aiAction(const QString& name,const QVariant& value)
     }else{
         if(m_aiCurrent<0||m_aiCurrent>=channels.size())return;auto channel=channels[m_aiCurrent].toObject();
         if(name=="aiField"){
-            auto key=input.value("key").toString();if(!QStringList{"name","endpoint","apiKey","enabled"}.contains(key))return;
+            auto key=input.value("key").toString();if(!QStringList{"name","endpoint","apiKey","enabled","streaming","disableThinking"}.contains(key))return;
             channel[key]=QJsonValue::fromVariant(input.value("value"));
         }else{
             auto models=channel.value("models").toArray();int index=input.value("index").toInt();
@@ -1398,6 +1478,7 @@ void App::configAction(const QString& name,const QVariant& value)
 {
     try{
         if(name=="openPanel"){showPanel();return;}
+        if(name=="openHistory"){showHistory();return;}
         if(name.startsWith("ai")){aiAction(name,value);return;}
         if(name=="enabled"){
             auto data=value.toMap();auto provider=data.value("provider").toString();if(!providers.contains(provider))return;

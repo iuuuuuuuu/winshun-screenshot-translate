@@ -101,6 +101,7 @@ Window {
             Row {
                 spacing: 12
                 FlatButton { objectName: "open-panel"; text: window.t("打开独立翻译面板", "Open translation panel"); textPixelSize: 13; onClicked: backend.action("openPanel",null) }
+                FlatButton { objectName: "open-history"; text: window.t("历史与收藏", "History and favorites"); textPixelSize: 13; onClicked: backend.action("openHistory",null) }
                 FlatButton {
                     objectName: "selection-icon-toggle"
                     visible: window.home && backend.state.selectionIconEnabled !== undefined

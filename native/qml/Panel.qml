@@ -12,6 +12,7 @@ Window {
     property bool chinese: backend.state.chinese
     property bool automatic: backend.state.autoTranslate !== false
     readonly property bool lookup: backend.state.panelPage === "lookup"
+    readonly property bool naming: backend.state.panelPage === "naming"
     property bool syncing: false
     function t(zh,en) { return chinese ? zh : en }
     function label(code) { var i = (backend.state.codes || []).indexOf(code); return i < 0 ? code : backend.state.sourceLabels[i] }
@@ -32,18 +33,33 @@ Window {
             Row {
                 anchors.right: parent.right; spacing: 8
                 FlatButton { objectName: "panel-auto"; text: panel.t("即时查询","Live lookup"); highlighted: panel.automatic; textPixelSize: 13; onClicked: { backend.action("autoTranslate",!panel.automatic); panel.schedule() } }
-                FlatButton { objectName: "panel-sentences"; visible: !panel.lookup; text: panel.t("逐句对照","Sentences"); highlighted: !!backend.state.sentenceMode; textPixelSize: 13; onClicked: { backend.action("sentenceMode",!backend.state.sentenceMode); panel.schedule() } }
-                FlatButton { objectName: "panel-explain"; visible: !panel.lookup; text: panel.t("释义","Explain"); highlighted: backend.state.explain; textPixelSize: 13; onClicked: { backend.action("explain",!backend.state.explain); panel.schedule() } }
+                FlatButton { objectName: "panel-sentences"; visible: !panel.lookup && !panel.naming; text: panel.t("逐句对照","Sentences"); highlighted: !!backend.state.sentenceMode; textPixelSize: 13; onClicked: { backend.action("sentenceMode",!backend.state.sentenceMode); panel.schedule() } }
+                FlatButton { objectName: "panel-explain"; visible: !panel.lookup && !panel.naming; text: panel.t("释义","Explain"); highlighted: backend.state.explain; textPixelSize: 13; onClicked: { backend.action("explain",!backend.state.explain); panel.schedule() } }
                 ToolButton { glyph: "\uE713"; tip: panel.t("渠道设置","Service settings"); onClicked: backend.action("settings",null) }
+                ToolButton { objectName: "panel-history"; glyph: "\uE81C"; tip: panel.t("历史与收藏","History and favorites"); onClicked: backend.action("history",null) }
             }
         }
-        Row {
-            spacing: 10
-            ChoiceTabs { id: modes; objectName: "panel-modes"; labels: [panel.t("自动","Auto"),panel.t("翻译","Translate"),panel.t("查词","Words")]; current: ["auto","translate","lookup"].indexOf(backend.state.panelMode || "auto"); onActivated: index => { debounce.stop(); sourceMenu.hide(); targetMenu.hide(); backend.action("panelMode",["auto","translate","lookup"][index]) } }
-            FlatButton { id: sourceButton; visible: !panel.lookup; anchors.verticalCenter: parent.verticalCenter; objectName: "panel-source"; text: panel.label(backend.state.source); trailingGlyph: "\uE70D"; textPixelSize: 13; onClicked: sourceMenu.open() }
-            Text { visible: !panel.lookup; anchors.verticalCenter: parent.verticalCenter; text: "→"; color: Theme.subtext; font.pixelSize: 18 }
-            FlatButton { id: targetButton; visible: !panel.lookup; anchors.verticalCenter: parent.verticalCenter; objectName: "panel-target"; text: backend.state.target === "auto" ? panel.t("中英互译","ZH ↔ EN") : panel.label(backend.state.target); trailingGlyph: "\uE70D"; textPixelSize: 13; onClicked: targetMenu.open() }
-            Text { visible: panel.lookup; anchors.verticalCenter: parent.verticalCenter; text: panel.t("双向词典 · 多词义与近义候选","Dictionary · Meanings and alternatives"); color: Theme.subtext; font.pixelSize: 12 }
+        Flow {
+            width: parent.width; spacing: 10
+            ChoiceTabs { id: modes; objectName: "panel-modes"; labels: [panel.t("自动","Auto"),panel.t("翻译","Translate"),panel.t("查词","Words"),panel.t("命名","Naming")]; current: ["auto","translate","lookup","naming"].indexOf(backend.state.panelMode || "auto"); onActivated: index => { debounce.stop(); sourceMenu.hide(); targetMenu.hide(); backend.action("panelMode",["auto","translate","lookup","naming"][index]) } }
+            FlatButton { id: sourceButton; visible: !panel.lookup && !panel.naming; objectName: "panel-source"; text: panel.label(backend.state.source); trailingGlyph: "\uE70D"; textPixelSize: 13; onClicked: sourceMenu.open() }
+            Text { visible: !panel.lookup && !panel.naming; text: "→"; color: Theme.subtext; font.pixelSize: 18 }
+            FlatButton { id: targetButton; visible: !panel.lookup && !panel.naming; objectName: "panel-target"; text: backend.state.target === "auto" ? panel.t("中英互译","ZH ↔ EN") : panel.label(backend.state.target); trailingGlyph: "\uE70D"; textPixelSize: 13; onClicked: targetMenu.open() }
+            Text { visible: panel.lookup; text: panel.t("双向词典 · 多词义与近义候选","Dictionary · Meanings and alternatives"); color: Theme.subtext; font.pixelSize: 12 }
+        }
+        Flow {
+            width: parent.width; spacing: 7; visible: !panel.lookup && !panel.naming; height: visible ? implicitHeight : 0
+            FlatButton { objectName: "panel-pdf"; text: panel.t("PDF 接行","Join PDF lines"); textPixelSize: 12; highlighted: !!backend.state.pdfJoin; onClicked: { debounce.stop(); backend.action("pdfJoin",!backend.state.pdfJoin) } }
+            FlatButton { objectName: "panel-prefix"; text: panel.t("语言前缀 en:","Language prefix en:"); textPixelSize: 12; highlighted: backend.state.languagePrefix !== false; onClicked: { debounce.stop(); backend.action("languagePrefix",backend.state.languagePrefix === false) } }
+            FlatButton { objectName: "panel-save-pair"; text: panel.t("保存语言对","Save pair"); textPixelSize: 12; enabled: (backend.state.languagePairs || []).length<6; onClicked: backend.action("pairSave",null) }
+            Repeater {
+                model: backend.state.languagePairs || []
+                Row {
+                    id: pair; required property var modelData; required property int index
+                    FlatButton { text: pair.modelData.source+" → "+pair.modelData.target; textPixelSize: 12; onClicked: { debounce.stop(); backend.action("pairUse",pair.modelData) } }
+                    ToolButton { glyph: "\uE8BB"; tip: panel.t("移除语言对","Remove pair"); onClicked: backend.action("pairRemove",pair.index) }
+                }
+            }
         }
     }
     LanguageMenu { id: sourceMenu; objectName: "panel-source-menu"; hostWindow: panel; anchorItem: sourceButton; labels: backend.state.sourceLabels || []; codes: backend.state.codes || []; current: backend.state.source; onChosen: code => { backend.action("source",code); panel.schedule() } }
@@ -58,7 +74,10 @@ Window {
             id: sourceCard; width: (parent.width - 12)/2; height: parent.height
             color: Theme.card; radius: Theme.largeCardRadius; border.color: Theme.cardBorder
             Text { x: 16; y: 14; text: panel.t("原文","Original"); color: Theme.subtext; font.pixelSize: 12 }
-            ToolButton { anchors.right: parent.right; y: 4; glyph: "\uE8BB"; tip: panel.t("清空","Clear"); enabled: input.text.length > 0; onClicked: input.text="" }
+            Row { anchors.right: parent.right; y: 4
+                ToolButton { objectName: "panel-speak-source"; glyph: backend.state.speaking ? "\uE71A" : "\uE767"; tip: backend.state.speaking ? panel.t("停止朗读","Stop speech") : panel.t("朗读原文","Read original"); enabled: input.text.length>0; onClicked: backend.action(backend.state.speaking ? "stopSpeech" : "speech",true) }
+                ToolButton { glyph: "\uE8BB"; tip: panel.t("清空","Clear"); enabled: input.text.length > 0; onClicked: input.text="" }
+            }
             Flickable {
                 id: inputScroll; x: 16; y: 42; width: parent.width-32; height: parent.height-76
                 contentWidth: width; contentHeight: Math.max(height,input.contentHeight); clip: true; boundsBehavior: Flickable.StopAtBounds
@@ -76,14 +95,18 @@ Window {
                 }
             }
             ListScrollBar { parent: sourceCard; anchors.top: inputScroll.top; anchors.bottom: inputScroll.bottom; anchors.right: parent.right; flickable: inputScroll }
-            Text { x: 16; anchors.bottom: parent.bottom; anchors.bottomMargin: 12; text: input.text.length + panel.t(" 字 · 自动分段", " characters · Auto chunking"); color: Theme.faint; font.pixelSize: 11 }
+            Text { x: 16; width: parent.width-32; elide: Text.ElideRight; anchors.bottom: parent.bottom; anchors.bottomMargin: 12; text: input.text.length + panel.t(" 字 · 自动分段", " characters · Auto chunking") + (backend.state.requestHint ? " · "+backend.state.requestHint : ""); color: Theme.faint; font.pixelSize: 11 }
         }
         Rectangle {
             id: resultCard; anchors.right: parent.right; width: sourceCard.width; height: parent.height
-            visible: !panel.lookup
+            visible: !panel.lookup && !panel.naming
             color: Theme.card; radius: Theme.largeCardRadius; border.color: Theme.cardBorder
             Text { x: 16; y: 14; text: panel.t("译文","Translation"); color: Theme.subtext; font.pixelSize: 12 }
-            ToolButton { anchors.right: parent.right; y: 4; glyph: "\uE8C8"; tip: panel.t("复制译文","Copy translation"); enabled: !!backend.state.translatedText; onClicked: backend.action("copy","translatedText") }
+            Row { anchors.right: parent.right; y: 4
+                ToolButton { objectName: "panel-speak-target"; glyph: backend.state.speaking ? "\uE71A" : "\uE767"; tip: backend.state.speaking ? panel.t("停止朗读","Stop speech") : panel.t("朗读译文","Read translation"); enabled: !!backend.state.translatedText && !backend.state.loading; onClicked: backend.action(backend.state.speaking ? "stopSpeech" : "speech",false) }
+                ToolButton { objectName: "panel-favorite"; glyph: "\uE734"; tip: panel.t("收藏译文","Favorite translation"); enabled: !!backend.state.translatedText && !backend.state.loading; onClicked: backend.action("favorite",null) }
+                ToolButton { glyph: "\uE8C8"; tip: panel.t("复制译文","Copy translation"); enabled: !!backend.state.translatedText; onClicked: backend.action("copy","translatedText") }
+            }
             Flickable {
                 id: translationScroll; visible: !backend.state.sentenceMode; x: 16; y: 42; width: parent.width-32; height: parent.height-76
                 contentWidth: width; contentHeight: Math.max(height,translated.contentHeight); clip: true; boundsBehavior: Flickable.StopAtBounds
@@ -106,6 +129,26 @@ Window {
                 HoverHandler { id: providerHover }
                 HoverTip { target: providerHover.hovered ? providerLabel : null; text: backend.state.providerNote || "" }
             }
+        }
+        Rectangle {
+            id: namingCard; objectName: "panel-naming-card"; visible: panel.naming
+            anchors.right: parent.right; width: sourceCard.width; height: parent.height
+            color: Theme.card; radius: Theme.largeCardRadius; border.color: Theme.cardBorder
+            Flickable {
+                id: namingScroll; anchors.fill: parent; anchors.margins: 16; contentWidth: width; contentHeight: Math.max(height,namingContent.height); clip: true
+                Column {
+                    id: namingContent; width: parent.width; spacing: 12
+                    Text { width: parent.width; wrapMode: Text.Wrap; text: panel.t("输入中文含义或 userAccountBalance，点击结果复制。连字符命名适合文件名 / CSS。","Enter a meaning or userAccountBalance. Click a result to copy. Kebab case is for filenames / CSS."); color: Theme.subtext; font.pixelSize: 13 }
+                    Text { width: parent.width; wrapMode: Text.Wrap; textFormat: Text.PlainText; text: backend.state.namingPhrase || ""; color: Theme.subtext; font.pixelSize: 13 }
+                    Repeater { model: backend.state.namingRows || []
+                        Column { id: nameRow; required property var modelData; width: namingContent.width; spacing: 4
+                            Text { text: nameRow.modelData.style; color: Theme.faint; font.pixelSize: 12 }
+                            FlatButton { width: parent.width; text: nameRow.modelData.value; maximumTextWidth: width-24; onClicked: backend.action("copyName",nameRow.modelData.value) }
+                        }
+                    }
+                }
+            }
+            ListScrollBar { anchors.top: namingScroll.top; anchors.bottom: namingScroll.bottom; anchors.right: parent.right; flickable: namingScroll }
         }
         Rectangle {
             id: lookupCard; objectName: "panel-lookup-card"; visible: panel.lookup
@@ -175,7 +218,7 @@ Window {
         }
     }
     Rectangle {
-        id: definitions; visible: !panel.lookup && backend.state.explain; x: 22; width: parent.width-44; height: Math.min(190,panel.height*.25)
+        id: definitions; visible: !panel.lookup && !panel.naming && backend.state.explain; x: 22; width: parent.width-44; height: Math.min(190,panel.height*.25)
         anchors.top: comparison.bottom; anchors.topMargin: 12
         color: Theme.card; radius: Theme.largeCardRadius; border.color: Theme.cardBorder
         Text { x: 16; y: 12; text: panel.t("释义与用法","Meaning and usage"); color: Theme.subtext; font.pixelSize: 12 }
@@ -190,8 +233,8 @@ Window {
     }
     Item {
         id: footer; x: 22; anchors.bottom: parent.bottom; anchors.bottomMargin: 14; width: parent.width-44; height: 38
-        Text { anchors.verticalCenter: parent.verticalCenter; width: parent.width-translateButton.width-(backend.state.loading ? 95 : 16); wrapMode: Text.Wrap; text: backend.state.status || (backend.state.panelMode === "auto" ? panel.t("中英词语查词 · 句子翻译 · 候选词可点击","Chinese/English terms → dictionary · Sentences → translation") : panel.lookup ? panel.t("候选词点击查详情 · 句子单词点击定位原文","Click alternatives for details · Click sentence words to select") : panel.t("Ctrl+Enter 翻译 · 查词查看词典候选","Ctrl+Enter to translate · Words for dictionary alternatives")); color: backend.state.status && !backend.state.loading ? Theme.danger : Theme.subtext; font.pixelSize: 12 }
+        Text { anchors.verticalCenter: parent.verticalCenter; width: parent.width-translateButton.width-(backend.state.loading ? 95 : 16); wrapMode: Text.Wrap; text: backend.state.status || backend.state.notice || (backend.state.panelMode === "auto" ? panel.t("中英词语查词 · 句子翻译 · 候选词可点击","Chinese/English terms → dictionary · Sentences → translation") : panel.lookup ? panel.t("候选词点击查详情 · 句子单词点击定位原文","Click alternatives for details · Click sentence words to select") : panel.t("Ctrl+Enter 翻译 · 查词查看词典候选","Ctrl+Enter to translate · Words for dictionary alternatives")); color: backend.state.status && !backend.state.loading ? Theme.danger : Theme.subtext; font.pixelSize: 12 }
         FlatButton { visible: backend.state.loading; anchors.right: translateButton.left; anchors.rightMargin: 8; text: panel.t("停止","Stop"); onClicked: { debounce.stop(); backend.action("stop",null) } }
-        FlatButton { id: translateButton; objectName: "panel-submit"; anchors.right: parent.right; highlighted: true; text: panel.lookup ? (backend.state.loading ? panel.t("重新查词","Look up again") : panel.t("查词","Look up")) : (backend.state.loading ? panel.t("重新翻译","Translate again") : panel.t("翻译","Translate")); enabled: input.text.trim().length > 0 && !input.inputMethodComposing; onClicked: panel.submit() }
+        FlatButton { id: translateButton; objectName: "panel-submit"; anchors.right: parent.right; highlighted: true; text: panel.naming ? panel.t("生成命名","Generate names") : panel.lookup ? (backend.state.loading ? panel.t("重新查词","Look up again") : panel.t("查词","Look up")) : (backend.state.loading ? panel.t("重新翻译","Translate again") : panel.t("翻译","Translate")); enabled: input.text.trim().length > 0 && !input.inputMethodComposing; onClicked: panel.submit() }
     }
 }

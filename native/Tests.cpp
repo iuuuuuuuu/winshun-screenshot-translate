@@ -1,6 +1,10 @@
 #include "Desktop.h"
 #include "Services.h"
 #include "Dictionary.h"
+#include "AiStream.h"
+#include "History.h"
+#include "TextTools.h"
+#include "Speech.h"
 #include <QGuiApplication>
 #include <QTemporaryDir>
 #include <QJsonArray>
@@ -417,6 +421,44 @@ int main(int argc,char** argv)
             std::puts("{\"passed\":true,\"githubDictionaryDownload\":true,\"sha256Verified\":true,\"offlineLookup\":true}");return 0;
         }
         checkPhrases();
+        {
+            std::atomic_bool finished=false,started=false;QString error;st::Speech speech(true);
+            const auto languages=st::Speech::languages();
+            speech.say("WinShun test",languages.isEmpty()?"unknown":languages.first(),[&](bool active,const QString& e){if(active)started=true;else{error=e;finished=true;}});
+            QElapsedTimer wait;wait.start();while(!finished&&wait.elapsed()<8000)QThread::msleep(10);
+            if(!finished||(!languages.isEmpty()&&(!started||!error.isEmpty())))throw std::runtime_error("silent Windows speech synthesis");
+            if(languages.isEmpty()&&error.isEmpty())throw std::runtime_error("missing Windows voice explained");
+            finished=false;started=false;speech.say(QString("Long speech. ").repeated(300),languages.isEmpty()?"unknown":languages.first(),[&](bool active,const QString&){if(active)started=true;else finished=true;});
+            wait.restart();while(!started&&!finished&&wait.elapsed()<3000)QThread::msleep(10);speech.stop();
+            wait.restart();while(!finished&&wait.elapsed()<1500)QThread::msleep(10);if(!finished)throw std::runtime_error("speech stops promptly");
+        }
+        {
+            auto check=[](bool ok,const char* why){if(!ok)throw std::runtime_error(why);};
+            QTemporaryDir data;st::HistoryStore history(data.path());
+            QJsonObject row{{"source","=formula,\"test\"\n<script>"},{"translated","你好\n第二行"},{"provider","google"},{"sourceLanguage","en"},{"targetLanguage","zh"}};
+            auto id=history.remember(row);check(!id.isEmpty(),"record on explicit use");
+            history.remember(row,true);check(history.rows().size()==1&&history.rows({},true).size()==1,"history dedup retains favorite");
+            history.setEnabled(false);check(history.remember({{"source","skip"},{"translated","跳过"}}).isEmpty(),"history recording disabled");
+            check(!history.remember({{"source","manual favorite"},{"translated","收藏"}},true).isEmpty(),"explicit favorite works when recording off");
+            check(history.rows("SCRIPT").size()==1,"history search case insensitive");
+            st::HistoryStore reopened(data.path());check(!reopened.enabled()&&reopened.rows().size()==2,"history persists");
+            reopened.exportFile(data.path()+"/out.csv",false);QFile csv(data.path()+"/out.csv");csv.open(QIODevice::ReadOnly);auto content=csv.readAll();
+            check(content.contains("'=" )&&content.contains("\"\"test\"\""),"CSV formula and quote escaping");
+            reopened.exportFile(data.path()+"/anki.tsv",true);QFile anki(data.path()+"/anki.tsv");anki.open(QIODevice::ReadOnly);content=anki.readAll();
+            check(content.contains("#html:true")&&content.contains("&lt;script&gt;")&&content.contains("<br>"),"Anki safe multiline HTML");
+            reopened.clearRecent();check(reopened.rows().size()==2,"clear keeps favorites");reopened.favorite(id,false);reopened.clearRecent();check(reopened.rows().size()==1,"unfavorite then clear");
+            reopened.setEnabled(true);for(int i=0;i<505;++i)reopened.remember({{"source",QString::number(i)},{"translated","entry"}});
+            check(reopened.rows().size()==501&&reopened.rows({},true).size()==1,"bounded recent history preserves favorites");
+            check(st::joinPdfLines("A wrapped\nparagraph.\n\n- first item\n- next item")=="A wrapped paragraph.\n\n- first item\n- next item","PDF paragraph and list boundaries");
+            check(st::joinPdfLines("model 1.25-\nbit and 30B-\nA3B")=="model 1.25-bit and 30B-A3B","visible hyphens preserved");
+            check(st::joinPdfLines("```\na = 1;\nb = 2;\n```\n\nx\ty")=="```\na = 1;\nb = 2;\n```\n\nx\ty","code and tables preserved");
+            check(st::joinPdfLines("中文断\n行")=="中文断行","Chinese PDF spacing");
+            auto pref=st::prepareText("ja: Hello\nworld","zh",true);check(pref.prefixed&&pref.target=="ja"&&pref.text=="Hello world","per-request target prefix");
+            check(!st::prepareText("https://example.com","zh",false).prefixed&&!st::prepareText("en: text","zh",false,false).prefixed,"URLs and disabled prefix unchanged");
+            check(st::splitIdentifier("getHTTPResponse_userID")=="get HTTP Response user ID","acronym-aware identifier splitting");
+            auto names=st::namingVariants("userAccountBalance");check(names.size()==5&&names[2].toObject()["value"]=="user_account_balance"&&names[3].toObject()["value"]=="USER_ACCOUNT_BALANCE","naming variants");
+            check(st::namingVariants("123 accounts")[0].toObject()["value"]=="_123Accounts","identifier leading digits safe");
+        }
         if(st::canonicalProvider("")!="ecdict"||st::canonicalProvider("mymemory")!="mymemory")
             throw std::runtime_error("ECDICT is the missing-setting default; explicit provider selection is preserved");
         checkWrappedPhrases();
@@ -462,6 +504,34 @@ int main(int argc,char** argv)
         if(args.contains("--endpoint")){
             auto base=args.value(args.indexOf("--endpoint")+1);
             auto freshCancel=[] {return std::make_shared<std::atomic_bool>(false);};
+            {
+                auto check=[](bool ok,const char* why){if(!ok)throw std::runtime_error(why);};
+                check(st::aiArrayPreview("<think>hidden").isEmpty(),"reasoning hidden");
+                check(st::aiArrayPreview("[\"a\\n\\u4f60\\u597d\",\"second") == QStringList{"a\n你好","second"},"incomplete JSON preview escapes");
+                st::AiStream bytes;auto wire=QByteArray("data: {\"choices\":[{\"delta\":{\"content\":\"[\\\"你好\\\"]\"}}]}\n\ndata: [DONE]\n\n");
+                for(char byte:wire)bytes.feed(&byte,1);
+                check(bytes.finish(1)==QStringList{"你好"},"UTF8 split SSE");
+                QTemporaryDir streamDir;st::Services ai(streamDir.path());
+                auto config=[&](QString model){ai.save({{"ai",QJsonObject{{"endpoint",base+"/ai-stream"},{"model",model},{"apiKey","fixture-key"}}}});};
+                QJsonObject opts{{"provider","ai"},{"fallbackEnabled",false}};config("good");
+                int previews=0;auto result=ai.translate(opts,{"Hello 中文"},"en","zh",freshCancel(),{},[&](const st::Translation& part,int,int){
+                    check(part.preview,"stream preview flag");check(!part.segments.join("").contains("思考"),"reasoning never leaks");++previews;
+                });
+                check(previews>1&&result.segments==QStringList{"译文:Hello 中文"}&&!result.preview,"progress before complete response");
+                int cached=0;ai.translate(opts,{"Hello 中文"},"en","zh",freshCancel(),{},[&](const auto&,int,int){++cached;});check(!cached,"only final result cached");
+                config("plain");check(ai.translate(opts,{"one"},"en","zh",freshCancel()).segments==QStringList{"译文:one"},"non streaming compatibility retry");
+                check(ai.translate(opts,{"two"},"en","zh",freshCancel()).segments==QStringList{"译文:two"},"compatibility remembered");
+                for(auto model:QStringList{"length","broken","rate"}){
+                    config(model);bool failed=false;try{ai.translate(opts,{"must not cache a half translation"},"en","zh",freshCancel());}catch(...){failed=true;}
+                    check(failed,"truncated AI response fails");
+                }
+                config("cancel");auto cancel=freshCancel();bool failed=false;
+                try{ai.translate(opts,{"cancel streaming response"},"en","zh",cancel,{},[&](const auto&,int,int){cancel->store(true);});}catch(...){failed=true;}
+                check(failed&&cancel->load(),"stream cancellation");
+                config("long");auto longText=QString("Long text. ").repeated(160)+"TAIL";
+                result=ai.translate(opts,{longText},"en","zh",freshCancel(),{},[](const auto&,int,int){});
+                check(result.segments.size()==1&&result.segments[0].endsWith("TAIL"),"AI streaming long document owner order");
+            }
             {
                 QTemporaryDir hostDir;st::Services host(hostDir.path());
                 host.save({{"google",QJsonObject{{"endpoint",base+"/google"}}}});
@@ -902,7 +972,7 @@ int main(int argc,char** argv)
             aiRecovered.save({{"google",QJsonObject{{"enabled",false},{"endpoint",base+"/google"}}}});
             bool noEnabled=false;try{aiRecovered.translate(aiSettings,{"hello"},"auto","zh",fresh());}catch(const std::exception&){noEnabled=true;}
             if(!noEnabled)throw std::runtime_error("all-disabled queue must not send requests");
-            std::puts(QJsonDocument(QJsonObject{{"passed",true},{"batchProtocols",true},{"concurrentDeduplication",true},{"retryAfterSecondsAndDate",true},{"queuedCancellation",true},{"translationCache",true},{"cacheLanguageIsolation",true},{"cacheDiagnosticBypass",true},{"parallelCancellation",true},{"orderedPartialFailure",true},{"singleRateLimitAttempt",true},{"longDocumentTail",true},{"sentenceProgress",true},{"longDocumentCancellation",true},{"unicodeSentenceBoundaries",true},{"exponentialBackoff",true},{"authQuotaDisablePeriods",true},{"darkTallOcrTiles",true},{"fixtureRoutes",QJsonArray::fromStringList(routes)},
+            std::puts(QJsonDocument(QJsonObject{{"passed",true},{"aiStreaming",true},{"aiTruncation",true},{"historyExport",true},{"pdfPrefixes",true},{"namingVariants",true},{"silentSpeech",true},{"hostTranslationLines",true},{"batchProtocols",true},{"concurrentDeduplication",true},{"retryAfterSecondsAndDate",true},{"queuedCancellation",true},{"translationCache",true},{"cacheLanguageIsolation",true},{"cacheDiagnosticBypass",true},{"parallelCancellation",true},{"orderedPartialFailure",true},{"singleRateLimitAttempt",true},{"longDocumentTail",true},{"sentenceProgress",true},{"longDocumentCancellation",true},{"unicodeSentenceBoundaries",true},{"exponentialBackoff",true},{"authQuotaDisablePeriods",true},{"darkTallOcrTiles",true},{"fixtureRoutes",QJsonArray::fromStringList(routes)},
                 {"chineseDictionaryCandidates",true},{"offlineReverseDictionary",true},{"senseGroupedSynonyms",true},{"wordTokenizer",true},{"structuredDictionary",true},{"youdaoWordFallback",true},{"progressiveWordLookup",true},{"wordLookupLimits",true},{"wordLookupCancellation",true},{"multiAiFallback",true},{"aiModelCooldown",true},{"aiModelRecovery",true},{"aiChannelEncryption",true},{"disabledProviders",true},{"aiExplanation",true},{"dpapi",true},{"smallScreenshotOcr",true},{"aiMigration",true},{"offlineDictionary",true},{"dictionaryFallback",true},{"dictionaryDownload",true},{"dictionaryIntegrity",true},{"youdaoSignature",true},{"sogouEncoding",true},
                 {"persistentFallback",true},{"recovery",true},{"cancel",true},{"httpProxy",true},{"pointerPhrases",true},
                 {"manualQueue",true},{"automaticWeights",true},{"persistentQueue",true},{"diagnosticsHealth",true},{"neutralCancellationAndMisses",true}}).toJson(QJsonDocument::Compact).constData());

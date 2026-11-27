@@ -5,7 +5,7 @@
     "zh": "截图翻译",
     "en": "Screenshot Translate"
   },
-  "version": "0.4.31",
+  "version": "0.4.32",
   "settingsWindow": true,
   "translate": "host-translate",
   "description": {
