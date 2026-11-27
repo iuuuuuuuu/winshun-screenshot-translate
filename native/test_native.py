@@ -377,6 +377,10 @@ def main():
                 assert report[flag], report
             for request in (200,201,202):assert responses[request]["items"]==[],responses
             assert responses[203]["items"][0]["title"]=="你好 + 100%",responses[203]
+            assert responses[204]["items"][0]["copy"] == "\n你好 + 100%\n\n设置\n", responses[204]
+            assert 'TAIL' in responses[205]["items"][0]["copy"] and '\n' not in responses[205]["items"][0]["copy"], responses[205]
+            assert responses[206]["items"][0]["id"] == 'setup', responses[206]
+            assert responses[207]["items"] == [], responses[207]
             print(json.dumps({k:report[k] for k in ("passed","qtVersion","pythonLoaded","uiRenderer","hostRenderer",
                 "selectorShowMs","outsideDismissMs","closeWhileBlockedMs","hotkeyProtocol","nativeHotkeyFallback","queryProtocol",
                 "wordClipboard","wordPinnedSelection","wordMouseOcr","wordMousePhraseOcr","wordMouseSpacingOcr",

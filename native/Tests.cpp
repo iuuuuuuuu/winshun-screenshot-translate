@@ -462,6 +462,21 @@ int main(int argc,char** argv)
         if(args.contains("--endpoint")){
             auto base=args.value(args.indexOf("--endpoint")+1);
             auto freshCancel=[] {return std::make_shared<std::atomic_bool>(false);};
+            {
+                QTemporaryDir hostDir;st::Services host(hostDir.path());
+                host.save({{"google",QJsonObject{{"endpoint",base+"/google"}}}});
+                QJsonObject options{{"provider","google"},{"fallbackEnabled",false}};
+                const QString input="\nHello + 100%\r\n\r\nSettings\n";
+                auto result=host.translateLines(options,input,freshCancel());
+                if(result["translated"].toString()!="\n你好 + 100%\n\n设置\n")throw std::runtime_error("host preserves empty lines and line positions");
+                auto longLine=QString("Long source sentence. ").repeated(160)+"TAIL";
+                result=host.translateLines(options,longLine+"\nHistory",freshCancel());
+                auto output=result["translated"].toString().split('\n');
+                if(output.size()!=2||!output[0].contains("TAIL")||output[1]!="历史")throw std::runtime_error("host long text has no UI detour or extra line");
+                auto stopped=freshCancel();stopped->store(true);bool rejected=false;
+                try{host.translateLines(options,"cancel",stopped);}catch(...){rejected=true;}
+                if(!rejected)throw std::runtime_error("host cancellation");
+            }
             for(bool dark:{false,true}){
                 QImage small(101,55,QImage::Format_RGB32);small.fill(dark?QColor(32,32,32):Qt::white);
                 {QPainter painter(&small);painter.setPen(dark?Qt::white:Qt::black);QFont font("Segoe UI");font.setPixelSize(13);painter.setFont(font);painter.drawText(23,33,"Hi");}

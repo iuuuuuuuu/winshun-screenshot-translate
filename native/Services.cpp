@@ -721,6 +721,16 @@ QStringList sentenceParts(const QString& text,int maxChars)
     return result;
 }
 
+QJsonObject Services::translateLines(const QJsonObject& settings,const QString& text,Cancel cancel)
+{
+    QString normalized=text;normalized.replace("\r\n","\n").replace('\r','\n');
+    auto lines=normalized.split('\n',Qt::KeepEmptyParts);QStringList parts;QList<int> positions;
+    for(int i=0;i<lines.size();++i)if(!lines[i].trimmed().isEmpty()){parts<<lines[i];positions<<i;}
+    if(parts.isEmpty())return {{"source",text},{"translated",normalized}};
+    auto result=translate(settings,parts,"auto",targetFor(text,settings.value("target").toString()),cancel);
+    for(int i=0;i<positions.size();++i){auto value=result.segments[i];value.replace(QRegularExpression("[\\r\\n\\x{2028}\\x{2029}]+")," ");lines[positions[i]]=value;}
+    auto data=result.json(parts);data["source"]=text;data["translated"]=lines.join('\n');return data;
+}
 Translation Services::translate(const QJsonObject& settings,const QStringList& parts,const QString& source,
     const QString& target,Cancel cancel,QJsonObject draft,std::function<void(const Translation&,int,int)> progress)
 {
@@ -892,6 +902,8 @@ Translation Services::translateBatch(const QJsonObject& settings,const QStringLi
         }
         const int totalBudget=std::max(18000,requestBudget+6000);
         int budget=std::min(requestBudget,int(totalBudget-total.elapsed()));
+        const auto deadline=qint64(settings.value("requestDeadline").toDouble());
+        if(deadline>0)budget=std::min(budget,int(std::max<qint64>(0,deadline-QDateTime::currentMSecsSinceEpoch())));
         if(budget<=0&&!cached)break;
         ++attempted;QElapsedTimer attempt;attempt.start();
         try{
@@ -901,6 +913,7 @@ Translation Services::translateBatch(const QJsonObject& settings,const QStringLi
                     while(std::chrono::steady_clock::now()<gate->next){if(cancel->load())fail("cancelled");std::this_thread::sleep_for(std::chrono::milliseconds(20));}
                     gate->next=std::chrono::steady_clock::now()+std::chrono::milliseconds(250);
                 }
+                if(deadline>0)budget=std::min(budget,int(std::max<qint64>(0,deadline-QDateTime::currentMSecsSinceEpoch())));
                 result=route(p,parts,source,target,cancel,budget,workers);
                 if(cancel->load())fail("cancelled");
                 if(draft.isEmpty()){
@@ -920,6 +933,7 @@ Translation Services::translateBatch(const QJsonObject& settings,const QStringLi
             if(cancel->load())fail("cancelled");unsupported=QString::fromUtf8(e.what());if(!fallback)throw;
         }catch(const std::exception& e){
             if(cancel->load())fail("cancelled");
+            if(deadline>0&&QDateTime::currentMSecsSinceEpoch()>=deadline)fail("本次截图翻译已超时，请重试或切换渠道");
             auto error=QString::fromUtf8(e.what());const auto httpError=dynamic_cast<const HttpFailure*>(&e);
             recordOutcome(p,false,attempt.elapsed(),recovery,error,httpError?httpError->retrySeconds:-1);
             last=names.value(providers.indexOf(provider))+"："+error;if(!fallback)throw;

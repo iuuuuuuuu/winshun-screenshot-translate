@@ -48,6 +48,7 @@ public:
     QJsonArray queue(const QJsonObject& settings, const QJsonObject& drafts = {}, const QJsonObject& routing = {});
     QList<QJsonObject> candidates(const QJsonObject& profile, const QJsonObject& settings, const QJsonObject& routing = {});
     int today();
+    QJsonObject translateLines(const QJsonObject& settings,const QString& text,Cancel cancel);
     QJsonObject lookupWords(const QJsonObject& settings,const QString& text,Cancel cancel,
         std::function<void(QJsonObject)> progress={});
     Translation translate(const QJsonObject& settings, const QStringList& parts,

@@ -7,6 +7,7 @@
   },
   "version": "0.4.31",
   "settingsWindow": true,
+  "translate": "host-translate",
   "description": {
     "zh": "无需 Python 的原生截图、剪贴板、划词和鼠标指词翻译；支持可编辑原文、固定跟随、管理员选区及渠道自动降级。",
     "en": "Native screenshot, clipboard, selection and pointer OCR translation, with editable source, pinned following, elevated selection access and service fallback."
@@ -20,7 +21,7 @@
     "program": "ScreenshotTranslate.exe",
     "start": "eager",
     "sandbox": "normal",
-    "timeoutMs": 25000,
+    "timeoutMs": 10000,
     "debounceMs": 300,
     "idleExitSec": 0,
     "memoryMB": 1024,
@@ -37,6 +38,12 @@
     "elevated"
   ],
   "commands": [
+    {
+      "id": "host-translate",
+      "title": {"zh": "为 Win顺截图翻译", "en": "Translate for WinShun capture"},
+      "keyword": ["jst-service"],
+      "mode": "list"
+    },
     {
       "id": "shot",
       "title": {

@@ -349,6 +349,27 @@ void App::query(const QJsonValue& id,const QJsonObject& params)
     used();
     QString command=params.value("command").toString(),text=params.value("text").toString().trimmed();
     int qid=params.value("queryId").toInt();QJsonArray items;
+    if(command=="host-translate"){
+        text=params.value("text").toString();
+        if(text.trimmed().isEmpty()){m_protocol.respond(id,QJsonObject{{"items",QJsonArray{row("empty","没有待翻译文字",{},false)}}});return;}
+        if(auto previous=m_queries.find(qid);previous!=m_queries.end()){
+            previous->second.second->store(true);m_protocol.respond(previous->second.first,QJsonObject{{"items",QJsonArray()}});
+        }
+        auto cancel=token();m_queries[qid]={id,cancel};auto services=m_services;auto settings=m_settings;
+        settings["requestDeadline"]=double(QDateTime::currentMSecsSinceEpoch()+8200);
+        QTimer::singleShot(8500,this,[this,qid,id,cancel]{
+            auto it=m_queries.find(qid);if(it==m_queries.end()||it->second.second!=cancel)return;
+            cancel->store(true);m_queries.erase(it);
+            m_protocol.respond(id,QJsonObject{{"items",QJsonArray{row("error","截图翻译超时","请重试或切换翻译渠道",false)}}});
+        });
+        background([services,settings,text,cancel]{return services->translateLines(settings,text,cancel);},
+            [this,qid,id,cancel](QJsonObject data,QString error){
+                auto it=m_queries.find(qid);if(it==m_queries.end()||it->second.second!=cancel)return;m_queries.erase(it);
+                const bool setup=error.contains("配置")||error.contains("没有启用")||error.contains("HTTP 401")||error.contains("HTTP 403");
+                auto items=error.isEmpty()?results(data,"host-translate"):QJsonArray{row(setup?"setup":"error",setup?error:"翻译失败",error,false)};
+                m_protocol.respond(id,QJsonObject{{"items",cancel->load()?QJsonArray():items}});
+            });return;
+    }
     if(command=="panel"){
         auto item=row("panel",m_chinese?"打开翻译面板":"Open translation panel",m_chinese?"输入文字 · 自动翻译 · 双语对照与释义":"Type, translate and explain");
         item["data"]=QJsonObject{{"source",text}};item["actions"]=QJsonArray{QJsonObject{{"id","open-panel"},{"title","打开"},{"key","Enter"}}};

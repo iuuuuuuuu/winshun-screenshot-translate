@@ -764,6 +764,17 @@ void Probe::run(App& app,const QJsonObject& params)
         app.m_settings["provider"]="google";
         app.dispatch(203,"query",{{"command","clip"},{"text","Hello + 100%"},{"queryId",101}});
         check(until([&]{return app.m_queries.empty();}),"text query completion");
+        app.dispatch(204,"query",{{"command","host-translate"},{"text","\nHello + 100%\n\nSettings\n"},{"queryId",102}});
+        check(until([&]{return app.m_queries.empty();}),"host translation completes");
+        app.dispatch(205,"query",{{"command","host-translate"},{"text",QString("Document sentence. ").repeated(90)+"TAIL"},{"queryId",103}});
+        check(until([&]{return app.m_queries.empty();},8500),"host long document completes");
+        app.m_settings["provider"]="microsoft";
+        app.dispatch(206,"query",{{"command","host-translate"},{"text","Hello"},{"queryId",104}});
+        check(until([&]{return app.m_queries.empty();}),"host configuration failure settles");
+        app.m_settings["provider"]="mymemory";
+        app.dispatch(207,"query",{{"command","host-translate"},{"text","Cancel host"},{"queryId",105}});pump(30);
+        app.dispatch({},"cancel",{{"queryId",105}});check(app.m_queries.empty(),"host cancellation settles");
+        report["hostTranslationContract"]=true;
         report["queryProtocol"]=true;app.m_settings["provider"]="mymemory";
         // The harness sets this service endpoint to a deliberately blocked response.
         app.translatePin();pump(80);
