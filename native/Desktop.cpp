@@ -10,6 +10,7 @@
 #include <wrl/client.h>
 #include "Desktop.h"
 #include "FirefoxSelection.h"
+#include "SelectionCopy.h"
 #include <QCoreApplication>
 #include <QProcess>
 #include <QJsonDocument>
@@ -1399,7 +1400,7 @@ int selectionWorker()
     if(!target||!IsWindow(target))return 2;
     QJsonObject response;
     try{
-        auto result=selectionAt(POINT{request.value("x").toInt(),request.value("y").toInt()},target,
+        auto result=request.value("copyFirefox").toBool()?copyFirefoxSelection(target,std::make_shared<std::atomic_bool>(false)):selectionAt(POINT{request.value("x").toInt(),request.value("y").toInt()},target,
             std::clamp(request.value("warmupMs").toInt(600),0,600));
         // Some providers expose read-only text even across integrity levels.
         // Try the actual read first; report access restrictions only on failure.

@@ -1,12 +1,15 @@
 """Selection regression using a fresh Firefox profile on a private desktop.
 
-Only a synthetic data: document is loaded. No user browser, clipboard, focus,
+Only a synthetic data: document is loaded. No user browser, focus,
 profile or accessibility settings are changed. Requires Mozilla geckodriver.
+With --native-copy or --icon-click, explicit native copy briefly uses the
+clipboard and restores it; it never seeds or clears the user's existing data.
 """
 import argparse
 import ctypes
 from http.server import ThreadingHTTPServer
 import json
+import hashlib
 import os
 from pathlib import Path
 import socket
@@ -31,6 +34,7 @@ def main():
     parser.add_argument('--icon-click', action='store_true', help='Verify the actual QML icon refreshes a late Firefox selection')
     parser.add_argument('--uia-mode', type=int, choices=(0,1,2), help='Firefox UIA mode in the temporary test profile only')
     parser.add_argument('--case', action='append', help='Run only named selection cases')
+    parser.add_argument('--native-copy',action='store_true',help='Explicit Firefox native copy; preserves and restores the existing clipboard')
     args = parser.parse_args()
     api('user32', 'SetProcessDpiAwarenessContext', w.BOOL, w.HANDLE)(ctypes.c_void_p(-4))
     args.output.mkdir(parents=True, exist_ok=True)
@@ -41,7 +45,7 @@ def main():
         raise OSError('Private desktop unavailable; no test on user desktop')
     env = dict(os.environ)
     runtime = Path(os.environ['LOCALAPPDATA'])/'Programs/WinShun'
-    env.update(WS_APP_DIR=str(runtime), WS_QT_DIR=str(runtime), MOZ_NO_REMOTE='1', ST_SELECTION_TRACE='1')
+    env.update(WS_APP_DIR=str(runtime), WS_QT_DIR=str(runtime), MOZ_NO_REMOTE='1', ST_SELECTION_TRACE='1', MOZ_REMOTE_ALLOW_SYSTEM_ACCESS='1')
     with socket.socket() as sock:
         sock.bind(('127.0.0.1', 0))
         port = sock.getsockname()[1]
@@ -52,6 +56,26 @@ def main():
     primer = None
     session = None
     report = {'testBoundary': 'Private Firefox, fresh profile, synthetic local text only', 'cases': []}
+    def clipboard_hashes():
+        # Read-only signatures. Do not print or save the original clipboard text.
+        if not api('user32','OpenClipboard',w.BOOL,w.HWND)(None):return None
+        values={}
+        try:
+            format=0
+            while True:
+                format=api('user32','EnumClipboardFormats',w.UINT,w.UINT)(format)
+                if not format:break
+                # These clipboard handles are GDI objects, not byte buffers.
+                if format in (2,3,9,14,0x82,0x83,0x8e):continue
+                data=api('user32','GetClipboardData',w.HANDLE,w.UINT)(format)
+                size=api('kernel32','GlobalSize',ctypes.c_size_t,w.HANDLE)(data)
+                pointer=api('kernel32','GlobalLock',ctypes.c_void_p,w.HANDLE)(data)
+                if pointer:
+                    values[str(format)]=hashlib.sha256(ctypes.string_at(pointer,size)).hexdigest()
+                    api('kernel32','GlobalUnlock',w.BOOL,w.HANDLE)(data)
+            return values
+        finally:api('user32','CloseClipboard',w.BOOL)()
+    clipboard_before=clipboard_hashes() if args.native_copy or args.icon_click else None
     def request(method, path, body=None):
         response = http.request(method, base+path, json=body, timeout=40)
         if not response.ok: print(response.text,flush=True)
@@ -59,6 +83,39 @@ def main():
         return response.json().get('value')
     def command(method, path, body=None):
         return request(method, '/session/'+session+path, body)
+    def drag_shadow(name):
+        endpoints=command('POST','/execute/sync',{'script': '''
+        document.activeElement.blur();
+        const old=document.getElementById('source'), source=document.createElement('div');source.id='source';old.replaceWith(source);
+        source.innerHTML=' <a href="#author">iuuuuuuuu</a> released this <relative-time></relative-time> UNSELECTED AFTER';
+        source.querySelector('relative-time').attachShadow({mode:'open'}).innerHTML='<span>1 hour ago</span>';
+        window.getSelection().removeAllRanges();window.scrollTo(0,0);
+        const a=source.querySelector('a').getBoundingClientRect(), b=source.querySelector('relative-time').getBoundingClientRect();
+        const points=[[a.left-1,a.top+a.height/2],[b.right-1,b.top+b.height/2]];
+        return arguments[0].endsWith('reverse')?points.reverse():points;
+        ''','args':[name]})
+        command('POST','/moz/context',{'context':'chrome'})
+        try:
+            snapshot=command('POST','/execute/async',{'script':r'''
+            const done=arguments[arguments.length-1], points=arguments[0], mm=window.gBrowser.selectedBrowser.messageManager;
+            const listener=m=>{mm.removeMessageListener('ST:selection',listener);done(m.data);};
+            mm.addMessageListener('ST:selection',listener);
+            const script=`
+              try {
+                const [a,b]=${JSON.stringify(points)};
+                content.document.addEventListener('dragstart',e=>e.preventDefault());
+                content.synthesizeMouseEvent('mousedown',a[0],a[1],{button:0,clickCount:1,inputSource:1});
+                for(let i=1;i<=20;i++)content.synthesizeMouseEvent('mousemove',a[0]+(b[0]-a[0])*i/20,a[1]+(b[1]-a[1])*i/20,{button:0,buttons:1,clickCount:0,inputSource:1},{isDOMEventSynthesized:false});
+                content.synthesizeMouseEvent('mouseup',b[0],b[1],{button:0,clickCount:1,inputSource:1});
+                const s=content.getSelection(),time=content.document.querySelector('relative-time');
+                sendAsyncMessage('ST:selection',{legacyText:s.toString(),ranges:s.getComposedRanges({shadowRoots:[time.shadowRoot]}).map(r=>({start:r.startContainer.nodeValue,startOffset:r.startOffset,end:r.endContainer.nodeValue,endOffset:r.endOffset}))});
+              }catch(e){sendAsyncMessage('ST:selection',{error:String(e)});}
+            `;
+            mm.loadFrameScript('data:application/javascript,'+encodeURIComponent(script),false);
+            ''','args':[endpoints]})
+            assert 'error' not in snapshot,snapshot
+            (args.output/(name+'-dom.json')).write_text(json.dumps(snapshot,indent=2),encoding='utf-8')
+        finally:command('POST','/moz/context',{'context':'content'})
     try:
         with (args.output/'driver.log').open('wb') as log:
             process = NativeProcess([str(args.driver.resolve()), '--host', '127.0.0.1', '--port', str(port)], env, desktop_name, log)
@@ -118,9 +175,11 @@ def main():
                             ('inline-links-partial', 100, 100), ('inline-links-reverse', 100, 100),
                             ('inline-literal-object', 100, 100),
                             ('blocks-partial',100,100),('blocks-full',100,100),
+                            ('mouse-shadow-forward',100,100),('mouse-shadow-reverse',100,100),
                             ('long-scrolled', 100, 100), ('long-focus-restored', 100, 100),
                             ('long-over-100k', 100, 100)]:
             if args.case and name not in args.case:continue
+            if name.startswith('mouse-shadow') and not args.native_copy and not args.case:continue
             command('POST', '/window/rect', {'x': x, 'y': y, 'width': 800, 'height': 500})
             expected = 'Please translate this Firefox selection.'
             if name != 'primary-retry':
@@ -208,11 +267,14 @@ def main():
                 if(arguments[0]==='blocks-partial')s.setBaseAndExtent(first,6,source.querySelector('#second a').firstChild,4);
                 else s.setBaseAndExtent(first,0,source.querySelector('#second').lastChild,6);
                 ''','args':[name]})
+            if name.startswith('mouse-shadow'):drag_shadow(name)
             expected = command('POST', '/execute/sync', {'script': 'return window.getSelection().toString()', 'args': []})
+            if name.startswith('mouse-shadow'):expected='iuuuuuuuu released this 1 hour ago'
             if name.startswith('inline-github'):expected='iuuuuuuuu released this 1 hour ago'
             if name=='inline-avatar':expected='iuuuuuuuu released this 17 minutes ago'
             assert expected, 'Browser itself cleared the fixture selection'
             expected = expected.replace('\r\n', '\n')
+            if args.native_copy:command('POST','/execute/sync',{'script':'document.activeElement.blur();','args':[]})
             rect = w.RECT()
             api('user32', 'GetWindowRect', w.BOOL, w.HWND, ctypes.POINTER(w.RECT))(target, ctypes.byref(rect))
             with (args.output/(name+'.log')).open('wb') as log:
@@ -222,7 +284,7 @@ def main():
             drain = threading.Thread(target=lambda: output.append(reader.stdout.read()), daemon=True)
             drain.start()
             try:
-                reader.stdin.write(json.dumps({'target': str(target), 'x': rect.left+150, 'y': rect.top+180}).encode()+b'\n')
+                reader.stdin.write(json.dumps({'target': str(target), 'x': rect.left+150, 'y': rect.top+180,'copyFirefox':args.native_copy}).encode()+b'\n')
                 reader.stdin.close()
                 try:
                     code = reader.wait(8)
@@ -277,20 +339,24 @@ def main():
                                 'locale':'zh','appearance':{'theme':'light','renderer':'software'},
                                 'settings':{'provider':'google','fallbackEnabled':False},'capabilities':{'hostHotkeys':True},
                                 'probeFirefoxTarget':str(target),'probeInitialSelection':initial,
-                                'probeFinalSelection':'iuuuuuuuu released this 17 minutes ago'}
+                                'probeFinalSelection':'iuuuuuuuu released this 1 hour ago' if args.native_copy else 'iuuuuuuuu released this 17 minutes ago'}
                             probe.stdin.write(json.dumps({'jsonrpc':'2.0','id':1,'method':'initialize','params':params}).encode()+b'\n')
                             probe.stdin.flush()
-                            deadline=time.monotonic()+10
+                            deadline=time.monotonic()+25
                             while not (icon_out/'icon-ready.json').exists():
                                 assert time.monotonic()<deadline, 'Native Firefox icon did not appear'
                                 time.sleep(.05)
-                            final=command('POST','/execute/sync',{'script': '''
-                            const source=document.getElementById('source'), first=source.firstChild.firstChild,
-                                last=source.querySelector('relative-time').firstChild, selection=window.getSelection();
-                            if(arguments[0]) selection.setBaseAndExtent(last,last.length,first,0);
-                            else selection.setBaseAndExtent(first,0,last,last.length);
-                            return selection.toString();''','args':[reverse]})
-                            assert final==params['probeFinalSelection']
+                            if args.native_copy:
+                                drag_shadow('mouse-shadow-reverse' if reverse else 'mouse-shadow-forward')
+                                final=params['probeFinalSelection']
+                            else:
+                                final=command('POST','/execute/sync',{'script': '''
+                                const source=document.getElementById('source'), first=source.firstChild.firstChild,
+                                    last=source.querySelector('relative-time').firstChild, selection=window.getSelection();
+                                if(arguments[0]) selection.setBaseAndExtent(last,last.length,first,0);
+                                else selection.setBaseAndExtent(first,0,last,last.length);
+                                return selection.toString();''','args':[reverse]})
+                                assert final==params['probeFinalSelection']
                             (icon_out/'click-ready').touch()
                             code=probe.wait(15);drain.join(3)
                             result=json.loads((icon_out/'report.json').read_text(encoding='utf-8'))
@@ -306,6 +372,10 @@ def main():
                 finally:
                     server.shutdown();server.server_close()
         report['passed'] = all(case['passed'] for case in report['cases'])
+        if clipboard_before is not None:
+            after=clipboard_hashes()
+            report['clipboardPreserved']=after is not None and all(after.get(k)==v for k,v in clipboard_before.items())
+            assert report['clipboardPreserved'],'Clipboard changed during copy test; inspect whether a concurrent user copy occurred'
         if primer:
             primer.stdin.close()
             report['primerExitedOnParentClose'] = primer.wait(3) == 0

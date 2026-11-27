@@ -1,4 +1,5 @@
 #include "App.h"
+#include "SelectionCopy.h"
 #include "Probe.h"
 #include "WindowSizeMemory.h"
 #include "TextTools.h"
@@ -1059,14 +1060,19 @@ void App::readSelection(bool follow)
     m_selectionReading=true;auto epoch=m_wordEpoch;auto reader=m_readSelection;
     auto point=follow?m_mouse():m_wordRequestPoint;auto cancel=m_wordCancel;
     m_selectionCancel=token();auto selectionCancel=m_selectionCancel;
-    background([reader,point,target,selectionCancel]{return reader(POINT{point.x(),point.y()},target,selectionCancel);},
+    background([reader,point,target,selectionCancel,follow]{
+            if(!follow&&firefoxCopyTarget(target))return copyFirefoxSelection(target,selectionCancel);
+            return reader(POINT{point.x(),point.y()},target,selectionCancel);
+        },
         [this,follow,epoch,cancel,selectionCancel](Selection selection,QString error){
             m_selectionReading=false;
             auto pending=m_selectionPendingEpoch;m_selectionPendingEpoch=0;
             if(pending&&pending==m_wordEpoch){readSelection();return;}
             if(epoch!=m_wordEpoch||selectionCancel->load()||(!follow&&cancel->load())||m_wordEditing||!m_word.window->isVisible())return;
             if(!follow&&!m_iconClickFallback.text.isEmpty()){
-                if(!error.isEmpty()||selection.text.trimmed().isEmpty()){selection=m_iconClickFallback;error.clear();}
+                if(!firefoxCopyTarget(m_selectionTarget)&&(!error.isEmpty()||selection.text.trimmed().isEmpty())){
+                    selection=m_iconClickFallback;error.clear();
+                }
                 m_iconClickFallback={};
             }
             auto text=selection.text.trimmed();

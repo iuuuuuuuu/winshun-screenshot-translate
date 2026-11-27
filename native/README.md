@@ -1,4 +1,6 @@
-# 截图翻译 0.4.34：原生版构建与验证
+# 截图翻译 0.4.35：原生版构建与验证
+
+0.4.35 修复 Firefox 跨 Shadow DOM 组件拖选时辅助功能选区与屏幕实际选区不一致的问题。主动翻译改用浏览器原生复制，并还原原剪贴板；真实鼠标事件回归覆盖正反向拖选、快捷键和小译图标。
 
 0.4.34 增加 Firefox IAccessible2 选区读取，按各节点自身的选中偏移展开链接和内嵌组件。测试覆盖原生 UIA / MSAA 兼容模式、头像、部分链接、段落、字面量 U+FFFC、中文与 emoji、长文及小译点击。测试只使用私有桌面、新浏览器配置和合成页面。
 
@@ -12,7 +14,7 @@
 
 划词弹窗的缩放边缘检查：`python -B native/test_native.py --build <build-or-stage> --runtime <WinShun> --window-frame --scale 1.25 --output <report-dir>`。分别覆盖 1、1.25、1.5、1.75、2；测试只在独立桌面运行，并检查卡片最下行和最右列像素。
 
-Firefox 选区回归：`python -B native/test_selection_firefox.py --driver <geckodriver.exe> --firefox <firefox.exe> --build <build-or-stage> --output <report-dir>`。需要开发环境的 requests；使用独立桌面、全新浏览器配置和本地合成文本，检查首次读取、未重新划词的重复读取、无关输入框焦点、主屏/副屏及辅助进程退出。`--without-primer` 用于复现未提前启用接口时的漏报。辅助进程只准备 Firefox 文档接口，不修改浏览器设置或复制文字；日志默认关闭，`ST_SELECTION_TRACE=1` 仅记录读取阶段和耗时。
+Firefox 选区回归：`python -B native/test_selection_firefox.py --driver <geckodriver.exe> --firefox <firefox.exe> --build <build-or-stage> --output <report-dir>`。需要开发环境的 requests；使用独立桌面、全新浏览器配置和本地合成文本，检查首次读取、未重新划词的重复读取、无关输入框焦点、主屏/副屏及辅助进程退出。`--without-primer` 用于复现未提前启用接口时的漏报。`--native-copy --icon-click --case mouse-shadow-forward --case mouse-shadow-reverse` 使用测试浏览器的受信任鼠标事件复现跨 Shadow DOM 拖选，分别验证完整复制、小译和快捷键共用流程；主动复制会短暂使用并还原现有剪贴板，测试只记录原内容的校验值。普通回归仍为只读。辅助进程只准备 Firefox 文档接口，不修改浏览器设置或复制文字；日志默认关闭，`ST_SELECTION_TRACE=1` 仅记录读取阶段和耗时。
 
 原生 C++ / Qt Quick 版本，运行时不需要 Python、PySide6、PowerShell OCR 脚本或另装 Qt。
 小型启动器从 WinShun runner 提供的 `WS_QT_DIR` 加载宿主 Qt，系统 Windows OCR 在后台线程识别图片。
@@ -28,7 +30,7 @@ Firefox 选区回归：`python -B native/test_selection_firefox.py --driver <gec
 ## 安装和回退
 
 在 WinShun 设置 → 插件 → 从压缩包安装，选择
-`iuuuuuuuu.screenshot-translate-0.4.34.wsplugin`。运行时不检查或启动 Python。
+`iuuuuuuuu.screenshot-translate-0.4.35.wsplugin`。运行时不检查或启动 Python。
 包内包括启动器、应用 DLL、少量 Visual C++ 依赖、许可和文档；DLL 内包含 QML 控件与授权图标字体。
 现有渠道、热键、代理、偏好和 DPAPI 密钥格式保持兼容，不迁移或删除用户的数据目录。
 
@@ -134,13 +136,13 @@ Google 保留浏览器请求头及多客户端重试；Edge 缓存七分钟凭�
 修改 AI 模型、有道应用 ID 或 Azure 区域也会立即重试。
 网络请求有总时限并每 25ms 检查取消；关闭窗口立即取消任务，不等待 HTTP 超时。
 使用官方翻译插件同类的 Windows WinHTTP 异步请求和系统 HTTPS，宿主不需要 Qt TLS 插件。
-划词在显示弹窗前记录原窗口，标准 Edit / RichEdit 控件读取公开选区消息；其他应用用
+划词在显示弹窗前记录原窗口，标准 Edit / RichEdit 控件读取公开选区消息；Firefox 主动翻译使用原生 WM_COPY 与可还原的剪贴板事务；被动检测仍用 IAccessible2。其他应用用
 UI Automation，依次查找原控件、鼠标处、焦点及页面内部支持文本选区的容器，兼容
 Chromium/Electron 中焦点停留在外层容器的情况。读取使用无窗口的原生辅助进程，
 2.2 秒超时或关闭时回收；单次应用卡住不会阻塞后续划词。同一时间至多一次读取；
 首次读取为空时，在同一次热键内间隔 150ms、300ms 最多自动补读两次，成功后立即继续翻译。
 明确的权限不足或管理员权限提示不会重试，避免掩盖访问限制。过期请求仍会取消并丢弃结果，
-不模拟复制快捷键、不改剪贴板、不占用截图入口。未公开选区的应用仍可使用鼠标 OCR。
+不模拟复制快捷键、不占用截图入口。Firefox 主动复制在后台线程完成；取消请求也会完成还原，不强杀复制事务。剪贴板快照保留所有可安全复制的格式；格式无法备份时不发复制命令。只接受目标浏览器的新复制，并只在序列号仍属于本次复制时还原；新复制优先。未公开选区的应用仍可使用鼠标 OCR。
 读取失败且检测到权限差异或访问限制时，会提示以管理员身份启动 WinShun 并确认本插件权限。
 选区辅助进程直接继承插件权限；授权由 WinShun 管理，普通插件不另行启动提权读取器。
 

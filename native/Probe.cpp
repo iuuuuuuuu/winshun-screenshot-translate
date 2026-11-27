@@ -274,7 +274,12 @@ void Probe::run(App& app,const QJsonObject& params)
             check(app.m_wordSource==params.value("probeFinalSelection").toString(),"Firefox icon click refreshes final complete range");
             check(!app.m_wordBackend.values.value("translatedText").toString().isEmpty(),"Firefox selected text reaches translation service");
             pump(200);app.m_word.window->grabWindow().save(out+"/firefox-icon-result.png");
-            report["firefoxIconFinalRange"]=true;report["passed"]=true;atomicJson(out+"/report.json",report);
+            report["firefoxIconFinalRange"]=true;
+            app.closeWord();app.m_selectionTarget=target;app.m_wordRequestPoint={400,280};
+            app.openWord("jsel",{400,280});app.readSelection();
+            check(until([&]{return !app.m_wordBackend.values.value("loading").toBool();},6000),"Firefox hotkey read completes local translation");
+            check(app.m_wordSource==params.value("probeFinalSelection").toString(),"Firefox hotkey shared read keeps the complete range without an icon snapshot");
+            report["firefoxHotkeyFinalRange"]=true;report["passed"]=true;atomicJson(out+"/report.json",report);
             app.closeWord();QCoreApplication::exit(0);return;
         }
         if(params.value("probeSettings").toBool()){
