@@ -41,10 +41,40 @@ jobs:
           "VS_ROOT=$vsRoot" >> $env:GITHUB_ENV
           .\native\build.ps1 -QtRoot $env:QT_ROOT_DIR -VsRoot $vsRoot -Output "$env:RUNNER_TEMP\native-build"
       - name: 打包共享 Qt 插件
+        id: package
         shell: pwsh
         run: |
           python -B native/package.py --build "$env:RUNNER_TEMP\native-build" --vs-root "$env:VS_ROOT"
           if ($LASTEXITCODE) { throw '打包失败' }
+      - name: 验证真实复制、剪贴板还原与取消
+        shell: pwsh
+        run: |
+          python -X utf8 -B native/test_selection_release.py --build "$env:RUNNER_TEMP\native-build" --qt-root "$env:QT_ROOT_DIR" --output .test-output/selection-release
+          if ($LASTEXITCODE) { throw '真实复制发布验证失败，不允许将回退测试算作通过' }
+      - name: 安装 Firefox 测试依赖
+        shell: pwsh
+        run: |
+          python -m pip install requests
+          $driver = Invoke-RestMethod https://api.github.com/repos/mozilla/geckodriver/releases/latest
+          $asset = $driver.assets | Where-Object name -Match 'win64.zip$' | Select-Object -First 1
+          Invoke-WebRequest $asset.browser_download_url -OutFile "$env:RUNNER_TEMP\geckodriver.zip"
+          Expand-Archive "$env:RUNNER_TEMP\geckodriver.zip" "$env:RUNNER_TEMP\geckodriver"
+          if (!(Test-Path 'C:\Program Files\Mozilla Firefox\firefox.exe')) { choco install firefox -y --no-progress }
+      - name: 验证 Firefox 跨组件完整选区和翻译入口
+        shell: pwsh
+        run: |
+          python -X utf8 -B native/test_selection_firefox.py --driver "$env:RUNNER_TEMP\geckodriver\geckodriver.exe" --firefox 'C:\Program Files\Mozilla Firefox\firefox.exe' --build "$env:RUNNER_TEMP\native-build" --runtime "$pwd\.test-output\selection-release\runtime" --uia-mode 1 --case mouse-shadow-forward --case mouse-shadow-reverse --case inline-links-partial --case long-over-100k --native-copy --icon-click --output .test-output/firefox-release
+          if ($LASTEXITCODE) { throw 'Firefox 完整选区验证失败' }
+      - name: 保留取词测试报告
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: 取词验证报告
+          path: |
+            .test-output/selection-release/*.json
+            .test-output/selection-release/*.log
+            .test-output/selection-release/native/
+            .test-output/firefox-release/
       - name: 保留安装包、校验值与开发验证程序
         uses: actions/upload-artifact@v4
         with:

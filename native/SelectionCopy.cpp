@@ -272,8 +272,9 @@ SelectionCopyResult copySelection(const SourceWindow& source,Cancel cancel,Selec
             SetLastError(ERROR_SUCCESS);
             const auto sent=SendMessageTimeoutW(recipient,message,message==WM_APPCOMMAND?WPARAM(source.target):0,
                 message==WM_APPCOMMAND?MAKELPARAM(0,APPCOMMAND_COPY):0,SMTO_ABORTIFHUNG|SMTO_BLOCK,200,&handled);
-            if(qEnvironmentVariableIsSet("ST_SELECTION_TRACE"))std::fprintf(stderr,"[selection-copy] route=%d sent=%d error=%lu sequenceChanged=%d\n",int(route),bool(sent),GetLastError(),GetClipboardSequenceNumber()!=transaction.baseline);
-            if(!sent&&GetLastError()==ERROR_ACCESS_DENIED)continue;
+            const auto sendError=GetLastError();
+            if(qEnvironmentVariableIsSet("ST_SELECTION_TRACE"))std::fprintf(stderr,"[selection-copy] route=%d sent=%d error=%lu sequenceChanged=%d\n",int(route),bool(sent),sendError,GetClipboardSequenceNumber()!=transaction.baseline);
+            if(!sent&&sendError==ERROR_ACCESS_DENIED)continue;
             if(!sent){timedOut=true;waitMs=900;}
             if(firefoxCopyTarget(source.root)||cached==route||(message==WM_APPCOMMAND&&handled))waitMs=700;
         }
@@ -366,4 +367,18 @@ Selection copyFirefoxSelection(HWND target,Cancel cancel)
         throw std::runtime_error(result.error.isEmpty()?"没有读到可复制的选中文字":result.error.toStdString());
     return {result.text,{},{}};
 }
+#ifdef ST_SELECTION_COPY_TESTS
+// Compiled into native_tests only. The callback supplies synthetic clipboard
+// writes on the disposable GitHub runner, never in the installed plugin.
+bool testClipboardNewerCopy(const std::function<void(HWND)>& first,const std::function<void(HWND)>& newer)
+{
+    CopyTransaction transaction;
+    transaction.window=CreateWindowExW(0,L"STATIC",L"Clipboard transaction fixture",0,0,0,0,0,HWND_MESSAGE,nullptr,nullptr,nullptr);
+    if(!transaction.window||!transaction.snapshot())return false;
+    first(transaction.window);
+    if(!transaction.readCopy(GetCurrentProcessId())||!transaction.copiedSequence)return false;
+    newer(transaction.window);const auto sequence=GetClipboardSequenceNumber();
+    return transaction.restore()&&GetClipboardSequenceNumber()==sequence;
+}
+#endif
 }

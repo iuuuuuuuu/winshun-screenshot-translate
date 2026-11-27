@@ -29,6 +29,7 @@ def main():
     parser.add_argument('--firefox', type=Path, default=Path('C:/Program Files/Firefox Developer Edition/firefox.exe'))
     parser.add_argument('--driver', type=Path, required=True)
     parser.add_argument('--build', type=Path, required=True)
+    parser.add_argument('--runtime', type=Path, default=Path(os.environ['LOCALAPPDATA'])/'Programs/WinShun')
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--without-primer', action='store_true', help='Reproduce the cold Firefox accessibility failure')
     parser.add_argument('--icon-click', action='store_true', help='Verify the actual QML icon refreshes a late Firefox selection')
@@ -44,7 +45,7 @@ def main():
     if not desktop:
         raise OSError('Private desktop unavailable; no test on user desktop')
     env = dict(os.environ)
-    runtime = Path(os.environ['LOCALAPPDATA'])/'Programs/WinShun'
+    runtime = args.runtime.resolve()
     env.update(WS_APP_DIR=str(runtime), WS_QT_DIR=str(runtime), MOZ_NO_REMOTE='1', ST_SELECTION_TRACE='1', MOZ_REMOTE_ALLOW_SYSTEM_ACCESS='1')
     with socket.socket() as sock:
         sock.bind(('127.0.0.1', 0))

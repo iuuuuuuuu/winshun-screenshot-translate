@@ -65,9 +65,10 @@ qt_add_resources(ScreenshotTranslateApp "probe-fixtures" PREFIX "/fixtures" BASE
         fixtures/ocr-wrapped-chinese.png fixtures/ocr-wrapped-english.png)
 option(BUILD_NATIVE_TESTS "Build native integration test driver" ON)
 if(BUILD_NATIVE_TESTS)
-    qt_add_executable(native_tests Tests.cpp SelectionCopyTests.cpp Services.cpp AiStream.cpp History.cpp TextTools.cpp Speech.cpp Dictionary.cpp Http.cpp Desktop.cpp FirefoxSelection.cpp SelectionCopy.cpp
+    qt_add_executable(native_tests Tests.cpp SelectionCopyTests.cpp SelectionCopyReleaseTests.cpp Services.cpp AiStream.cpp History.cpp TextTools.cpp Speech.cpp Dictionary.cpp Http.cpp Desktop.cpp FirefoxSelection.cpp SelectionCopy.cpp
         vendor/capture/PinWindow.cpp vendor/capture/PinTools.cpp vendor/capture/Geometry.cpp vendor/capture/SmartRedact.cpp)
     target_include_directories(native_tests PRIVATE vendor/capture)
+    target_compile_definitions(native_tests PRIVATE ST_SELECTION_COPY_TESTS)
     target_link_libraries(native_tests PRIVATE Qt6::Gui windowsapp ole32 oleaut32 oleacc user32 gdi32 imm32 crypt32 winhttp elscore sapi)
 endif()
 

@@ -21,7 +21,7 @@
 #include <future>
 #include <cstdio>
 #include <stdexcept>
-namespace st {void testSelectionPolicy();bool testNativeSelectionCopy();}
+namespace st {void testSelectionPolicy();bool testNativeSelectionCopy();void testSelectionRelease();}
 namespace {
 void checkPhrases()
 {
@@ -277,6 +277,7 @@ int main(int argc,char** argv)
     QGuiApplication app(argc,argv);
     try{
         auto args=app.arguments();
+        if(args.contains("--selection-release")){st::testSelectionRelease();return 0;}
         if(args.contains("--selection-copy")){
             st::testSelectionPolicy();const bool actualCopy=st::testNativeSelectionCopy();
             std::printf("{\"passed\":true,\"nativeClipboardTest\":%s,\"clipboardDeniedFallback\":%s,\"selectionPolicy\":true}\n",actualCopy?"true":"false",actualCopy?"false":"true");return 0;
