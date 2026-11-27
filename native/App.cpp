@@ -402,7 +402,7 @@ void App::query(const QJsonValue& id,const QJsonObject& params)
         if(command=="clip")text=QGuiApplication::clipboard()->text().trimmed();
     }
     if(command=="jsel"){
-        items.append(row("selection","先选中文字，再按划词热键","使用 UI Automation 读取选区；不模拟按键、不修改剪贴板",false));
+        items.append(row("selection","先选中文字，再按划词热键","自动读取完整选区；无法读取时可复制接续翻译",false));
         m_protocol.respond(id,QJsonObject{{"items",items}});return;
     }
     if(text.isEmpty()){
@@ -673,10 +673,10 @@ void App::translateIconSelection()
     auto selection=m_iconSelection;auto point=m_iconPoint;auto target=m_iconTarget;
     hideSelectionIcon();m_selectionTarget=target;
     openWord("jsel",point,selection.area);
-    // A browser may still be publishing the final drag endpoint when the
-    // passive icon first reads it. Confirm the selected range on click; keep
-    // the earlier snapshot only if the source no longer exposes a selection.
+    // Confirm the final text on click. The passive snapshot supplies placement
+    // only: it may be incomplete or already stale.
     m_iconClickFallback=selection;m_wordRequestPoint=point;m_selectionAttempts=0;
+    m_selectionClipboardBaseline=m_clipboardSequence();
     readSelection();
 }
 void App::closePin()
@@ -1060,8 +1060,9 @@ void App::readSelection(bool follow)
     m_selectionReading=true;auto epoch=m_wordEpoch;auto reader=m_readSelection;
     auto point=follow?m_mouse():m_wordRequestPoint;auto cancel=m_wordCancel;
     m_selectionCancel=token();auto selectionCancel=m_selectionCancel;
-    background([reader,point,target,selectionCancel,follow]{
-            if(!follow&&firefoxCopyTarget(target))return copyFirefoxSelection(target,selectionCancel);
+    auto activeReader=m_readActiveSelection;auto hint=m_iconClickFallback;
+    background([reader,activeReader,hint,point,target,selectionCancel,follow]{
+            if(!follow)return activeReader(POINT{point.x(),point.y()},target,selectionCancel,hint,reader);
             return reader(POINT{point.x(),point.y()},target,selectionCancel);
         },
         [this,follow,epoch,cancel,selectionCancel](Selection selection,QString error){
@@ -1069,25 +1070,20 @@ void App::readSelection(bool follow)
             auto pending=m_selectionPendingEpoch;m_selectionPendingEpoch=0;
             if(pending&&pending==m_wordEpoch){readSelection();return;}
             if(epoch!=m_wordEpoch||selectionCancel->load()||(!follow&&cancel->load())||m_wordEditing||!m_word.window->isVisible())return;
-            if(!follow&&!m_iconClickFallback.text.isEmpty()){
-                if(!firefoxCopyTarget(m_selectionTarget)&&(!error.isEmpty()||selection.text.trimmed().isEmpty())){
-                    selection=m_iconClickFallback;error.clear();
-                }
-                m_iconClickFallback={};
-            }
+            if(!follow)m_iconClickFallback={};
             auto text=selection.text.trimmed();
             if(follow){
                 if(m_followBaseline){m_followBaseline=false;m_lastSelection=text;return;}
                 if(!error.isEmpty()||text.isEmpty())return;
                 if(text==m_lastSelection||text==m_wordSource)return;
             }else if(!error.isEmpty()||text.isEmpty()){
-                // Flutter SelectionArea can paint a selection without exposing
-                // a Windows TextPattern. Wait only for a NEW user copy from
-                // the original app; never send Ctrl+C or read stale clipboard.
-                if(error.isEmpty()&&m_needsSelectionCopy(m_selectionTarget)){
+                // The same compatibility path serves every application. Only
+                // a NEW copy from the original foreground app can continue.
+                if(error.isEmpty()&&selection.needsManualCopy){
+                    m_selectionClipboardBaseline=m_clipboardSequence();
                     m_copySelectionDeadline=GetTickCount64()+15000;
                     m_wordBackend.update({{"loading",false},{"awaitingSelectionCopy",true},
-                        {"status",m_chinese?"此应用没有提供可读取的选区。请在原窗口点“复制”或按 Ctrl+C，15 秒内复制的文字会自动翻译。":"This app does not expose selected text. Copy in the original window within 15 seconds to translate it automatically."}});
+                        {"status",m_chinese?QString("未能确认完整选区。请在原窗口复制文字，15 秒内会自动接着翻译；也可用鼠标 OCR 热键 %1。").arg(m_settings.value("wordOcrHotkey").toString()):"Could not confirm the selection. Copy in the original window within 15 seconds to continue, or use mouse OCR."}});
                     m_copySelectionTimer.start();readCopiedSelection();return;
                 }
                 // A provider may publish the selection just after the hotkey.

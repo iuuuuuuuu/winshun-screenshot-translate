@@ -1,8 +1,9 @@
 """Run native QA through the official WinShun 0.23+ runner on a private desktop.
 
 Arguments match test_native.py. Run from an elevated developer shell to test
-its elevated environment and own-folder Qt constraint. No installed plugin,
-protected administrator copy, user clipboard or visible desktop is modified.
+its elevated environment and own-folder Qt constraint. No installed plugin, protected administrator copy or visible desktop is modified.
+Explicit native-copy tests temporarily use and restore the existing clipboard;
+shared policy tests never synthesize keys on the user desktop.
 """
 import ctypes
 import json

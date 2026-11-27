@@ -21,6 +21,7 @@
 #include <future>
 #include <cstdio>
 #include <stdexcept>
+namespace st {void testSelectionPolicy();bool testNativeSelectionCopy();}
 namespace {
 void checkPhrases()
 {
@@ -276,6 +277,10 @@ int main(int argc,char** argv)
     QGuiApplication app(argc,argv);
     try{
         auto args=app.arguments();
+        if(args.contains("--selection-copy")){
+            st::testSelectionPolicy();const bool actualCopy=st::testNativeSelectionCopy();
+            std::printf("{\"passed\":true,\"nativeClipboardTest\":%s,\"clipboardDeniedFallback\":%s,\"selectionPolicy\":true}\n",actualCopy?"true":"false",actualCopy?"false":"true");return 0;
+        }
         if(args.contains("--ocr-suite")){
             auto out=args.value(args.indexOf("--ocr-suite")+1);QDir().mkpath(out);
             QJsonArray reports;
@@ -421,6 +426,7 @@ int main(int argc,char** argv)
             std::puts("{\"passed\":true,\"githubDictionaryDownload\":true,\"sha256Verified\":true,\"offlineLookup\":true}");return 0;
         }
         checkPhrases();
+        st::testSelectionPolicy();
         {
             std::atomic_bool finished=false,started=false;QString error;st::Speech speech(true);
             const auto languages=st::Speech::languages();

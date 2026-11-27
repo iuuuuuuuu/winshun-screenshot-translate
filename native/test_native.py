@@ -335,6 +335,9 @@ def main():
             result=json.loads((out/"stdout.jsonl").read_text(encoding="utf-8"))
             assert result["passed"] and result["githubDictionaryDownload"]
             print(json.dumps(result))
+        elif "--selection-copy" in sys.argv:
+            launch(build/"native_tests.exe",["--selection-copy"],data,out)
+            print((out/"stdout.jsonl").read_text(encoding="utf-8"))
         elif "--core" in sys.argv:
             from services import Profiles
             profiles=Profiles(data)

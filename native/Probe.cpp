@@ -969,11 +969,16 @@ void Probe::run(App& app,const QJsonObject& params)
         check(until([&]{return app.m_icon.window->isVisible();},6000),"icon captures fallback before source clears selection");
         SendMessageW(edit,EM_SETSEL,0,0);
         click(app.m_icon.window,app.m_icon.window->findChild<QQuickItem*>("translate-selection-icon"));
-        check(until([&]{return !app.m_wordBackend.values.value("loading").toBool();})&&app.m_wordSource=="Hello","icon retains snapshot when source clears selection on click");
+        check(until([&]{return !app.m_wordBackend.values.value("loading").toBool();})&&app.m_wordSource.isEmpty()&&app.m_copySelectionTimer.isActive(),"cleared selection offers manual copy instead of translating a stale icon snapshot");
         report["selectionIconConfirmsFinalRange"]=true;
         app.closeWord();SendMessageW(edit,EM_SETSEL,0,0);
         app.m_iconTarget=edit;app.readIconSelection();check(until([&]{return !app.m_iconReading;},6000)&&!app.m_icon.window->isVisible(),"empty selection shows no icon");
         auto iconReader=app.m_readSelection;
+        // Later interaction fixtures inject their own reader. Keep real native
+        // copy above; never send keys to the shared user desktop from QA.
+        app.m_readActiveSelection=[](POINT p,HWND target,Cancel cancel,const Selection&,const SelectionReader& reader){
+            return reader(p,target,cancel);
+        };
         const auto beforeLanguageFilter=healthSnapshot();
         const auto originalIconLanguage=app.m_settings.value("selectionIconDefaultLanguage"),originalIconTarget=app.m_settings.value("target");
         auto checkIconLanguage=[&](QString text,bool expected){
@@ -1036,14 +1041,14 @@ void Probe::run(App& app,const QJsonObject& params)
         check(!app.m_iconReading&&!app.m_icon.window->isVisible(),"disabled selection icon never reads");
         app.m_settings["selectionIconEnabled"]=true;app.updateSelectionMonitor();
         report["selectionIcon"]=true;report["selectionIconCapturedText"]=true;report["selectionIconNoAutoRequest"]=true;report["selectionIconCancellation"]=true;
-        // Flutter compatibility never sends keys or touches the shared desktop
+        // Universal manual-copy continuation never sends keys or touches the shared desktop
         // clipboard. Inject only clipboard metadata/text in this private test.
-        const auto originalNeedsCopy=app.m_needsSelectionCopy;
+        const auto originalActiveReader=app.m_readActiveSelection;
         const auto originalSequence=app.m_clipboardSequence,originalOwner=app.m_clipboardOwnerProcess;
         const auto originalClipboard=app.m_readClipboard;
         auto copySequence=std::make_shared<DWORD>(10),copyOwner=std::make_shared<DWORD>(GetCurrentProcessId());
         auto copied=std::make_shared<QString>("old clipboard must never be sent");
-        app.m_needsSelectionCopy=[](HWND){return true;};
+        app.m_readActiveSelection=[](POINT,HWND,Cancel,const Selection&,const SelectionReader&){return Selection{{},{},{},true};};
         app.m_clipboardSequence=[copySequence]{return *copySequence;};app.m_clipboardOwnerProcess=[copyOwner]{return *copyOwner;};
         app.m_readClipboard=[copied]{return *copied;};app.m_readSelection=[](POINT,HWND,Cancel){return Selection{};};
         app.m_selectionTarget=edit;app.m_foreground=[parent]{return parent;};
@@ -1051,7 +1056,7 @@ void Probe::run(App& app,const QJsonObject& params)
         check(until([&]{return app.m_wordBackend.values.value("awaitingSelectionCopy").toBool();}),"unsupported selection offers copy compatibility");
         pump(150);check(app.m_wordSource.isEmpty(),"copy compatibility never translates old clipboard");
         *copySequence=11;*copyOwner=0;app.readCopiedSelection();check(app.m_wordSource.isEmpty(),"unrelated clipboard owner ignored");
-        *copySequence=12;*copyOwner=GetCurrentProcessId();*copied="Fresh copy from Flutter.";app.readCopiedSelection();
+        *copySequence=12;*copyOwner=GetCurrentProcessId();*copied="Fresh copy from an unsupported app.";app.readCopiedSelection();
         check(until([&]{return !app.m_wordBackend.values.value("loading").toBool();}),"new copied selection translates");
         check(app.m_wordSource==*copied&&!app.m_copySelectionTimer.isActive(),"new source copy completes waiting without synthetic input");
         app.m_selectionClipboardBaseline=12;app.openWord("jsel",{400,180});app.readSelection();
@@ -1059,9 +1064,9 @@ void Probe::run(App& app,const QJsonObject& params)
         app.m_copySelectionDeadline=GetTickCount64()-1;app.readCopiedSelection();
         check(!app.m_copySelectionTimer.isActive()&&app.m_wordSource.isEmpty(),"copy wait expires without using clipboard");
         app.closeWord();check(!app.m_copySelectionTimer.isActive(),"closing cancels copy wait");
-        app.m_needsSelectionCopy=originalNeedsCopy;app.m_clipboardSequence=originalSequence;app.m_clipboardOwnerProcess=originalOwner;
+        app.m_readActiveSelection=originalActiveReader;app.m_clipboardSequence=originalSequence;app.m_clipboardOwnerProcess=originalOwner;
         app.m_readClipboard=originalClipboard;app.m_readSelection=iconReader;
-        report["flutterCopyCompatibility"]=true;
+        report["universalCopyCompatibility"]=true;
         app.m_foreground=originalForeground;DestroyWindow(parent);report["wordRealEditSelection"]=true;
         // Production hotkey routes, actual QML windows and Windows OCR. Only
         // input text/cursor/pixels are injected; never alter the Owner clipboard.

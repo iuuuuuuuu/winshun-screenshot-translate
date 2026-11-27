@@ -1198,7 +1198,12 @@ Selection selectionAt(POINT point,HWND target,int warmupMs)
                         }
                     }
                 }
-                if(!pieces.isEmpty())return {pieces.join('\n').trimmed(),bounds.toAlignedRect(),endArea.toAlignedRect()};
+                if(!pieces.isEmpty()){
+                    BOOL focused=FALSE;element->get_CurrentHasKeyboardFocus(&focused);
+                    // A page can retain a selection while an unrelated editor
+                    // has keyboard focus. Never send copy keys to that editor.
+                    return {pieces.join('\n').trimmed(),bounds.toAlignedRect(),endArea.toAlignedRect(),false,bool(focused)};
+                }
             }
             return {};
     };
@@ -1341,7 +1346,8 @@ Selection isolatedSelection(POINT point,HWND target,Cancel cancel,int timeoutMs)
         !response.contains("text")||!response.value("error").toString().isEmpty())throw std::runtime_error("无法读取选区，请重试或使用鼠标 OCR");
     auto box=response.value("area").toArray(),end=response.value("endArea").toArray();
     return {response.value("text").toString(),box.size()==4?QRect(box[0].toInt(),box[1].toInt(),box[2].toInt(),box[3].toInt()):QRect(),
-        end.size()==4?QRect(end[0].toInt(),end[1].toInt(),end[2].toInt(),end[3].toInt()):QRect()};
+        end.size()==4?QRect(end[0].toInt(),end[1].toInt(),end[2].toInt(),end[3].toInt()):QRect(),false,
+        response.value("copyShortcutEligible").toBool()};
 }
 namespace {
 int selectionPrimer(HWND initial,bool watch)
@@ -1406,7 +1412,8 @@ int selectionWorker()
         // Try the actual read first; report access restrictions only on failure.
         auto problem=result.text.isEmpty()?selectionAccessProblem(target):QString();
         if(!problem.isEmpty())response={{"error",problem}};
-        else response={{"text",result.text},{"area",QJsonArray{result.area.x(),result.area.y(),result.area.width(),result.area.height()}},
+        else response={{"text",result.text},{"copyShortcutEligible",result.copyShortcutEligible},
+            {"area",QJsonArray{result.area.x(),result.area.y(),result.area.width(),result.area.height()}},
             {"endArea",QJsonArray{result.endArea.x(),result.endArea.y(),result.endArea.width(),result.endArea.height()}}};
     }catch(...){response={{"error","read failed"}};}
     auto data=QJsonDocument(response).toJson(QJsonDocument::Compact);

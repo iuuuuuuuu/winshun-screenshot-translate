@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(ScreenshotTranslate VERSION 0.4.35 LANGUAGES CXX)
+project(ScreenshotTranslate VERSION 0.4.36 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_AUTOMOC ON)
 find_package(Qt6 6.12 REQUIRED COMPONENTS Core Gui Qml Quick)
@@ -65,7 +65,7 @@ qt_add_resources(ScreenshotTranslateApp "probe-fixtures" PREFIX "/fixtures" BASE
         fixtures/ocr-wrapped-chinese.png fixtures/ocr-wrapped-english.png)
 option(BUILD_NATIVE_TESTS "Build native integration test driver" ON)
 if(BUILD_NATIVE_TESTS)
-    qt_add_executable(native_tests Tests.cpp Services.cpp AiStream.cpp History.cpp TextTools.cpp Speech.cpp Dictionary.cpp Http.cpp Desktop.cpp FirefoxSelection.cpp SelectionCopy.cpp
+    qt_add_executable(native_tests Tests.cpp SelectionCopyTests.cpp Services.cpp AiStream.cpp History.cpp TextTools.cpp Speech.cpp Dictionary.cpp Http.cpp Desktop.cpp FirefoxSelection.cpp SelectionCopy.cpp
         vendor/capture/PinWindow.cpp vendor/capture/PinTools.cpp vendor/capture/Geometry.cpp vendor/capture/SmartRedact.cpp)
     target_include_directories(native_tests PRIVATE vendor/capture)
     target_link_libraries(native_tests PRIVATE Qt6::Gui windowsapp ole32 oleaut32 oleacc user32 gdi32 imm32 crypt32 winhttp elscore sapi)

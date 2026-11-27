@@ -23,7 +23,7 @@ QImage capture(const QRect& area);
 QRect virtualScreen();
 QRect monitorRect(POINT point, bool work = false);
 QString selectedText();
-struct Selection { QString text; QRect area; QRect endArea; };
+struct Selection { QString text; QRect area; QRect endArea; bool needsManualCopy=false; bool copyShortcutEligible=false; };
 Selection selectionAt(POINT point,HWND target=nullptr,int warmupMs=0);
 HWND selectionTarget();
 Selection isolatedSelection(POINT point,HWND target,Cancel cancel,int timeoutMs=2200);

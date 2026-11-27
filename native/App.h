@@ -1,4 +1,5 @@
 #pragma once
+#include "SelectionCopy.h"
 #include "Desktop.h"
 #include "PinWindow.h"
 #include "Protocol.h"
@@ -152,13 +153,10 @@ private:
     QHash<QString,QJsonObject> m_pinProviderProfiles;
     HWND m_selectionTarget=nullptr;
     std::function<Selection(POINT,HWND,Cancel)> m_readSelection=[](POINT p,HWND target,Cancel cancel){return isolatedSelection(p,target,cancel);};
+    std::function<Selection(POINT,HWND,Cancel,const Selection&,const SelectionReader&)> m_readActiveSelection=readSelectionForTranslation;
     std::function<QString()> m_readClipboard;
     std::function<DWORD()> m_clipboardSequence=[] {return GetClipboardSequenceNumber();};
     std::function<DWORD()> m_clipboardOwnerProcess=[] {DWORD pid=0;GetWindowThreadProcessId(GetClipboardOwner(),&pid);return pid;};
-    std::function<bool(HWND)> m_needsSelectionCopy=[](HWND target){
-        wchar_t name[128]{};GetClassNameW(GetAncestor(target,GA_ROOT),name,128);
-        return QString::fromWCharArray(name)=="FLUTTER_RUNNER_WIN32_WINDOW";
-    };
     std::function<QPoint()> m_mouse;
     std::function<HWND()> m_foreground=[] {return GetForegroundWindow();};
     std::unique_ptr<ws::capture::PinWindow> m_pin;
