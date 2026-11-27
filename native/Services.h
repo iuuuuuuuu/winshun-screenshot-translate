@@ -48,6 +48,9 @@ public:
     QJsonObject routing();
     QJsonArray queue(const QJsonObject& settings, const QJsonObject& drafts = {}, const QJsonObject& routing = {});
     QList<QJsonObject> candidates(const QJsonObject& profile, const QJsonObject& settings, const QJsonObject& routing = {});
+    QJsonObject discoverModels(const QJsonObject& channel,const QJsonObject& settings,Cancel cancel);
+    QJsonArray modelHealth(const QJsonObject& channel,const QJsonObject& settings);
+    void resetModelCooldown(const QJsonObject& channel,const QJsonObject& model,const QJsonObject& settings);
     int today();
     QJsonObject translateLines(const QJsonObject& settings,const QString& text,Cancel cancel);
     QJsonObject lookupWords(const QJsonObject& settings,const QString& text,Cancel cancel,

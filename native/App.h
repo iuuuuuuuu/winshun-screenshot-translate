@@ -82,6 +82,7 @@ private:
     void startSelectionPrimer();
     void selectionGesture(POINT point,DWORD timestamp,USHORT flags);
     void readIconSelection();
+    void prepareSelectionIcon();
     void hideSelectionIcon();
     void translateIconSelection();
     void showSettings();
@@ -97,6 +98,8 @@ private:
     void readAloud(Backend& backend,bool source);
     void stopSpeech();
     void publishAi();
+    void fetchAiModels();
+    void cancelAiDiscovery(bool clear=false);
     void aiAction(const QString& name,const QVariant& value);
     void configSelect(const QString& provider);
     void configAction(const QString& name,const QVariant& value);
@@ -133,6 +136,9 @@ private:
     Cancel m_panelCancel;
     quint64 m_panelEpoch=0;
     int m_aiCurrent=0;
+    Cancel m_aiDiscoveryCancel;
+    quint64 m_aiDiscoveryEpoch=0;
+    QHash<QString,QJsonObject> m_aiCatalog;
     QJsonObject m_testProfiles;
     QTimer m_followSelection;
     QTimer m_copySelectionTimer;

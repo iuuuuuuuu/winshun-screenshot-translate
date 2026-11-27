@@ -947,6 +947,11 @@ void Probe::run(App& app,const QJsonObject& params)
         // only that identity; still read the real EDIT through the worker and
         // deliver actual native mouse events to the QML icon.
         auto originalForeground=app.m_foreground;app.m_foreground=[parent]{return parent;};
+        // A private desktop still shares the interactive clipboard. Keep this
+        // UI suite read-only; actual copy/restore has its own disposable VM gate.
+        app.m_readActiveSelection=[](POINT p,HWND target,Cancel cancel,const Selection&,const SelectionReader& reader){
+            return resolveSelection([&]{return reader(p,target,cancel);},[](SelectionCopyMode){return SelectionCopyResult{};},cancel);
+        };
         auto foregroundBefore=GetForegroundWindow();pump(50);
         app.m_iconTarget=edit;app.m_iconPoint={560,340};
         auto healthSnapshot=[&]{
@@ -955,8 +960,10 @@ void Probe::run(App& app,const QJsonObject& params)
             return queue;
         };
         auto providerBefore=healthSnapshot();
+        QElapsedTimer iconTimer;iconTimer.start();
         app.readIconSelection();
         check(until([&]{return app.m_icon.window&&app.m_icon.window->isVisible();},6000),"selection icon appears after native selection read");
+        report["selectionIconReadToShowMs"]=double(iconTimer.elapsed());
         check(app.m_iconSelection.text=="Hello"&&healthSnapshot()==providerBefore,"selection alone sends no translation");
         check(app.m_icon.window->flags().testFlag(Qt::WindowDoesNotAcceptFocus)&&GetForegroundWindow()==foregroundBefore,"selection icon does not steal foreground");
         auto screen=app.m_icon.window->screen();check(screen->availableGeometry().contains(app.m_icon.window->geometry()),"selection icon stays within monitor work area");
@@ -969,8 +976,12 @@ void Probe::run(App& app,const QJsonObject& params)
         check(until([&]{return app.m_icon.window->isVisible();},6000),"icon captures fallback before source clears selection");
         SendMessageW(edit,EM_SETSEL,0,0);
         click(app.m_icon.window,app.m_icon.window->findChild<QQuickItem*>("translate-selection-icon"));
-        check(until([&]{return !app.m_wordBackend.values.value("loading").toBool();})&&app.m_wordSource.isEmpty()&&app.m_copySelectionTimer.isActive(),"cleared selection offers manual copy instead of translating a stale icon snapshot");
+        const bool emptyReadFinished=until([&]{return !app.m_wordBackend.values.value("loading").toBool();});
+        report["emptyIconClickState"]=QJsonObject{{"finished",emptyReadFinished},{"source",app.m_wordSource},{"copyTimer",app.m_copySelectionTimer.isActive()},
+            {"status",app.m_wordBackend.values.value("status").toString()},{"iconVisible",app.m_icon.window->isVisible()},{"wordVisible",app.m_word.window&&app.m_word.window->isVisible()}};
+        check(emptyReadFinished&&app.m_wordSource.isEmpty()&&app.m_copySelectionTimer.isActive(),"cleared selection offers manual copy instead of translating a stale icon snapshot");
         report["selectionIconConfirmsFinalRange"]=true;
+        report["selectionIconUiReadOnlyFixture"]=true;
         app.closeWord();SendMessageW(edit,EM_SETSEL,0,0);
         app.m_iconTarget=edit;app.readIconSelection();check(until([&]{return !app.m_iconReading;},6000)&&!app.m_icon.window->isVisible(),"empty selection shows no icon");
         auto iconReader=app.m_readSelection;
@@ -1834,12 +1845,51 @@ void Probe::run(App& app,const QJsonObject& params)
         app.m_config.window->grabWindow().save(out+"/settings-ai-tested.png");
         app.aiAction("aiField",QVariantMap{{"key","name"},{"value","已修改渠道"}});
         check(app.m_configBackend.values.value("aiTests").toList().isEmpty(),"editing AI settings clears stale model tests");
+        const int catalogChannel=app.m_aiCurrent;
+        app.aiAction("aiFetchModels",{});
+        check(app.m_configBackend.values.value("aiDiscovering").toBool(),"fetching models exposes loading immediately");
+        check(until([&]{return !app.m_configBackend.values.value("aiDiscovering").toBool();},5000),"model catalog request completes");
+        check(app.m_configBackend.values.value("aiCatalog").toList().size()==3,"model catalog is parsed and deduplicated");
+        typeField(app.m_config.window,"ai-model-search","embed");pump(40);
+        auto catalogView=visualItem(app.m_config.window->contentItem(),"ai-model-catalog");
+        report["aiCatalogSearchState"]=QJsonObject{{"found",bool(catalogView)},{"count",catalogView?catalogView->property("count").toInt():-1}};
+        check(catalogView&&catalogView->property("count").toInt()==1,"model catalog search filters visible results");
+        click(app.m_config.window,visualItem(app.m_config.window->contentItem(),"ai-pick-embed-model"));
+        app.aiAction("aiPickModel","model-one");
+        check(app.m_configBackend.values.value("aiPicked").toList().size()==2,"model catalog supports multiple selections");
+        auto addPicked=visualItem(app.m_config.window->contentItem(),"ai-add-picked");
+        auto settingsScroll=app.m_config.window->findChild<QQuickItem*>("settings-scroll");
+        const auto addY=addPicked->mapToItem(settingsScroll,QPointF()).y()+settingsScroll->property("contentY").toDouble();
+        settingsScroll->setProperty("contentY",std::clamp(addY-50,0.0,std::max(0.0,settingsScroll->property("contentHeight").toDouble()-settingsScroll->height())));pump(30);
+        app.m_config.window->grabWindow().save(out+"/model-catalog-before-add.png");
+        auto addPoint=addPicked->mapToScene(QPointF(addPicked->width()/2,addPicked->height()/2));
+        report["aiAddButtonState"]=QJsonObject{{"x",addPoint.x()},{"y",addPoint.y()},{"windowHeight",app.m_config.window->height()},
+            {"text",addPicked->property("text").toString()},{"picked",QJsonArray::fromVariantList(app.m_configBackend.values.value("aiPicked").toList())}};
+        click(app.m_config.window,addPicked);
+        auto selectedModels=app.m_drafts.value("ai").toObject().value("channels").toArray()[catalogChannel].toObject().value("models").toArray();
+        report["aiPickedResult"]=selectedModels;
+        check(selectedModels.size()==3&&selectedModels.last().toObject().value("name")=="embed-model","catalog adds checked models without duplicate configured models");
+        app.aiAction("aiModelField",QVariantMap{{"index",2},{"key","enabled"},{"value",false}});
+        app.aiAction("aiModelField",QVariantMap{{"index",2},{"key","cooldownMinutes"},{"value",120}});
+        app.aiAction("aiField",QVariantMap{{"key","endpoint"},{"value",params.value("probeDictionaryEndpoint").toString()+"/catalog-slow"}});
+        app.aiAction("aiFetchModels",{});app.aiAction("aiSelect",0);pump(750);
+        check(!app.m_configBackend.values.value("aiDiscovering").toBool()&&app.m_configBackend.values.value("aiCatalog").toList().isEmpty(),"switching channels rejects late catalog results");
+        app.aiAction("aiSelect",catalogChannel);app.aiAction("aiFetchModels",{});
+        app.aiAction("aiField",QVariantMap{{"key","endpoint"},{"value",aiEndpoint}});pump(750);
+        check(!app.m_configBackend.values.value("aiDiscovering").toBool()&&app.m_configBackend.values.value("aiCatalog").toList().isEmpty(),"editing endpoint cancels stale model fetch");
+        app.aiAction("aiFetchModels",{});check(until([&]{return !app.m_configBackend.values.value("aiDiscovering").toBool();},5000),"model discovery recovers after cancellation");
+        app.m_config.window->grabWindow().save(out+"/settings-model-catalog.png");
+        typeField(app.m_config.window,"ai-model-cooldown-2","120");
+        app.m_config.window->grabWindow().save(out+"/settings-model-cooldown.png");
+        report["aiModelDiscovery"]=true;report["aiModelCatalogSearch"]=true;report["aiModelMultiSelect"]=true;report["aiModelDiscoveryCancellation"]=true;
         app.configAction("enabled",QVariantMap{{"provider","google"},{"enabled",false}});app.configAction("home",{});pump(30);
         for(auto row:app.m_configBackend.values.value("queue").toList())if(row.toMap().value("provider")=="google")check(!row.toMap().value("enabled").toBool(),"disabled provider visible in queue");
         check(app.m_config.window&&app.m_config.window->isVisible(),"settings remain open before saving");
         app.configAction("save",{});
         check(app.m_config.window&&app.m_config.window->isVisible(),"save keeps settings open for confirmation");
         check(app.m_configBackend.values.value("message").toString()==(app.m_chinese?"配置已保存":"Settings saved"),"save displays an inline confirmation");
+        auto savedModels=app.m_services->profile("ai").value("channels").toArray()[catalogChannel].toObject().value("models").toArray();
+        check(savedModels[2].toObject().value("cooldownMinutes")==120&&!savedModels[2].toObject().value("enabled").toBool(),"model cooldown and disabled state saved");
         app.configAction("close",{});report["translationPanel"]=true;report["aiChannelControls"]=true;
         report["settingsSaveKeepsOpen"]=true;report["settingsSaveConfirmation"]=true;
         pump(200);report["closedMemory"]=memory();

@@ -73,6 +73,22 @@ class Server(http.server.BaseHTTPRequestHandler):
     def respond(self):
         path = urllib.parse.urlsplit(self.path).path
         counts[path] = counts.get(path, 0) + 1
+        if path.endswith('/models'):
+            assert self.command == 'GET'
+            auth = self.headers.get('Authorization')
+            if path == '/v1/models' and auth == 'Bearer root-only':
+                self.send_response(404);self.end_headers();return
+            if path == '/catalog-auth/models':
+                self.send_response(401);self.end_headers();return
+            if path == '/catalog-redirect/models':
+                self.send_response(302);self.send_header('Location','http://127.0.0.1:1/stolen');self.end_headers();return
+            assert auth in ('Bearer fixture-key', 'Bearer root-only')
+            if path == '/catalog-slow/models':time.sleep(.6)
+            result = {'data':[{'id':'model-two'},{'id':'model-one'},{'id':'model-two'},{'id':' '},{'id':'embed-model'}]}
+            if path == '/catalog-empty/models':result = {'data':[]}
+            if path == '/catalog-invalid/models':result = {'error':{'message':'secret response must not be displayed'}}
+            self.send_response(200);self.send_header('Content-Type','application/json');self.end_headers()
+            self.wfile.write(json.dumps(result).encode());return
         if path.startswith('/dictionary'):
             if path == '/dictionary-redirect':
                 self.send_response(302)
@@ -137,7 +153,7 @@ class Server(http.server.BaseHTTPRequestHandler):
             return
         if path in ("/auth-fail", "/rate-fail"):
             self.send_response(401 if path == "/auth-fail" else 429);self.end_headers();return
-        if path in ("/fail", "/queue-fail", "/backoff-fail") or (path == "/zvo-recover" and counts[path] == 1):
+        if path in ("/fail", "/fail-ai/chat/completions", "/queue-fail", "/backoff-fail") or (path == "/zvo-recover" and counts[path] == 1):
             self.send_response(503); self.end_headers(); return
         if path == "/google-slow":
             time.sleep(.35)
@@ -158,7 +174,8 @@ class Server(http.server.BaseHTTPRequestHandler):
             if model=='plain' and body.get('stream'):
                 assert counts[key]==1, 'remember incompatible streaming'
                 self.send_response(400);self.end_headers();return
-            parts=json.loads(body['messages'][1]['content'])
+            assert body['messages'][1]['content'].startswith(body['messages'][0]['content']+'\n\nInput JSON:\n')
+            parts=json.loads(body['messages'][1]['content'].split('\n\nInput JSON:\n',1)[1])
             if not body.get('stream'):
                 result={'choices':[{'message':{'content':json.dumps(['译文:'+t for t in parts])},'finish_reason':'stop'}]}
                 self.send_response(200);self.end_headers();self.wfile.write(json.dumps(result).encode());return
@@ -180,7 +197,7 @@ class Server(http.server.BaseHTTPRequestHandler):
             assert model != "disabled", "Disabled model sent a network request"
             if model == "bad" and counts[key] == 1:
                 self.send_response(503);self.end_headers();self.wfile.write(b'fixture model failure');return
-            result={"choices":[{"message":{"content":json.dumps([("meaning:" if definition else model+":")+t for t in json.loads(body["messages"][1]["content"])])}}]}
+            result={"choices":[{"message":{"content":json.dumps([("meaning:" if definition else model+":")+t for t in json.loads(body["messages"][1]["content"].split('\n\nInput JSON:\n',1)[1])])}}]}
         elif path.startswith("/mymemory"):
             assert len(query["q"][0].encode("utf-8"))<=500
             result = {"responseStatus": 200, "responseData": {"translatedText": translate(query["q"][0])}}
@@ -230,7 +247,7 @@ class Server(http.server.BaseHTTPRequestHandler):
             self.wfile.write(page.encode('gb18030' if path.endswith('-gbk') else 'utf-8'));return
         else:
             assert self.headers.get("Authorization") == "Bearer fixture-key"
-            result = {"choices": [{"message": {"content": json.dumps([translate(t) for t in json.loads(body["messages"][1]["content"])])}}]}
+            result = {"choices": [{"message": {"content": json.dumps([translate(t) for t in json.loads(body["messages"][1]["content"].split('\n\nInput JSON:\n',1)[1])])}}]}
         self.send_response(200);self.send_header("Content-Type", "application/json; charset=utf-8");self.end_headers()
         try:
             self.wfile.write(json.dumps(result, ensure_ascii=False).encode())

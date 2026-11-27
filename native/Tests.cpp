@@ -277,6 +277,24 @@ int main(int argc,char** argv)
     QGuiApplication app(argc,argv);
     try{
         auto args=app.arguments();
+        if(args.contains("--ai-smoke")){
+            QFile input;input.open(stdin,QIODevice::ReadOnly);auto key=QString::fromUtf8(input.readLine(8192)).trimmed();
+            QTemporaryDir temporary;st::Services service(temporary.path());auto cancel=std::make_shared<std::atomic_bool>(false);
+            QJsonObject channel{{"endpoint",args.value(args.indexOf("--ai-smoke")+1)},{"apiKey",key}};
+            QElapsedTimer time;time.start();auto catalog=service.discoverModels(channel,{},cancel);
+            auto models=catalog.value("models").toArray();if(models.isEmpty())throw std::runtime_error("No available test model");
+            QJsonObject report{{"modelCount",models.size()},{"modelsMs",double(time.elapsed())},{"endpoint",catalog.value("endpoint")}};
+            channel["endpoint"]=catalog.value("endpoint");channel["provider"]="ai";channel["model"]=models.first();
+            QJsonArray results;
+            for(bool stream:{true,false}){
+                channel["streaming"]=stream;time.restart();
+                auto translated=service.translate({{"provider","ai"},{"fallbackEnabled",false}},{"Hello world.","Select text to translate."},"en","zh",cancel,channel);
+                bool chinese=true;for(auto text:translated.segments)chinese&=st::detect(text)=="zh";
+                if(!chinese||translated.segments.size()!=2)throw std::runtime_error("Live AI response does not contain two Chinese translations");
+                results.append(QJsonObject{{"streaming",stream},{"elapsedMs",double(time.elapsed())},{"segments",translated.segments.size()},{"passed",true}});
+            }
+            report["results"]=results;report["passed"]=true;std::puts(QJsonDocument(report).toJson(QJsonDocument::Compact).constData());return 0;
+        }
         if(args.contains("--selection-release")){st::testSelectionRelease();return 0;}
         if(args.contains("--selection-copy")){
             st::testSelectionPolicy();const bool actualCopy=st::testNativeSelectionCopy();
@@ -940,6 +958,24 @@ int main(int argc,char** argv)
             }
             // Multi-endpoint/model routing uses real requests, encryption and reopened state.
             QTemporaryDir aiDir;st::Services multi(aiDir.path());
+            QJsonObject discovery{{"endpoint",base},{"apiKey","fixture-key"}};
+            auto discovered=multi.discoverModels(discovery,{},fresh());
+            if(discovered.value("endpoint")!=base+"/v1"||discovered.value("models").toArray()!=QJsonArray{"embed-model","model-one","model-two"})throw std::runtime_error("model discovery normalizes root endpoint, sorts and removes duplicate IDs");
+            discovery["endpoint"]=base+"/catalog/chat/completions";
+            if(multi.discoverModels(discovery,{},fresh()).value("endpoint")!=base+"/catalog")throw std::runtime_error("model discovery accepts completion URLs");
+            discovery["endpoint"]=base;discovery["apiKey"]="root-only";
+            if(multi.discoverModels(discovery,{},fresh()).value("endpoint")!=base)throw std::runtime_error("model discovery supports root-only APIs");
+            discovery["apiKey"]="fixture-key";discovery["endpoint"]=base+"/catalog-empty";
+            if(!multi.discoverModels(discovery,{},fresh()).value("models").toArray().isEmpty())throw std::runtime_error("empty model list accepted");
+            for(auto path:{"/catalog-invalid","/catalog-auth","/catalog-redirect"}){
+                discovery["endpoint"]=base+path;bool rejected=false;
+                try{multi.discoverModels(discovery,{},fresh());}catch(const std::exception& e){rejected=true;if(QString::fromUtf8(e.what()).contains("secret response"))throw;}
+                if(!rejected)throw std::runtime_error("invalid catalog, auth and redirect must fail safely");
+            }
+            discovery["endpoint"]=base+"/catalog-slow";auto discoveryCancel=fresh();
+            auto cancelFetch=std::async(std::launch::async,[&]{QThread::msleep(30);discoveryCancel->store(true);});
+            bool fetchCancelled=false;try{multi.discoverModels(discovery,{},discoveryCancel);}catch(...){fetchCancelled=true;}cancelFetch.get();
+            if(!fetchCancelled)throw std::runtime_error("model discovery cancellation");
             auto model=[](QString name,bool enabled=true){return QJsonObject{{"name",name},{"enabled",enabled}};};
             auto channel=[&](QString id,QJsonArray models,bool enabled=true){return QJsonObject{{"id",id},{"name",id},{"endpoint",base+"/ai-test"},{"apiKey","fixture-key"},{"enabled",enabled},{"models",models}};};
             QJsonArray channels{channel("first",QJsonArray{model("bad"),model("disabled",false),model("good")}),channel("second",QJsonArray{model("last")})};
@@ -949,6 +985,8 @@ int main(int argc,char** argv)
             QJsonObject aiSettings{{"provider","ai"},{"fallbackEnabled",true},{"fallbackRecoveryMinutes",1}};
             auto aiFirst=multi.translate(aiSettings,{"hello"},"auto","zh",fresh());
             if(aiFirst.model!="good"||aiFirst.channelId!="first"||!aiFirst.fallback)throw std::runtime_error("AI falls through failed model to next enabled model");
+            auto modelStatus=multi.modelHealth(channels[0].toObject(),aiSettings);
+            if(modelStatus[0].toObject().value("status")!="cooling"||modelStatus[1].toObject().value("status")!="disabled"||modelStatus[2].toObject().value("status")!="success")throw std::runtime_error("independent model health is visible");
             st::Services aiReopened(aiDir.path());auto remembered=aiReopened.translate(aiSettings,{"hello"},"auto","zh",fresh());
             if(remembered.model!="good"||!remembered.fallback)throw std::runtime_error("AI per-model cooldown persists");
             QFile encrypted(aiDir.path()+"/services.json");encrypted.open(QIODevice::ReadOnly);auto encoded=encrypted.readAll();encrypted.close();
@@ -979,6 +1017,18 @@ int main(int argc,char** argv)
             aiRecovered.save({{"google",QJsonObject{{"enabled",false},{"endpoint",base+"/google"}}}});
             bool noEnabled=false;try{aiRecovered.translate(aiSettings,{"hello"},"auto","zh",fresh());}catch(const std::exception&){noEnabled=true;}
             if(!noEnabled)throw std::runtime_error("all-disabled queue must not send requests");
+            QTemporaryDir cooldownDir;st::Services perModel(cooldownDir.path());
+            auto broken=model("unavailable");broken["cooldownMinutes"]=120;
+            auto cooldownChannel=channel("custom-cooldown",QJsonArray{broken,model("other")});cooldownChannel["endpoint"]=base+"/fail-ai";
+            QJsonObject cooldownConfig{{"provider","ai"},{"channels",QJsonArray{cooldownChannel}}};perModel.save({{"ai",cooldownConfig}});
+            auto profile=perModel.candidates(perModel.profile("ai"),aiSettings).first();
+            auto failCancel=fresh();try{perModel.translate(aiSettings,{"cooldown probe"},"en","zh",failCancel,profile);}catch(...){}
+            st::Services reloadedCooldown(cooldownDir.path());auto statuses=reloadedCooldown.modelHealth(cooldownChannel,aiSettings);
+            if(statuses[0].toObject().value("retrySeconds").toInt()<7190||statuses[1].toObject().value("status")!="idle"||
+                reloadedCooldown.profile("ai").value("channels").toArray()[0].toObject().value("models").toArray()[0].toObject().value("cooldownMinutes")!=120)
+                throw std::runtime_error("custom model cooldown persists independently");
+            reloadedCooldown.resetModelCooldown(cooldownChannel,broken,aiSettings);
+            if(reloadedCooldown.modelHealth(cooldownChannel,aiSettings)[0].toObject().value("status")=="cooling")throw std::runtime_error("manual model cooldown reset");
             std::puts(QJsonDocument(QJsonObject{{"passed",true},{"aiStreaming",true},{"aiTruncation",true},{"historyExport",true},{"pdfPrefixes",true},{"namingVariants",true},{"silentSpeech",true},{"hostTranslationLines",true},{"batchProtocols",true},{"concurrentDeduplication",true},{"retryAfterSecondsAndDate",true},{"queuedCancellation",true},{"translationCache",true},{"cacheLanguageIsolation",true},{"cacheDiagnosticBypass",true},{"parallelCancellation",true},{"orderedPartialFailure",true},{"singleRateLimitAttempt",true},{"longDocumentTail",true},{"sentenceProgress",true},{"longDocumentCancellation",true},{"unicodeSentenceBoundaries",true},{"exponentialBackoff",true},{"authQuotaDisablePeriods",true},{"darkTallOcrTiles",true},{"fixtureRoutes",QJsonArray::fromStringList(routes)},
                 {"chineseDictionaryCandidates",true},{"offlineReverseDictionary",true},{"senseGroupedSynonyms",true},{"wordTokenizer",true},{"structuredDictionary",true},{"youdaoWordFallback",true},{"progressiveWordLookup",true},{"wordLookupLimits",true},{"wordLookupCancellation",true},{"multiAiFallback",true},{"aiModelCooldown",true},{"aiModelRecovery",true},{"aiChannelEncryption",true},{"disabledProviders",true},{"aiExplanation",true},{"dpapi",true},{"smallScreenshotOcr",true},{"aiMigration",true},{"offlineDictionary",true},{"dictionaryFallback",true},{"dictionaryDownload",true},{"dictionaryIntegrity",true},{"youdaoSignature",true},{"sogouEncoding",true},
                 {"persistentFallback",true},{"recovery",true},{"cancel",true},{"httpProxy",true},{"pointerPhrases",true},

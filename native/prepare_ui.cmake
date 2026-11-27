@@ -7,6 +7,10 @@ foreach(name Settings Toolbar AiChannels)
         string(REPLACE "ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }"
             "ListScrollBar { parent: scroll.parent; anchors.top: scroll.top; anchors.bottom: scroll.bottom; anchors.right: scroll.right; flickable: scroll }" content "${content}")
     endif()
+    if(name STREQUAL "AiChannels")
+        string(REPLACE "ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }"
+            "ListScrollBar { parent: modelCatalog.parent; anchors.top: modelCatalog.top; anchors.bottom: modelCatalog.bottom; anchors.right: modelCatalog.right; flickable: modelCatalog }" content "${content}")
+    endif()
     file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/nativeui/${name}.qml" "${content}")
 endforeach()
 file(READ "${CMAKE_CURRENT_SOURCE_DIR}/../qml/WinShun/ToolButton.qml" content)

@@ -145,7 +145,7 @@ App::App(ws::captureplugin::Protocol& protocol,QString appDir,QJsonObject initia
         {"languagePairs",textPreferences.value("languagePairs").toArray().toVariantList()}});
     m_followSelection.setInterval(450);
     QObject::connect(&m_followSelection,&QTimer::timeout,this,[this]{readSelection(true);});
-    m_iconDelay.setSingleShot(true);m_iconDelay.setInterval(160);
+    m_iconDelay.setSingleShot(true);m_iconDelay.setInterval(35);
     QObject::connect(&m_iconDelay,&QTimer::timeout,this,&App::readIconSelection);
     m_iconWatch.setInterval(180);
     QObject::connect(&m_iconWatch,&QTimer::timeout,this,[this]{
@@ -175,6 +175,7 @@ App::App(ws::captureplugin::Protocol& protocol,QString appDir,QJsonObject initia
     used();
     registerKeys();
     updateSelectionMonitor();
+    QTimer::singleShot(300,this,&App::prepareSelectionIcon);
 }
 void App::used()
 {
@@ -461,7 +462,9 @@ void App::dispatch(const QJsonValue& id,const QString& method,const QJsonObject&
             }m_protocol.respond(id,QJsonObject{{"effects",effects}});
         }else if(method=="showSettings"){showSettings();if(hasId(id))m_protocol.respond(id,QJsonObject());}
         else if(method=="settingsChanged"){
+            cancelAiDiscovery(true);
             defaults(params.value("settings").toObject());registerKeys();updateSelectionMonitor();
+            if(m_config.window&&m_config.window->isVisible())publishAi();
             if(m_pin){render();m_pinOpened=GetTickCount();}
         }else if(method=="appearance")appearance(params);
         else if(method=="shutdown"){
@@ -601,6 +604,14 @@ void App::hideSelectionIcon()
     m_iconDelay.stop();m_iconWatch.stop();m_iconSelection={};
     if(m_icon.window)m_icon.window->hide();
 }
+void App::prepareSelectionIcon()
+{
+    if(m_icon.window||!m_settings.value("selectionIconEnabled").toBool(true))return;
+    // Compile/create while the user is dragging or the reader is working.
+    // Never show or activate this window until a valid selection is confirmed.
+    try{m_iconBackend.update({{"chinese",m_chinese},{"dark",m_dark}});m_icon=view("qrc:/ui/qml/SelectionIcon.qml",&m_iconBackend);used();}
+    catch(...){std::fprintf(stderr,"[selection] icon preparation failed\n");}
+}
 void App::selectionGesture(POINT point,DWORD timestamp,USHORT flags)
 {
     if(!m_settings.value("selectionIconEnabled").toBool(true))return;
@@ -620,6 +631,7 @@ void App::selectionGesture(POINT point,DWORD timestamp,USHORT flags)
     const QPoint at(point.x,point.y);
     if(flags&RI_MOUSE_LEFT_BUTTON_DOWN){
         hideSelectionIcon();m_iconDown=at;m_iconPressed=true;
+        if(!m_icon.window)QTimer::singleShot(0,this,&App::prepareSelectionIcon);
         m_iconDouble=DWORD(timestamp-m_iconClickTime)<=GetDoubleClickTime()&&(at-m_iconPreviousClick).manhattanLength()<8;
         m_iconClickTime=timestamp;m_iconPreviousClick=at;
     }
@@ -630,25 +642,27 @@ void App::selectionGesture(POINT point,DWORD timestamp,USHORT flags)
         m_iconPoint=at;m_iconTarget=selectionTarget();
         GetWindowThreadProcessId(m_iconTarget,&pid);
         if(!m_iconTarget||pid==GetCurrentProcessId())return;
-        m_iconDelay.start();
+        m_iconDelay.start(35);
     }
 }
 void App::readIconSelection()
 {
     if(!m_settings.value("selectionIconEnabled").toBool(true)||m_selector||m_wordPinned||m_wordEditing)return;
     if(GetAncestor(m_foreground(),GA_ROOT)!=GetAncestor(m_iconTarget,GA_ROOT))return;
-    if(m_iconReading||m_selectionReading){m_iconDelay.start(100);return;}
+    if(m_iconReading||m_selectionReading){m_iconDelay.start(40);return;}
     m_iconReading=true;m_iconCancel=token();auto cancel=m_iconCancel;auto epoch=m_iconEpoch;
     auto reader=m_readSelection;auto at=m_iconPoint;auto target=m_iconTarget;
     const auto language=selectionDefaultLanguage(m_settings.value("selectionIconDefaultLanguage").toString("auto"),
         m_settings.value("target").toString("auto"),m_chinese?"zh":"en");
     const bool foreignOnly=m_settings.value("selectionIconForeignOnly").toBool(true);
+    if(!m_icon.window)QTimer::singleShot(0,this,&App::prepareSelectionIcon);
+    auto timing=std::make_shared<QElapsedTimer>();timing->start();
     background([reader,at,target,cancel,language,foreignOnly]{
             auto selection=reader(POINT{at.x(),at.y()},target,cancel);
             if(cancel->load()||!selectionIconAllowed(selection.text,language,foreignOnly))return Selection{};
             return selection;
         },
-        [this,epoch,cancel,target,at](Selection selection,QString error){
+        [this,epoch,cancel,target,at,timing](Selection selection,QString error){
             m_iconReading=false;
             auto pending=m_selectionPendingEpoch;
             if(pending&&pending==m_wordEpoch){m_selectionPendingEpoch=0;readSelection();return;}
@@ -665,6 +679,8 @@ void App::readIconSelection()
             m_icon.window->setPosition(boundedPosition(m_icon.window,logical(point,screen)+QPoint(5,5)));
             m_iconBackend.update({{"chinese",m_chinese},{"dark",m_dark}});
             m_iconShown=GetTickCount();m_icon.window->show();m_iconWatch.start();used();
+            if(Probe::requested()||qEnvironmentVariableIsSet("ST_SELECTION_TRACE"))
+                std::fprintf(stderr,"[selection-icon] read-to-show=%lldms\n",timing->elapsed());
         });
 }
 void App::translateIconSelection()
@@ -1389,17 +1405,60 @@ void App::publishAi()
 {
     auto channels=m_drafts.value("ai").toObject().value("channels").toArray();
     m_aiCurrent=std::clamp(m_aiCurrent,0,std::max(0,int(channels.size())-1));
-    m_configBackend.update({{"aiChannels",channels.toVariantList()},{"aiCurrent",m_aiCurrent}});
+    auto channel=channels.isEmpty()?QJsonObject():channels[m_aiCurrent].toObject();
+    const auto catalog=m_aiCatalog.value(channel.value("id").toString());
+    m_configBackend.update({{"aiChannels",channels.toVariantList()},{"aiCurrent",m_aiCurrent},
+        {"aiCatalog",catalog.value("models").toArray().toVariantList()},{"aiPicked",catalog.value("picked").toArray().toVariantList()},
+        {"aiDiscovering",catalog.value("loading").toBool()},{"aiDiscoveryMessage",catalog.value("message").toString()},
+        {"aiModelHealth",m_services->modelHealth(channel,m_settings).toVariantList()}});
+}
+void App::cancelAiDiscovery(bool clear)
+{
+    ++m_aiDiscoveryEpoch;if(m_aiDiscoveryCancel)m_aiDiscoveryCancel->store(true);m_aiDiscoveryCancel.reset();
+    if(clear)m_aiCatalog.clear();
+    else for(auto it=m_aiCatalog.begin();it!=m_aiCatalog.end();++it)if(it->value("loading").toBool()){
+        (*it)["loading"]=false;(*it)["message"]=m_chinese?"已取消获取模型":"Model fetch cancelled";
+    }
+}
+void App::fetchAiModels()
+{
+    auto channels=m_drafts.value("ai").toObject().value("channels").toArray();
+    if(m_aiCurrent<0||m_aiCurrent>=channels.size())return;
+    cancelAiDiscovery();auto channel=channels[m_aiCurrent].toObject();auto id=channel.value("id").toString();
+    auto& catalog=m_aiCatalog[id];catalog["loading"]=true;catalog["message"]=m_chinese?"正在获取模型…":"Fetching models…";
+    publishAi();auto cancel=token();m_aiDiscoveryCancel=cancel;const auto epoch=m_aiDiscoveryEpoch;
+    auto services=m_services;auto settings=m_settings;QPointer<App> self(this);
+    background([services,channel,settings,cancel]{return services->discoverModels(channel,settings,cancel);},
+        [self,cancel,epoch,id,channel](QJsonObject result,QString error){
+            if(!self||cancel->load()||epoch!=self->m_aiDiscoveryEpoch)return;
+            self->m_aiDiscoveryCancel.reset();auto ai=self->m_drafts.value("ai").toObject();auto channels=ai.value("channels").toArray();
+            int found=-1;for(int i=0;i<channels.size();++i)if(channels[i].toObject().value("id")==id){found=i;break;}
+            if(found<0)return;auto current=channels[found].toObject();
+            if(current.value("endpoint")!=channel.value("endpoint")||current.value("apiKey")!=channel.value("apiKey"))return;
+            auto& catalog=self->m_aiCatalog[id];catalog["loading"]=false;
+            if(error.isEmpty()){
+                catalog["models"]=result.value("models");catalog["picked"]=QJsonArray();
+                const int count=result.value("models").toArray().size();
+                catalog["message"]=self->m_chinese?QString("已获取 %1 个模型，勾选后添加，保存后生效").arg(count):QString("Found %1 models. Select, add, then save.").arg(count);
+                current["endpoint"]=result.value("endpoint");channels[found]=current;ai["channels"]=channels;self->m_drafts["ai"]=ai;
+            }else catalog["message"]=self->m_chinese?"获取失败："+error:"Fetch failed: "+error;
+            self->publishAi();self->publishTests();
+        });
 }
 void App::aiAction(const QString& name,const QVariant& value)
 {
+    if(Probe::requested()&&name!="aiRefreshHealth")std::fprintf(stderr,"[ai-action] %s\n",qPrintable(name));
     auto ai=m_drafts.value("ai").toObject();auto channels=ai.value("channels").toArray();auto input=value.toMap();
-    if(name=="aiSelect"){m_aiCurrent=value.toInt();publishAi();return;}
+    if(name=="aiRefreshHealth"){publishAi();return;}
+    if(name=="aiFetchModels"){fetchAiModels();return;}
+    if(name=="aiCancelModels"){cancelAiDiscovery();publishAi();return;}
+    if(name=="aiSelect"){cancelAiDiscovery();m_aiCurrent=value.toInt();publishAi();return;}
     if(name=="aiAdd"){
+        cancelAiDiscovery();
         if(channels.size()>=32)throw std::runtime_error("AI 渠道最多 32 个");
         channels.append(QJsonObject{{"id",QUuid::createUuid().toString(QUuid::WithoutBraces)},{"name",QString("AI 渠道 %1").arg(channels.size()+1)},
             {"endpoint",""},{"apiKey",""},{"enabled",true},{"models",QJsonArray{QJsonObject{{"name",""},{"enabled",true}}}}});m_aiCurrent=channels.size()-1;
-    }else if(name=="aiRemove"){int index=value.toInt();if(index>=0&&index<channels.size())channels.removeAt(index);}
+    }else if(name=="aiRemove"){int index=value.toInt();if(index>=0&&index<channels.size()){cancelAiDiscovery();m_aiCatalog.remove(channels[index].toObject().value("id").toString());channels.removeAt(index);}}
     else if(name=="aiMove"){
         int from=input.value("from").toInt(),to=input.value("to").toInt();
         if(from<0||from>=channels.size()||to<0||to>=channels.size())return;
@@ -1408,17 +1467,33 @@ void App::aiAction(const QString& name,const QVariant& value)
         if(m_aiCurrent<0||m_aiCurrent>=channels.size())return;auto channel=channels[m_aiCurrent].toObject();
         if(name=="aiField"){
             auto key=input.value("key").toString();if(!QStringList{"name","endpoint","apiKey","enabled","streaming","disableThinking"}.contains(key))return;
+            if((key=="endpoint"||key=="apiKey")&&channel.value(key)!=QJsonValue::fromVariant(input.value("value"))){cancelAiDiscovery();m_aiCatalog.remove(channel.value("id").toString());}
             channel[key]=QJsonValue::fromVariant(input.value("value"));
         }else{
             auto models=channel.value("models").toArray();int index=input.value("index").toInt();
-            if(name=="aiModelAdd"){if(models.size()>=32)throw std::runtime_error("每个渠道最多 32 个模型");models.append(QJsonObject{{"name",""},{"enabled",true}});}
+            if(name=="aiPickModel"){
+                auto& catalog=m_aiCatalog[channel.value("id").toString()];auto model=value.toString();
+                if(!catalog.value("models").toArray().contains(model))return;
+                auto picked=catalog.value("picked").toArray();if(picked.contains(model)){for(int i=0;i<picked.size();++i)if(picked[i]==model){picked.removeAt(i);break;}}
+                else picked.append(model);catalog["picked"]=picked;publishAi();return;
+            }else if(name=="aiAddPickedModels"){
+                auto& catalog=m_aiCatalog[channel.value("id").toString()];QStringList existing;
+                for(auto model:models)existing<<model.toObject().value("name").toString().trimmed();
+                QJsonArray next;for(auto model:models)if(!model.toObject().value("name").toString().trimmed().isEmpty())next.append(model);
+                for(auto model:catalog.value("picked").toArray())if(catalog.value("models").toArray().contains(model)&&!existing.contains(model.toString())){
+                    next.append(QJsonObject{{"name",model},{"enabled",true},{"cooldownMinutes",0}});existing<<model.toString();
+                }
+                if(next.size()>256)throw std::runtime_error("每个渠道最多 256 个模型，请减少勾选数量");
+                models=next;catalog["picked"]=QJsonArray();
+            }else if(name=="aiModelAdd"){if(models.size()>=256)throw std::runtime_error("每个渠道最多 256 个模型");models.append(QJsonObject{{"name",""},{"enabled",true}});}
             else if(index>=0&&index<models.size()){
-                if(name=="aiModelRemove")models.removeAt(index);
+                if(name=="aiModelReset"){m_services->resetModelCooldown(channel,models[index].toObject(),m_settings);publishAi();publishTests();return;}
+                else if(name=="aiModelRemove")models.removeAt(index);
                 else if(name=="aiModelMove"){
                     int to=input.value("to").toInt();if(to<0||to>=models.size())return;auto m=models.takeAt(index);models.insert(to,m);
                 }else if(name=="aiModelField"){
-                    auto key=input.value("key").toString();if(key!="name"&&key!="enabled")return;
-                    auto m=models[index].toObject();m[key]=QJsonValue::fromVariant(input.value("value"));models[index]=m;
+                    auto key=input.value("key").toString();if(key!="name"&&key!="enabled"&&key!="cooldownMinutes")return;
+                    auto m=models[index].toObject();m[key]=key=="cooldownMinutes"?QJsonValue(std::clamp(input.value("value").toInt(),0,10080)):QJsonValue::fromVariant(input.value("value"));models[index]=m;
                 }
             }
             channel["models"]=models;
@@ -1432,7 +1507,7 @@ void App::showSettings()
 {
     used();
     if(m_config.window&&m_config.window->isVisible()){WindowSizeMemory::show(m_config.window,m_config.window->screen());return;}
-    ++m_configEpoch;m_drafts={};m_tests.clear();m_batch=false;
+    ++m_configEpoch;cancelAiDiscovery(true);m_drafts={};m_tests.clear();m_batch=false;
     m_routingDraft=m_services->routing();
     for(auto p:providers)m_drafts[p]=m_services->profile(p);
     auto ai=m_drafts.value("ai").toObject();
@@ -1552,6 +1627,7 @@ void App::configAction(const QString& name,const QVariant& value)
         else if(name=="showTests")configAction("home",{});
         else if(name=="close"){
             used();
+            cancelAiDiscovery(true);
             if(m_config.window)m_config.window->hide();++m_configEpoch;
             for(auto c:m_testCancels)c->store(true);m_testCancels.clear();m_testQueue.clear();m_testRunning=0;
             // Keep the small view warm until the normal idle cleanup. Reload

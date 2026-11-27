@@ -1,4 +1,6 @@
-# 截图翻译 0.4.36：原生版构建与验证
+# 截图翻译 0.4.37：原生版构建与验证
+
+0.4.37 增加模型列表发现、异步取消、搜索多选和独立冷却 UI；核心测试验证地址归一化、去重、错误/重定向/取消、冷却持久化和重置。`native_tests --ai-smoke <endpoint>` 从标准输入读取测试密钥，仅输出模型数量、时间和通过状态，使用临时数据目录验证流式/普通翻译，不输出原密钥或译文。普通 UI 测试在私有桌面使用只读选区夹具，真实复制仍使用发布专用的可销毁 Windows runner。
 
 0.4.36 将主动取词统一到 `readSelectionForTranslation`：原窗口复制消息 → 辅助功能取词 → 有选区且焦点未变时 Ctrl+Insert → 手动复制接续。原生复制和快捷键共用格式备份、序列校验、还原与取消处理；成功方式按进程生命周期和控件类型缓存十分钟。被动图标与固定跟随保持只读。
 
@@ -32,7 +34,7 @@ Firefox 选区回归：`python -B native/test_selection_firefox.py --driver <gec
 ## 安装和回退
 
 在 WinShun 设置 → 插件 → 从压缩包安装，选择
-`iuuuuuuuu.screenshot-translate-0.4.36.wsplugin`。运行时不检查或启动 Python。
+`iuuuuuuuu.screenshot-translate-0.4.37.wsplugin`。运行时不检查或启动 Python。
 包内包括启动器、应用 DLL、少量 Visual C++ 依赖、许可和文档；DLL 内包含 QML 控件与授权图标字体。
 现有渠道、热键、代理、偏好和 DPAPI 密钥格式保持兼容，不迁移或删除用户的数据目录。
 

@@ -60,6 +60,13 @@ jobs:
           Invoke-WebRequest $asset.browser_download_url -OutFile "$env:RUNNER_TEMP\geckodriver.zip"
           Expand-Archive "$env:RUNNER_TEMP\geckodriver.zip" "$env:RUNNER_TEMP\geckodriver"
           if (!(Test-Path 'C:\Program Files\Mozilla Firefox\firefox.exe')) { choco install firefox -y --no-progress }
+      - name: 验证 AI 模型管理、冷却和界面
+        shell: pwsh
+        run: |
+          python -X utf8 -B native/test_native.py --build "$env:RUNNER_TEMP\native-build" --runtime "$pwd\.test-output\selection-release\runtime" --core --output .test-output/core-release
+          if ($LASTEXITCODE) { throw '原生核心验证失败' }
+          python -X utf8 -B native/test_native.py --build "$env:RUNNER_TEMP\native-build" --runtime "$pwd\.test-output\selection-release\runtime" --output .test-output/ui-release
+          if ($LASTEXITCODE) { throw '原生界面验证失败' }
       - name: 验证 Firefox 跨组件完整选区和翻译入口
         shell: pwsh
         run: |
@@ -75,6 +82,8 @@ jobs:
             .test-output/selection-release/*.log
             .test-output/selection-release/native/
             .test-output/firefox-release/
+            .test-output/core-release/
+            .test-output/ui-release/
       - name: 保留安装包、校验值与开发验证程序
         if: always() && steps.package.outcome == 'success'
         uses: actions/upload-artifact@v4
