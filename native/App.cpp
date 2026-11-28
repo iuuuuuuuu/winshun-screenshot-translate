@@ -1137,10 +1137,9 @@ void App::readCopiedSelection()
             {"status",m_chinese?"等待复制已结束。可重新按划词快捷键，再在原窗口复制文字。":"Copy wait ended. Use the selection shortcut again, then copy in the original window."}});return;
     }
     const auto sequence=m_clipboardSequence();if(sequence==m_selectionClipboardBaseline)return;
-    DWORD targetPid=0;GetWindowThreadProcessId(m_selectionTarget,&targetPid);
     // Copying somewhere else, switching apps, or an external clipboard update
     // cannot submit unrelated text to a translation provider.
-    if(!targetPid||m_clipboardOwnerProcess()!=targetPid||
+    if(!selectionCopyOwnerMatches(m_selectionTarget,m_clipboardOwnerProcess())||
         GetAncestor(m_foreground(),GA_ROOT)!=GetAncestor(m_selectionTarget,GA_ROOT)){
         m_selectionClipboardBaseline=sequence;return;
     }

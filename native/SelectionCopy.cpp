@@ -5,6 +5,7 @@
 #include <QMutex>
 #include <QMutexLocker>
 #include <windowsx.h>
+#include <tlhelp32.h>
 #include <cstdio>
 #include <optional>
 #include <algorithm>
@@ -13,6 +14,28 @@
 
 namespace st {
 namespace {
+quint64 processCreated(DWORD pid)
+{
+    if(!pid)return 0;
+    auto process=OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION,FALSE,pid);if(!process)return 0;
+    FILETIME created{},exited{},kernel{},user{};
+    const bool valid=GetProcessTimes(process,&created,&exited,&kernel,&user)&&!exited.dwHighDateTime&&!exited.dwLowDateTime;
+    CloseHandle(process);
+    return valid?(quint64(created.dwHighDateTime)<<32)|created.dwLowDateTime:0;
+}
+bool processOwnerMatches(DWORD source,quint64 created,DWORD owner)
+{
+    if(!source||!owner||!created)return false;
+    if(source==owner)return processCreated(source)==created;
+    const auto snapshot=CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS,0);
+    if(snapshot==INVALID_HANDLE_VALUE)return false;
+    QHash<DWORD,DWORD> parents;PROCESSENTRY32W entry{};entry.dwSize=sizeof entry;
+    if(Process32FirstW(snapshot,&entry))do{parents.insert(entry.th32ProcessID,entry.th32ParentProcessID);}while(Process32NextW(snapshot,&entry));
+    CloseHandle(snapshot);
+    return copyProcessMatches({source,0,created},owner,[&](DWORD pid){
+        return parents.contains(pid)?CopyProcessIdentity{pid,parents.value(pid),processCreated(pid)}:CopyProcessIdentity{};
+    });
+}
 struct ClipboardFormat {
     UINT format=0;HANDLE data=nullptr;
     void release(){
@@ -64,11 +87,14 @@ struct CopyTransaction {
     }
     bool changedElsewhere=false;
     QString copiedText;
-    bool readCopy(DWORD pid){
+    bool readCopy(DWORD pid,quint64 created){
         if(GetClipboardSequenceNumber()==baseline)return false;
         ClipboardLock lock(window);if(!lock.opened)return false;
         DWORD owner=0;GetWindowThreadProcessId(GetClipboardOwner(),&owner);
-        if(owner!=pid){changedElsewhere=true;return true;}
+        if(!processOwnerMatches(pid,created,owner)){
+            if(qEnvironmentVariableIsSet("ST_SELECTION_TRACE"))std::fprintf(stderr,"[selection-copy] unrelated owner source=%lu owner=%lu\n",pid,owner);
+            changedElsewhere=true;return true;
+        }
         copiedSequence=GetClipboardSequenceNumber();
         if(auto data=GetClipboardData(CF_UNICODETEXT)){
             const auto size=GlobalSize(data)/sizeof(wchar_t);
@@ -147,9 +173,11 @@ bool passwordControl(HWND window)
 struct SourceWindow {
     HWND target=nullptr,root=nullptr,focus=nullptr;
     DWORD pid=0;
+    quint64 created=0;
     QString cacheKey;
     explicit SourceWindow(HWND window):target(window),root(GetAncestor(window,GA_ROOT)){
         const auto thread=GetWindowThreadProcessId(root,&pid);
+        created=processCreated(pid);
         GUITHREADINFO info{sizeof info};
         if(GetGUIThreadInfo(thread,&info)&&GetAncestor(info.hwndFocus,GA_ROOT)==root)focus=info.hwndFocus;
         // Successful strategies are scoped to process lifetime and control class,
@@ -164,7 +192,7 @@ struct SourceWindow {
     }
     bool valid()const{
         DWORD current=0;GetWindowThreadProcessId(root,&current);
-        return target&&root&&IsWindow(target)&&IsWindow(root)&&current==pid&&GetAncestor(target,GA_ROOT)==root&&
+        return target&&root&&IsWindow(target)&&IsWindow(root)&&current==pid&&(!created||processCreated(pid)==created)&&GetAncestor(target,GA_ROOT)==root&&
             sameDesktop(GetThreadDesktop(GetWindowThreadProcessId(root,nullptr)),GetThreadDesktop(GetCurrentThreadId()));
     }
     CopyShortcutState shortcutState()const{
@@ -204,6 +232,9 @@ SelectionCopyResult copySelection(const SourceWindow& source,Cancel cancel,Selec
     if(cancel->load())return {};
     if(!source.valid())return stopped("原窗口已关闭或变化，请重新选中文字");
     if(passwordControl(source.target)||passwordControl(source.focus))return stopped("此输入框不允许读取选中文字");
+    // If process metadata is restricted, leave copying unavailable so the
+    // existing read-only selection/manual-copy fallback can still run.
+    if(!source.created)return {};
     if(mode==SelectionCopyMode::Shortcut){
         // Ctrl+Insert is a copy shortcut, not the terminal's Ctrl+C interrupt.
         // Never activate a window or inject into a private/background desktop.
@@ -249,7 +280,7 @@ SelectionCopyResult copySelection(const SourceWindow& source,Cancel cancel,Selec
         if(!source.valid())return stopped("原窗口已关闭或变化，请重新选中文字");
         // A delayed response from an earlier message belongs to this same
         // transaction. Do not send another command after it has arrived.
-        if(transaction.readCopy(source.pid))break;
+        if(transaction.readCopy(source.pid,source.created))break;
         if(GetClipboardSequenceNumber()!=transaction.baseline)return stopped("剪贴板刚刚变化，请重新触发翻译");
         int waitMs=100;DWORD_PTR handled=0;bool timedOut=false;
         if(route==CopyRoute::Shortcut){
@@ -284,7 +315,7 @@ SelectionCopyResult copySelection(const SourceWindow& source,Cancel cancel,Selec
         }
         QElapsedTimer timer;timer.start();
         do{
-            if(transaction.readCopy(source.pid))break;
+            if(transaction.readCopy(source.pid,source.created))break;
             // After issuing copy, cancellation still waits for the response so
             // the original clipboard can be restored before this thread exits.
             Sleep(10);
@@ -308,6 +339,29 @@ SelectionCopyResult copySelection(const SourceWindow& source,Cancel cancel,Selec
     }
     return {};
 }
+}
+bool copyProcessMatches(CopyProcessIdentity source,DWORD owner,const std::function<CopyProcessIdentity(DWORD)>& lookup)
+{
+    if(!source.pid||!source.created||!owner)return false;
+    auto current=lookup(owner);if(current.pid!=owner)return false;QSet<DWORD> seen;
+    for(int depth=0;depth<32;++depth){
+        if(!current.pid||!current.created||seen.contains(current.pid))return false;
+        if(current.pid==source.pid)return current.created==source.created;
+        seen.insert(current.pid);
+        if(!current.parent||current.parent==current.pid)return false;
+        auto parent=lookup(current.parent);
+        // Parent IDs outlive exited processes and can be reused. Creation time
+        // must show a real ancestor, not a new app that inherited the same ID.
+        if(parent.pid!=current.parent||!parent.created||parent.created>current.created)return false;
+        current=parent;
+    }
+    return false;
+}
+bool selectionCopyOwnerMatches(HWND target,DWORD owner)
+{
+    if(!target||!IsWindow(target))return false;
+    const auto root=GetAncestor(target,GA_ROOT);DWORD pid=0;GetWindowThreadProcessId(root,&pid);
+    return processOwnerMatches(pid,processCreated(pid),owner);
 }
 bool copyShortcutAllowed(const CopyShortcutState& state)
 {
@@ -380,9 +434,19 @@ bool testClipboardNewerCopy(const std::function<void(HWND)>& first,const std::fu
     transaction.window=CreateWindowExW(0,L"STATIC",L"Clipboard transaction fixture",0,0,0,0,0,HWND_MESSAGE,nullptr,nullptr,nullptr);
     if(!transaction.window||!transaction.snapshot())return false;
     first(transaction.window);
-    if(!transaction.readCopy(GetCurrentProcessId())||!transaction.copiedSequence)return false;
+    if(!transaction.readCopy(GetCurrentProcessId(),processCreated(GetCurrentProcessId()))||!transaction.copiedSequence)return false;
     newer(transaction.window);const auto sequence=GetClipboardSequenceNumber();
     return transaction.restore()&&GetClipboardSequenceNumber()==sequence;
+}
+bool testClipboardForeignOwner(HWND source,const std::function<void()>& write)
+{
+    CopyTransaction transaction;
+    transaction.window=CreateWindowExW(0,L"STATIC",L"Foreign owner fixture",0,0,0,0,0,HWND_MESSAGE,nullptr,nullptr,nullptr);
+    if(!transaction.window||!transaction.snapshot())return false;
+    DWORD pid=0;GetWindowThreadProcessId(source,&pid);const auto created=processCreated(pid);
+    write();const auto sequence=GetClipboardSequenceNumber();
+    return transaction.readCopy(pid,created)&&transaction.changedElsewhere&&!transaction.copiedSequence&&
+        transaction.copiedText.isEmpty()&&transaction.restore()&&GetClipboardSequenceNumber()==sequence;
 }
 #endif
 }

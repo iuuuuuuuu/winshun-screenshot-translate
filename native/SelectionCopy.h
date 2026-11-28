@@ -12,6 +12,11 @@ struct CopyShortcutState {
     bool keysReleased=false, readableControl=false;
 };
 bool copyShortcutAllowed(const CopyShortcutState& state);
+struct CopyProcessIdentity {DWORD pid=0,parent=0;quint64 created=0;};
+// A clipboard broker must be this exact source process or one of its live
+// descendants. Never admit a sibling merely because its executable matches.
+bool copyProcessMatches(CopyProcessIdentity source,DWORD owner,const std::function<CopyProcessIdentity(DWORD)>& lookup);
+bool selectionCopyOwnerMatches(HWND target,DWORD owner);
 using SelectionReader=std::function<Selection(POINT,HWND,Cancel)>;
 // Shared policy, separated from Windows I/O so failures/cancellation can be tested.
 Selection resolveSelection(const std::function<Selection()>& read,

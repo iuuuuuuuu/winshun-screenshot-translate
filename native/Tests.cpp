@@ -1,4 +1,5 @@
 #include "Desktop.h"
+#include "SelectionCopy.h"
 #include "Services.h"
 #include "Dictionary.h"
 #include "AiStream.h"
@@ -21,7 +22,7 @@
 #include <future>
 #include <cstdio>
 #include <stdexcept>
-namespace st {void testSelectionPolicy();bool testNativeSelectionCopy();void testSelectionRelease();}
+namespace st {void testSelectionPolicy();bool testNativeSelectionCopy();void testSelectionRelease();int testSelectionCopyChild();}
 namespace {
 void checkPhrases()
 {
@@ -277,6 +278,15 @@ int main(int argc,char** argv)
     QGuiApplication app(argc,argv);
     try{
         auto args=app.arguments();
+        if(args.contains("--selection-owner-probe")){
+            const auto target=reinterpret_cast<HWND>(quintptr(args.value(args.indexOf("--selection-owner-probe")+1).toULongLong()));
+            DWORD owner=0,source=0;GetWindowThreadProcessId(GetClipboardOwner(),&owner);GetWindowThreadProcessId(GetAncestor(target,GA_ROOT),&source);
+            const bool matches=st::selectionCopyOwnerMatches(target,owner);
+            // Metadata only: do not open, read or modify the clipboard.
+            std::puts(QJsonDocument(QJsonObject{{"sourceProcess",int(source)},{"ownerProcess",int(owner)},
+                {"sameProcess",source&&source==owner},{"ownerMatches",matches}}).toJson(QJsonDocument::Compact).constData());return matches?0:1;
+        }
+        if(args.contains("--selection-copy-child"))return st::testSelectionCopyChild();
         if(args.contains("--ai-smoke")){
             QFile input;input.open(stdin,QIODevice::ReadOnly);auto key=QString::fromUtf8(input.readLine(8192)).trimmed();
             QTemporaryDir temporary;st::Services service(temporary.path());auto cancel=std::make_shared<std::atomic_bool>(false);

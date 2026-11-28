@@ -1,4 +1,6 @@
-# 截图翻译 0.4.38：原生版构建与验证
+# 截图翻译 0.4.39：原生版构建与验证
+
+0.4.39 修复多进程软件的复制来源识别：主窗口与剪贴板代理进程不必是同一个 PID，但必须在已核实的进程父子链上，且创建时间匹配；进程号复用、同名无关程序和兄弟进程均不放行。主动复制与手动复制接续共用规则。`--selection-release` 增加真实子进程复制、同名无关进程拒绝、取消还原及新复制优先测试；`native_tests --selection-owner-probe <HWND>` 只核对窗口/剪贴板进程元数据，不读取或修改剪贴板文字。
 
 0.4.38 增加默认关闭的 AI 少量上下文：`TranslationContext` 延迟到 AI 候选才读取，跨模型复用一次结果；`SelectionContext.cpp` 使用隔离进程、原窗口/进程校验、完整选区匹配、字符边界和时间上限。UIA 只扩展选区附近范围；Firefox IA2 读取同一节点的附近偏移，不展开整个页面。标准 EDIT 只允许读取至多 4000 字的小字段，长字段交给 UIA 或跳过。缓存包含上下文摘要键，健康状态不受上下文改变影响；上下文不进入历史或磁盘。
 
@@ -40,7 +42,7 @@ Firefox 选区回归：`python -B native/test_selection_firefox.py --driver <gec
 ## 安装和回退
 
 在 WinShun 设置 → 插件 → 从压缩包安装，选择
-`iuuuuuuuu.screenshot-translate-0.4.38.wsplugin`。运行时不检查或启动 Python。
+`iuuuuuuuu.screenshot-translate-0.4.39.wsplugin`。运行时不检查或启动 Python。
 包内包括启动器、应用 DLL、少量 Visual C++ 依赖、许可和文档；DLL 内包含 QML 控件与授权图标字体。
 现有渠道、热键、代理、偏好和 DPAPI 密钥格式保持兼容，不迁移或删除用户的数据目录。
 

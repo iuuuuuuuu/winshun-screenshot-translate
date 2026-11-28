@@ -6,6 +6,8 @@
 #include <QJsonObject>
 #include <QThread>
 #include <QMap>
+#include <QProcess>
+#include <QTimer>
 #include <future>
 #include <cstdio>
 #include <cstring>
@@ -16,6 +18,7 @@ namespace st {
 void testSelectionPolicy();
 bool testNativeSelectionCopy();
 bool testClipboardNewerCopy(const std::function<void(HWND)>&,const std::function<void(HWND)>&);
+bool testClipboardForeignOwner(HWND,const std::function<void()>&);
 namespace {
 void check(bool value,const char* message){if(!value)throw std::runtime_error(message);}
 void pump(){QCoreApplication::processEvents();QThread::msleep(2);}
@@ -65,6 +68,7 @@ struct Fixture {
     int nativeCopies=0,applicationCopies=0,keyCopies=0;
     bool applicationOnly=false,shortcutOnly=false;
     Cancel cancel;
+    HWND copyDelegate=nullptr;
 };
 LRESULT CALLBACK windowProc(HWND window,UINT message,WPARAM w,LPARAM l){
     auto fixture=reinterpret_cast<Fixture*>(GetWindowLongPtrW(window,GWLP_USERDATA));
@@ -77,7 +81,10 @@ LRESULT CALLBACK windowProc(HWND window,UINT message,WPARAM w,LPARAM l){
         }
         if(message==WM_KEYDOWN&&w==VK_INSERT&&(GetKeyState(VK_CONTROL)&0x8000)){++fixture->keyCopies;copy=true;}
         if(copy){
-            writeText(window,fixture->text);
+            if(fixture->copyDelegate){
+                DWORD_PTR handled=0;
+                check(SendMessageTimeoutW(fixture->copyDelegate,WM_COPY,0,0,SMTO_ABORTIFHUNG|SMTO_BLOCK,1000,&handled)&&handled,"child process copy command");
+            }else writeText(window,fixture->text);
             if(fixture->cancel)fixture->cancel->store(true);
             return TRUE;
         }
@@ -91,6 +98,30 @@ Selection run(HWND target,Cancel cancel,SelectionReader reader){
     return future.get();
 }
 Cancel token(){return std::make_shared<std::atomic_bool>(false);}
+struct CopyChild {
+    QProcess process;
+    HWND window=nullptr;
+    CopyChild(){
+        process.setCreateProcessArgumentsModifier([](QProcess::CreateProcessArguments* args){args->flags|=CREATE_NO_WINDOW;});
+        process.start(QCoreApplication::applicationFilePath(),{"--selection-copy-child"});
+        check(process.waitForStarted(3000)&&process.waitForReadyRead(3000),"clipboard broker child starts");
+        auto ready=QJsonDocument::fromJson(process.readAllStandardOutput()).object();
+        window=reinterpret_cast<HWND>(quintptr(ready.value("window").toString().toULongLong()));
+        check(IsWindow(window),"clipboard broker window exists");
+    }
+    void copy(){DWORD_PTR result=0;check(SendMessageTimeoutW(window,WM_COPY,0,0,SMTO_ABORTIFHUNG|SMTO_BLOCK,1000,&result)&&result,"broker copy succeeds");}
+    ~CopyChild(){process.kill();process.waitForFinished(1000);}
+};
+}
+int testSelectionCopyChild(){
+    check(qEnvironmentVariable("GITHUB_ACTIONS")=="true"&&qEnvironmentVariable("RUNNER_ENVIRONMENT")=="github-hosted",
+        "clipboard broker fixture requires disposable GitHub-hosted Windows runner");
+    WNDCLASSW cls{};cls.hInstance=GetModuleHandleW(nullptr);cls.lpfnWndProc=windowProc;cls.lpszClassName=L"WinShunSelectionCopyBroker";
+    check(RegisterClassW(&cls),"register clipboard broker fixture");Fixture fixture;
+    auto window=CreateWindowExW(0,cls.lpszClassName,L"Synthetic clipboard broker",0,0,0,0,0,HWND_MESSAGE,nullptr,cls.hInstance,&fixture);
+    check(window,"create clipboard broker");
+    std::puts(QJsonDocument(QJsonObject{{"window",QString::number(quintptr(window))}}).toJson(QJsonDocument::Compact).constData());std::fflush(stdout);
+    QTimer::singleShot(30000,qApp,&QCoreApplication::quit);const auto result=QCoreApplication::exec();DestroyWindow(window);return result;
 }
 void testSelectionRelease(){
     // This test is intentionally unavailable on developer/user computers: it
@@ -107,6 +138,18 @@ void testSelectionRelease(){
     writeText(window,"SYNTHETIC ORIGINAL — 中文 😀",true);auto baseline=signature();
     auto partial=[](POINT,HWND,Cancel){return Selection{"Complete",{},{},false,true};};
     check(run(window,token(),partial).text==fixture.text,"unknown application uses shared WM_COPY path");checkPreserved(baseline);
+    {
+        CopyChild broker,unrelated;fixture.copyDelegate=broker.window;
+        check(run(window,token(),partial).text==fixture.text,"host window accepts copy from its real child process");checkPreserved(baseline);
+        check(selectionCopyOwnerMatches(window,DWORD(broker.process.processId())),"manual copy continuation also recognizes child broker");
+        check(!selectionCopyOwnerMatches(broker.window,DWORD(unrelated.process.processId())),"same executable sibling broker remains unrelated");
+        fixture.cancel=token();check(run(window,fixture.cancel,partial).text.isEmpty(),"cancelled child copy is discarded");
+        checkPreserved(baseline);fixture.cancel.reset();fixture.copyDelegate=nullptr;
+        check(testClipboardForeignOwner(broker.window,[&]{unrelated.copy();}),"unrelated copy is not read or overwritten");
+        writeText(window,"SYNTHETIC ORIGINAL — 中文 😀",true);baseline=signature();
+        check(testClipboardNewerCopy([&](HWND){broker.copy();},[](HWND w){writeText(w,"newer user copy after child");}),"new copy wins after legitimate child copy");
+        writeText(window,"SYNTHETIC ORIGINAL — 中文 😀",true);baseline=signature();
+    }
     fixture.cancel=token();check(run(window,fixture.cancel,partial).text.isEmpty(),"cancelled copy result discarded");
     checkPreserved(baseline);fixture.cancel.reset();
     fixture.applicationOnly=true;
@@ -127,6 +170,6 @@ void testSelectionRelease(){
     check(testClipboardNewerCopy([](HWND w){writeText(w,"first copied text");},[](HWND w){writeText(w,"newer user copy");}),
         "newer clipboard content wins instead of restoring the older snapshot");
     writeText(window,"SYNTHETIC ORIGINAL — 中文 😀",true);
-    std::puts("{\"passed\":true,\"nativeCopy\":true,\"applicationCommand\":true,\"realKeyboardCopy\":true,\"clipboardFormatsRestored\":true,\"cancelRestoresClipboard\":true,\"newCopyWins\":true,\"strategyCache\":true}");
+    std::puts("{\"passed\":true,\"nativeCopy\":true,\"childProcessCopy\":true,\"unrelatedProcessRejected\":true,\"manualChildOwner\":true,\"applicationCommand\":true,\"realKeyboardCopy\":true,\"clipboardFormatsRestored\":true,\"cancelRestoresClipboard\":true,\"newCopyWins\":true,\"strategyCache\":true}");
 }
 }

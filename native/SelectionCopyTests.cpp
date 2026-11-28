@@ -12,6 +12,17 @@ Cancel token(){return std::make_shared<std::atomic_bool>(false);}
 }
 void testSelectionPolicy()
 {
+    const CopyProcessIdentity host{10,1,100};
+    QHash<DWORD,CopyProcessIdentity> processes{{10,host},{11,{11,10,200}},{12,{12,11,300}},
+        {13,{13,1,400}},{14,{14,10,50}},{15,{15,15,500}},{16,{16,17,600}},{17,{17,16,600}}};
+    auto lookup=[&](DWORD pid){return processes.value(pid);};
+    check(copyProcessMatches(host,10,lookup)&&copyProcessMatches(host,11,lookup)&&copyProcessMatches(host,12,lookup),
+        "same process and verified browser child/grandchild own the selection copy");
+    check(!copyProcessMatches(host,13,lookup)&&!copyProcessMatches(processes.value(11),12,[&](DWORD pid){auto p=lookup(pid);if(pid==12)p.parent=10;return p;}),
+        "unrelated apps and sibling processes are not trusted clipboard owners");
+    check(!copyProcessMatches(host,14,lookup)&&!copyProcessMatches({10,1,99},11,lookup),
+        "reused parent or source process IDs cannot inherit clipboard trust");
+    for(DWORD pid:{0,15,16,99})check(!copyProcessMatches(host,pid,lookup),"missing and cyclic process ancestry is rejected");
     int reads=0,native=0,shortcuts=0;
     auto read=[&]{++reads;return Selection{"author",{1,2,3,4},{},false,true};};
     auto copy=[&](SelectionCopyMode mode){
