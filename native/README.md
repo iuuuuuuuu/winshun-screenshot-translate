@@ -1,4 +1,6 @@
-# 截图翻译 0.4.40：原生版构建与验证
+# 截图翻译 0.4.41：原生版构建与验证
+
+0.4.41 修复划词结果窗口使用文档顺序的选区边界而跳到尾部：点击、悬停、快捷键和异步结果都保留捕获的鼠标锚点，新选区清除旧拖动/重试位置。悬停开关直接显示于首页顶部，小窗口自动换行。`--selection-hover` 同时验证三种入口、正反向位置、多个屏幕、边缘避让、结果扩展以及折叠设置下开关可见。
 
 0.4.40 增加默认关闭的 `selectionIconHoverTranslate`。保存后作用于小译图标；进入图标停留 350 ms 后共用主动完整取词路径，移出、按下、隐藏、关闭开关均停止计时。后端再次检查原窗口、图标有效期及启用状态。`--selection-hover` 验证默认关闭、设置保存、移出/隐藏/换窗口取消、完整选区复核及只请求一次；发布流水线运行同一专项。
 
@@ -44,7 +46,7 @@ Firefox 选区回归：`python -B native/test_selection_firefox.py --driver <gec
 ## 安装和回退
 
 在 WinShun 设置 → 插件 → 从压缩包安装，选择
-`iuuuuuuuu.screenshot-translate-0.4.40.wsplugin`。运行时不检查或启动 Python。
+`iuuuuuuuu.screenshot-translate-0.4.41.wsplugin`。运行时不检查或启动 Python。
 包内包括启动器、应用 DLL、少量 Visual C++ 依赖、许可和文档；DLL 内包含 QML 控件与授权图标字体。
 现有渠道、热键、代理、偏好和 DPAPI 密钥格式保持兼容，不迁移或删除用户的数据目录。
 

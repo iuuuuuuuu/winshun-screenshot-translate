@@ -63,10 +63,8 @@ bool until(std::function<bool()> ready,int max=3000)
 {
     QElapsedTimer t;t.start();while(!ready()&&t.elapsed()<max)pump(10);return ready();
 }
-void click(QQuickWindow* w,QQuickItem* item)
+void revealSettingsTarget(QQuickWindow* w,QQuickItem* item)
 {
-    check(w&&item,"missing click target");
-    if(item->objectName()=="word-editor"&&!item->isVisible()){QMetaObject::invokeMethod(w,"focusEditor");pump(180);}
     // Settle pending QML layout before measuring an injected mouse target.
     // Private desktops may not render a frame between two fast test actions.
     w->grabWindow();
@@ -81,6 +79,12 @@ void click(QQuickWindow* w,QQuickItem* item)
             break;
         }
     }
+}
+void click(QQuickWindow* w,QQuickItem* item)
+{
+    check(w&&item,"missing click target");
+    if(item->objectName()=="word-editor"&&!item->isVisible()){QMetaObject::invokeMethod(w,"focusEditor");pump(180);}
+    revealSettingsTarget(w,item);
     auto p=item->mapToScene(QPointF(item->width()/2,item->height()/2));
     check(item->isVisible()&&item->isEnabled()&&item->width()>0&&item->height()>0,"click target is visible and enabled");
     // Route through the native event dispatcher so Qt's global button state
@@ -134,6 +138,7 @@ void typeField(QQuickWindow* window,const QString& name,const QString& text)
 void dragQueue(QQuickWindow* window,QQuickItem* item,int distance)
 {
     check(Probe::privateDesktop()&&window&&item&&item->isVisible(),"queue drag requires private visible test item");
+    revealSettingsTarget(window,item);
     auto start=item->mapToScene(QPointF(item->width()/2,item->height()/2));auto hwnd=HWND(window->winId());
     auto point=[&](int dy){auto p=(start+QPointF(0,dy))*window->devicePixelRatio();return MAKELPARAM(qRound(p.x()),qRound(p.y()));};
     PostMessageW(hwnd,WM_MOUSEMOVE,0,point(0));pump(10);
@@ -232,7 +237,7 @@ void Probe::run(App& app,const QJsonObject& params)
         report["startupMemory"]=memory();
         auto testSelectionHover=[&]{
             const auto originalSettings=app.m_settings;auto originalForeground=app.m_foreground;
-            auto originalReader=app.m_readSelection;auto originalActiveReader=app.m_readActiveSelection;
+            auto originalReader=app.m_readSelection;auto originalActiveReader=app.m_readActiveSelection;auto originalMouse=app.m_mouse;
             app.showSettings();app.configAction("home",{});
             // Full UI probes may leave a small, scrolled settings window behind.
             // Start this independent mouse test with the option inside the viewport.
@@ -240,9 +245,16 @@ void Probe::run(App& app,const QJsonObject& params)
             auto settingsScroll=app.m_config.window->findChild<QQuickItem*>("settings-scroll");
             check(settingsScroll,"hover settings scroll exists");settingsScroll->setProperty("contentY",0);pump(30);
             check(!app.m_configBackend.values.value("selectionIconHoverTranslate").toBool(),"hover translation defaults off in UI");
-            app.m_config.window->setProperty("iconOptionsOpen",true);pump(30);
+            app.m_config.window->setProperty("iconOptionsOpen",false);pump(30);
             auto toggle=visualItem(app.m_config.window->contentItem(),"selection-icon-hover-toggle");
-            check(toggle&&toggle->isVisible(),"hover option is discoverable under icon settings");
+            check(toggle&&toggle->isVisible(),"hover option is directly visible with icon options collapsed");
+            for(const auto size:{QSize(940,700),QSize(720,520)}){
+                app.m_config.window->resize(size);pump(60);app.m_config.window->grabWindow();
+                const auto box=toggle->mapRectToScene(toggle->boundingRect());
+                check(QRectF(QPointF(),QSizeF(size)).contains(box)&&box.bottom()<settingsScroll->y(),"hover switch stays visible above scrolling content at each settings size");
+            }
+            app.m_config.window->grabWindow().save(out+"/settings-selection-hover-small.png");
+            app.m_config.window->resize(940,700);pump(60);app.m_config.window->grabWindow();
             click(app.m_config.window,toggle);
             check(app.m_routingDraft.value("selectionIconHoverTranslate").toBool()&&!app.m_settings.value("selectionIconHoverTranslate").toBool(),"hover switch remains a draft before saving");
             app.m_config.window->grabWindow().save(out+"/settings-selection-hover.png");
@@ -259,8 +271,9 @@ void Probe::run(App& app,const QJsonObject& params)
                 ++*reads;return reader(p,target,cancel);
             };
             auto leave=[&]{QEvent event(QEvent::Leave);QCoreApplication::sendEvent(app.m_icon.window,&event);pump(10);};
+            QPoint releasePoint{180,180};
             auto show=[&]{
-                app.closeWord();app.hideSelectionIcon();app.m_iconTarget=fixture;app.m_iconPoint={180,180};app.readIconSelection();
+                app.closeWord();app.hideSelectionIcon();app.m_iconTarget=fixture;app.m_iconPoint=releasePoint;app.readIconSelection();
                 check(until([&]{return app.m_icon.window&&app.m_icon.window->isVisible();}),"hover fixture icon appears");leave();
             };
             auto hover=[&]{hoverItem(app.m_icon.window,visualItem(app.m_icon.window->contentItem(),"translate-selection-icon"));};
@@ -293,10 +306,43 @@ void Probe::run(App& app,const QJsonObject& params)
             check(reads->load()==3&&!app.m_icon.window->isVisible(),"switching app cancels pending hover");app.m_foreground=[fixture]{return fixture;};
             show();hover();pump(100);app.showSettings();app.configAction("selectionIconHoverTranslate",false);app.configAction("save",{});app.configAction("close",{});pump(400);
             check(reads->load()==3&&!app.m_iconBackend.values.value("hoverTranslate").toBool(),"saving disabled switch cancels pending hover");
+            for(auto monitor:QGuiApplication::screens()){
+                const auto work=monitor->availableGeometry();const auto origin=monitor->geometry().topLeft();
+                for(auto release:{work.topLeft()+QPoint(80,80),work.topLeft()+QPoint(240,150),work.bottomRight()-QPoint(2,2)}){
+                    releasePoint=origin+(release-origin)*monitor->devicePixelRatio();
+                    // Both forward and reverse drags return the same document-ordered bounds.
+                    // Make those deliberately distant so using the text tail cannot pass.
+                    app.m_readSelection=[](POINT,HWND,Cancel){return Selection{"Complete selection remains near the release point.",{700,600,300,500},{900,1080,100,20}};};
+                    for(int trigger=0;trigger<3;++trigger){
+                        app.m_settings["selectionIconHoverTranslate"]=trigger==1;
+                        app.m_iconBackend.update({{"hoverTranslate",trigger==1}});
+                        if(trigger==2){
+                            app.closeWord();app.m_mouse=[releasePoint]{return releasePoint;};app.textFlow("jsel");
+                        }else{
+                            show();app.m_mouse=[] {return QPoint(-30000,-30000);};
+                            // A fresh icon must also discard an old manually moved popup's anchor.
+                            app.m_wordPlacementFrozen=true;
+                            if(trigger==0)click(app.m_icon.window,visualItem(app.m_icon.window->contentItem(),"translate-selection-icon"));
+                            else hover();
+                        }
+                        check(until(finished),"selection popup completes from each trigger");pump(80);
+                        auto window=app.m_word.window;
+                        check(window->screen()==monitor&&app.m_wordAnchor==releasePoint,"selection popup preserves trigger monitor and captured pointer");
+                        check(work.contains(window->geometry()),"selection popup stays inside its monitor at screen edges");
+                        if(release.x()<work.left()+300&&release.y()<work.top()+200){
+                            check((window->position()-release-QPoint(10,10)).manhattanLength()<=3,"click, hover and hotkey do not relocate the popup to the text tail");
+                            app.m_wordBackend.update({{"translatedText",QStringLiteral("Longer translation remains beside the selection. ").repeated(8)}});pump(80);
+                            check((window->position()-release-QPoint(10,10)).manhattanLength()<=3,"translation growth retains the release anchor");
+                        }
+                    }
+                }
+            }
             app.closeWord();app.hideSelectionIcon();app.m_settings=originalSettings;app.m_foreground=originalForeground;
-            app.m_readSelection=originalReader;app.m_readActiveSelection=originalActiveReader;DestroyWindow(fixture);
+            app.m_readSelection=originalReader;app.m_readActiveSelection=originalActiveReader;app.m_mouse=originalMouse;
+            app.m_iconBackend.update({{"hoverTranslate",originalSettings.value("selectionIconHoverTranslate").toBool()}});DestroyWindow(fixture);
             report["selectionHoverDefaultOff"]=true;report["selectionHoverSettings"]=true;report["selectionHoverFreshText"]=true;
             report["selectionHoverCancellation"]=true;report["selectionHoverOneRequest"]=true;
+            report["selectionHoverHomeVisible"]=true;report["wordSelectionMouseReleaseAnchor"]=true;
         };
         if(params.value("probeSelectionHover").toBool()){
             testSelectionHover();report["passed"]=true;atomicJson(out+"/report.json",report);QCoreApplication::exit(0);return;

@@ -698,6 +698,7 @@ void App::translateIconSelection()
         GetAncestor(m_foreground(),GA_ROOT)!=GetAncestor(m_iconTarget,GA_ROOT)||DWORD(GetTickCount()-m_iconShown)>15000){hideSelectionIcon();return;}
     auto selection=m_iconSelection;auto point=m_iconPoint;auto target=m_iconTarget;
     hideSelectionIcon();m_selectionTarget=target;
+    m_wordPlacementFrozen=false; // A new selection must not inherit an older popup's drag/retry position.
     openWord("jsel",point,selection.area);
     // Confirm final text on click or opted-in hover. The passive snapshot supplies placement
     // only: it may be incomplete or already stale.
@@ -965,11 +966,15 @@ void App::placeWord()
         m_word.window->setPosition(boundedPosition(m_word.window,m_word.window->position()));
         return;
     }
-    auto point=m_wordSelection.isEmpty()?m_wordAnchor:m_wordSelection.bottomLeft();
+    // Accessibility ranges are ordered by document, not by drag direction.
+    // Keep selection popups at the captured trigger point throughout the read
+    // and translation; only OCR uses the recognized line's bounds for placement.
+    const bool useSelectionBounds=m_wordMode!="jsel"&&!m_wordSelection.isEmpty();
+    auto point=useSelectionBounds?m_wordSelection.bottomLeft():m_wordAnchor;
     auto s=screenAt(point);m_word.window->setScreen(s);auto work=s->availableGeometry();
     auto at=logical(point,s)+QPoint(10,10);
     if(at.y()+m_word.window->height()>work.bottom()-4){
-        auto top=m_wordSelection.isEmpty()?m_wordAnchor:m_wordSelection.topLeft();
+        auto top=useSelectionBounds?m_wordSelection.topLeft():m_wordAnchor;
         at.setY(logical(top,s).y()-m_word.window->height()-10);
     }
     m_word.window->setPosition(boundedPosition(m_word.window,at));

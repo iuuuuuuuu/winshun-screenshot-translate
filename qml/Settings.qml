@@ -78,7 +78,8 @@ Window {
                                "Test services, arrange fallback, or open a service tab to configure it.")
                 color: Theme.subtext; font.pixelSize: 12; wrapMode: Text.Wrap
             }
-            Row {
+            Flow {
+                width: parent.width
                 spacing: 12
                 FlatButton { objectName: "open-panel"; text: window.t("打开独立翻译面板", "Open translation panel"); textPixelSize: 13; onClicked: backend.action("openPanel",null) }
                 FlatButton { objectName: "open-history"; text: window.t("历史与收藏", "History and favorites"); textPixelSize: 13; onClicked: backend.action("openHistory",null) }
@@ -98,8 +99,24 @@ Window {
                     text: window.t("图标设置：", "Icon options: ") + (backend.state.selectionIconForeignOnly
                         ? window.t("非默认语种", "Other languages") : window.t("所有语种", "All languages"))
                     textPixelSize: 13; highlighted: window.iconOptionsOpen
+                    trailingGlyph: window.iconOptionsOpen ? "\uE70E" : "\uE70D"
                     onClicked: { window.iconOptionsOpen = !window.iconOptionsOpen; scroll.contentY = 0 }
                 }
+                FlatButton {
+                    objectName: "selection-icon-hover-toggle"
+                    visible: window.home && backend.state.selectionIconHoverTranslate !== undefined
+                    enabled: !!backend.state.selectionIconEnabled
+                    text: window.t("悬停图标自动翻译：", "Translate on icon hover: ")
+                        + (backend.state.selectionIconHoverTranslate ? window.t("开", "On") : window.t("关", "Off"))
+                    textPixelSize: 13; highlighted: !!backend.state.selectionIconHoverTranslate
+                    onClicked: backend.action("selectionIconHoverTranslate", !backend.state.selectionIconHoverTranslate)
+                }
+            }
+            Text {
+                visible: window.home && backend.state.selectionIconHoverTranslate !== undefined
+                width: parent.width; wrapMode: Text.Wrap; font.pixelSize: 12; color: Theme.subtext
+                text: window.t("悬停开关默认关闭；开启并保存后，停留 350 毫秒翻译，移开取消。",
+                    "Hover translation is off by default. Enable and save, then hover for 350 ms to translate; move away to cancel.")
             }
             Item { width: 1; height: 4 }
             ChoiceTabs {
@@ -158,19 +175,6 @@ Window {
                                 + window.iconLanguageLabels[Math.max(1, window.iconLanguageCodes.indexOf(backend.state.selectionIconResolvedLanguage))]
                                 + window.t("。跟随设置时采用目标语言；目标为自动时采用界面语言。按主要语种判断；仅非默认语种模式下，纯数字和符号不显示图标。保存后生效，快捷键不受影响。",
                                     ". Follow settings uses the target language, or the interface language when target is automatic. Uses the main language. Other-languages mode also hides numbers and symbols. Save to apply. Hotkeys are unaffected.")
-                        }
-                        FlatButton {
-                            objectName: "selection-icon-hover-toggle"
-                            visible: backend.state.selectionIconHoverTranslate !== undefined
-                            text: window.t("悬停图标自动翻译：", "Translate on icon hover: ")
-                                + (backend.state.selectionIconHoverTranslate ? window.t("开", "On") : window.t("关", "Off"))
-                            highlighted: !!backend.state.selectionIconHoverTranslate
-                            onClicked: backend.action("selectionIconHoverTranslate", !backend.state.selectionIconHoverTranslate)
-                        }
-                        Text {
-                            width: parent.width; wrapMode: Text.Wrap; font.pixelSize: 12; color: Theme.subtext
-                            text: window.t("默认关闭。开启后，鼠标在小译图标上停留 350 毫秒即可翻译；移开则取消，点击仍可立即翻译。保存后生效。",
-                                "Off by default. Stay over the translate icon for 350 ms to translate. Moving away cancels; clicking still translates immediately. Save to apply.")
                         }
                     }
                 }
