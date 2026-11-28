@@ -83,7 +83,7 @@ LRESULT CALLBACK windowProc(HWND window,UINT message,WPARAM w,LPARAM l){
         if(copy){
             if(fixture->copyDelegate){
                 DWORD_PTR handled=0;
-                check(SendMessageTimeoutW(fixture->copyDelegate,WM_COPY,0,0,SMTO_ABORTIFHUNG|SMTO_BLOCK,1000,&handled)&&handled,"child process copy command");
+                check(SendMessageTimeoutW(fixture->copyDelegate,WM_COPY,0,0,SMTO_ABORTIFHUNG,1000,&handled)&&handled,"child process copy command");
             }else writeText(window,fixture->text);
             if(fixture->cancel)fixture->cancel->store(true);
             return TRUE;
@@ -109,7 +109,11 @@ struct CopyChild {
         window=reinterpret_cast<HWND>(quintptr(ready.value("window").toString().toULongLong()));
         check(IsWindow(window),"clipboard broker window exists");
     }
-    void copy(){DWORD_PTR result=0;check(SendMessageTimeoutW(window,WM_COPY,0,0,SMTO_ABORTIFHUNG|SMTO_BLOCK,1000,&result)&&result,"broker copy succeeds");}
+    void copy(){
+        // The test UI thread may own the previous synthetic clipboard. Let it
+        // receive WM_DESTROYCLIPBOARD while the child replaces that content.
+        DWORD_PTR result=0;check(SendMessageTimeoutW(window,WM_COPY,0,0,SMTO_ABORTIFHUNG,1000,&result)&&result,"broker copy succeeds");
+    }
     ~CopyChild(){process.kill();process.waitForFinished(1000);}
 };
 }
