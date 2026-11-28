@@ -67,6 +67,20 @@ void click(QQuickWindow* w,QQuickItem* item)
 {
     check(w&&item,"missing click target");
     if(item->objectName()=="word-editor"&&!item->isVisible()){QMetaObject::invokeMethod(w,"focusEditor");pump(180);}
+    // Settle pending QML layout before measuring an injected mouse target.
+    // Private desktops may not render a frame between two fast test actions.
+    w->grabWindow();
+    if(auto scroll=w->findChild<QQuickItem*>("settings-scroll")){
+        for(auto parent=item->parentItem();parent;parent=parent->parentItem())if(parent==scroll){
+            const auto top=item->mapToItem(scroll,QPointF()).y();
+            if(top<0||top+item->height()>scroll->height()){
+                const auto y=scroll->property("contentY").toDouble()+top-40;
+                scroll->setProperty("contentY",std::clamp(y,0.0,std::max(0.0,scroll->property("contentHeight").toDouble()-scroll->height())));
+                w->grabWindow();
+            }
+            break;
+        }
+    }
     auto p=item->mapToScene(QPointF(item->width()/2,item->height()/2));
     check(item->isVisible()&&item->isEnabled()&&item->width()>0&&item->height()>0,"click target is visible and enabled");
     // Route through the native event dispatcher so Qt's global button state
@@ -2019,7 +2033,11 @@ void Probe::run(App& app,const QJsonObject& params)
         testSelectionHover();testAiControls();report["translationPanel"]=true;
         pump(200);report["closedMemory"]=memory();
         report["passed"]=true;code=0;
-    }catch(const std::exception& e){report["passed"]=false;report["error"]=QString::fromUtf8(e.what());}
+    }catch(const std::exception& e){
+        report["passed"]=false;report["error"]=QString::fromUtf8(e.what());
+        if(app.m_config.window&&app.m_config.window->isVisible())app.m_config.window->grabWindow().save(out+"/failure-settings.png");
+        if(app.m_panel.window&&app.m_panel.window->isVisible())app.m_panel.window->grabWindow().save(out+"/failure-panel.png");
+    }
     try{atomicJson(out+"/report.json",report);}catch(...){}
     app.closeWord();app.closePin();app.configAction("close",{});
     QCoreApplication::exit(code);
