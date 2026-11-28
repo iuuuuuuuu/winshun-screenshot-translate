@@ -406,10 +406,14 @@ def main():
                 "probePointerFixtures":pointer_fixtures, "probeDictionaryEndpoint":base,
                 "probeMemory":"--memory" in sys.argv, "probeWindowFrame":"--window-frame" in sys.argv,
                 "probeWordPopup":"--word-popup" in sys.argv, "probeSettings":"--settings" in sys.argv,
-                "probeAiModels":"--ai-models" in sys.argv
+                "probeAiModels":"--ai-models" in sys.argv, "probeSelectionHover":"--selection-hover" in sys.argv
             }, "--gpu" in sys.argv)
             report=json.loads((out/"report.json").read_text(encoding="utf-8"))
             assert report["passed"], report
+            if "--selection-hover" in sys.argv:
+                print(json.dumps({k:v for k,v in report.items() if k.startswith("selectionHover") or k in ("passed","qtVersion","pythonLoaded")},ensure_ascii=True))
+                server.shutdown()
+                return
             if "--ai-models" in sys.argv:
                 print(json.dumps({k:v for k,v in report.items() if k.startswith("ai") or k in ("passed","qtVersion","pythonLoaded")},ensure_ascii=True))
                 server.shutdown()

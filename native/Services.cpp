@@ -127,6 +127,7 @@ QJsonObject normalizedRouting(const QJsonObject& value)
         {"aiContextEnabled",value.value("aiContextEnabled").toBool(false)},
         {"aiContextMaxChars",QList<int>{200,600,1000}.contains(value.value("aiContextMaxChars").toInt(600))?value.value("aiContextMaxChars").toInt(600):600},
         {"selectionIconEnabled",value.value("selectionIconEnabled").toBool(true)},
+        {"selectionIconHoverTranslate",value.value("selectionIconHoverTranslate").toBool(false)},
         {"selectionIconForeignOnly",value.value("selectionIconForeignOnly").toBool(true)},
         {"selectionIconDefaultLanguage",QStringList{"auto","zh","en","ja","ko","fr","de","es","ru"}.contains(language)?language:"auto"}};
 }

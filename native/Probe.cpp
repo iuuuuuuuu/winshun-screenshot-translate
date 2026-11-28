@@ -216,6 +216,72 @@ void Probe::run(App& app,const QJsonObject& params)
         report["loadedModulePaths"]=modulePaths;report["runtimeDirectory"]=runtime;
         report["qtBundled"]=runtime.compare(QDir::cleanPath(QCoreApplication::applicationDirPath()+"/runtime"),Qt::CaseInsensitive)==0;
         report["startupMemory"]=memory();
+        auto testSelectionHover=[&]{
+            const auto originalSettings=app.m_settings;auto originalForeground=app.m_foreground;
+            auto originalReader=app.m_readSelection;auto originalActiveReader=app.m_readActiveSelection;
+            app.showSettings();app.configAction("home",{});pump(30);
+            check(!app.m_configBackend.values.value("selectionIconHoverTranslate").toBool(),"hover translation defaults off in UI");
+            app.m_config.window->setProperty("iconOptionsOpen",true);pump(30);
+            auto toggle=visualItem(app.m_config.window->contentItem(),"selection-icon-hover-toggle");
+            check(toggle&&toggle->isVisible(),"hover option is discoverable under icon settings");
+            click(app.m_config.window,toggle);
+            check(app.m_routingDraft.value("selectionIconHoverTranslate").toBool()&&!app.m_settings.value("selectionIconHoverTranslate").toBool(),"hover switch remains a draft before saving");
+            app.m_config.window->grabWindow().save(out+"/settings-selection-hover.png");
+            app.configAction("close",{});app.showSettings();
+            check(!app.m_routingDraft.value("selectionIconHoverTranslate").toBool(),"cancel discards hover preference");
+            app.configAction("close",{});
+            auto fixture=CreateWindowExW(0,L"STATIC",L"Hover selection fixture",WS_OVERLAPPEDWINDOW,50,50,500,200,nullptr,nullptr,nullptr,nullptr);
+            check(fixture,"hover source window exists");
+            auto text=std::make_shared<QString>("Hover snapshot");auto reads=std::make_shared<std::atomic_int>(0);
+            app.m_foreground=[fixture]{return fixture;};app.m_settings["provider"]="google";app.m_settings["fallbackEnabled"]=false;
+            app.m_readSelection=[text](POINT,HWND,Cancel){return Selection{*text,{120,120,150,24},{230,120,40,24}};};
+            // Only native window events and fixture selection reads; no clipboard writes.
+            app.m_readActiveSelection=[reads](POINT p,HWND target,Cancel cancel,const Selection&,const SelectionReader& reader){
+                ++*reads;return reader(p,target,cancel);
+            };
+            auto leave=[&]{QEvent event(QEvent::Leave);QCoreApplication::sendEvent(app.m_icon.window,&event);pump(10);};
+            auto show=[&]{
+                app.closeWord();app.hideSelectionIcon();app.m_iconTarget=fixture;app.m_iconPoint={180,180};app.readIconSelection();
+                check(until([&]{return app.m_icon.window&&app.m_icon.window->isVisible();}),"hover fixture icon appears");leave();
+            };
+            auto hover=[&]{hoverItem(app.m_icon.window,visualItem(app.m_icon.window->contentItem(),"translate-selection-icon"));};
+            auto finished=[&]{return app.m_word.window&&app.m_word.window->isVisible()&&!app.m_wordBackend.values.value("loading").toBool();};
+            show();hover();pump(450);
+            check(reads->load()==0&&app.m_icon.window->isVisible(),"default-off hover never reads or translates");
+            click(app.m_icon.window,visualItem(app.m_icon.window->contentItem(),"translate-selection-icon"));
+            check(until(finished)&&reads->load()==1,"click works while hover option is off");app.closeWord();
+            app.showSettings();app.configAction("selectionIconHoverTranslate",true);app.configAction("save",{});app.configAction("close",{});
+            app.showSettings();check(app.m_routingDraft.value("selectionIconHoverTranslate").toBool()&&app.m_iconBackend.values.value("hoverTranslate").toBool(),"save and reopen persist enabled hover");app.configAction("close",{});
+            show();hover();pump(100);leave();pump(400);
+            check(reads->load()==1&&app.m_icon.window->isVisible(),"leaving before delay cancels translation");
+            hover();pump(100);app.hideSelectionIcon();pump(400);
+            check(reads->load()==1,"hidden icon cancels pending hover");
+            show();hover();pump(100);*text="Complete fresh selection after hover begins.";
+            check(reads->load()==1,"brief hover waits before reading selection");
+            check(until(finished)&&reads->load()==2&&app.m_wordSource==*text,"hover rereads and translates complete current selection");
+            app.m_iconBackend.action("translate",{});app.m_iconBackend.action("hoverTranslate",{});pump(400);
+            check(reads->load()==2&&!app.m_icon.window->isVisible(),"hover and late click trigger only once");
+            app.m_word.window->grabWindow().save(out+"/word-from-hover.png");
+            show();hover();pump(100);
+            const QPointF center(16,16);const auto global=app.m_icon.window->mapToGlobal(center.toPoint());
+            QMouseEvent press(QEvent::MouseButtonPress,center,global,Qt::LeftButton,Qt::LeftButton,Qt::NoModifier);
+            QCoreApplication::sendEvent(app.m_icon.window,&press);pump(400);
+            check(reads->load()==2,"pressing the icon cancels hover timer while held");
+            QMouseEvent release(QEvent::MouseButtonRelease,center,global,Qt::LeftButton,Qt::NoButton,Qt::NoModifier);
+            QCoreApplication::sendEvent(app.m_icon.window,&release);
+            check(until(finished)&&reads->load()==3,"click release still translates with hover enabled");
+            show();hover();pump(100);app.m_foreground=[] {return HWND(nullptr);};pump(400);
+            check(reads->load()==3&&!app.m_icon.window->isVisible(),"switching app cancels pending hover");app.m_foreground=[fixture]{return fixture;};
+            show();hover();pump(100);app.showSettings();app.configAction("selectionIconHoverTranslate",false);app.configAction("save",{});app.configAction("close",{});pump(400);
+            check(reads->load()==3&&!app.m_iconBackend.values.value("hoverTranslate").toBool(),"saving disabled switch cancels pending hover");
+            app.closeWord();app.hideSelectionIcon();app.m_settings=originalSettings;app.m_foreground=originalForeground;
+            app.m_readSelection=originalReader;app.m_readActiveSelection=originalActiveReader;DestroyWindow(fixture);
+            report["selectionHoverDefaultOff"]=true;report["selectionHoverSettings"]=true;report["selectionHoverFreshText"]=true;
+            report["selectionHoverCancellation"]=true;report["selectionHoverOneRequest"]=true;
+        };
+        if(params.value("probeSelectionHover").toBool()){
+            testSelectionHover();report["passed"]=true;atomicJson(out+"/report.json",report);QCoreApplication::exit(0);return;
+        }
         auto testAiControls=[&]{
         app.showSettings();app.configSelect("ai");pump(30);
         check(!app.m_configBackend.values.value("aiContextEnabled").toBool(),"context UI defaults off");
@@ -1945,7 +2011,7 @@ void Probe::run(App& app,const QJsonObject& params)
         app.translatePanel();pump(80);auto closingPanel=app.m_panelCancel;
         click(app.m_panel.window,visualItem(app.m_panel.window->contentItem(),"panel-close"));pump(40);
         check(!app.m_panel.window&&closingPanel->load(),"shared panel close button cancels pending work");
-        testAiControls();report["translationPanel"]=true;
+        testSelectionHover();testAiControls();report["translationPanel"]=true;
         pump(200);report["closedMemory"]=memory();
         report["passed"]=true;code=0;
     }catch(const std::exception& e){report["passed"]=false;report["error"]=QString::fromUtf8(e.what());}

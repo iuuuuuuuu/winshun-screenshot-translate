@@ -517,13 +517,16 @@ int main(int argc,char** argv)
             throw std::runtime_error("mixed selections follow their main language");
         {
             QTemporaryDir settingsDir;st::Services settings(settingsDir.path());
+            if(settings.routing().value("selectionIconHoverTranslate").toBool(true))throw std::runtime_error("icon hover translation defaults off");
             if(!settings.routing().value("selectionIconForeignOnly").toBool()||settings.routing().value("selectionIconDefaultLanguage")!="auto")
                 throw std::runtime_error("fresh settings default to foreign selection only");
-            settings.save({},{{"selectionIconForeignOnly",false},{"selectionIconDefaultLanguage","en"}});
+            settings.save({},{{"selectionIconForeignOnly",false},{"selectionIconDefaultLanguage","en"},{"selectionIconHoverTranslate",true}});
             st::Services reopenedSettings(settingsDir.path());
+            if(!reopenedSettings.routing().value("selectionIconHoverTranslate").toBool())throw std::runtime_error("icon hover opt-in survives restart");
             if(reopenedSettings.routing().value("selectionIconForeignOnly").toBool(true)||reopenedSettings.routing().value("selectionIconDefaultLanguage")!="en")
                 throw std::runtime_error("selection language preferences survive restart");
             reopenedSettings.save({},{{"selectionIconDefaultLanguage","invalid"}});
+            if(reopenedSettings.routing().value("selectionIconHoverTranslate").toBool(true))throw std::runtime_error("missing hover setting stays off for old configurations");
             if(reopenedSettings.routing().value("selectionIconDefaultLanguage")!="auto")throw std::runtime_error("invalid default language is normalized");
         }
         QTemporaryDir dir;st::Services services(dir.path());

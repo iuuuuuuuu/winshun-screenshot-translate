@@ -95,7 +95,7 @@ Window {
                     objectName: "selection-icon-options"
                     visible: window.home && backend.state.selectionIconForeignOnly !== undefined
                     enabled: !!backend.state.selectionIconEnabled
-                    text: window.t("显示条件：", "Show for: ") + (backend.state.selectionIconForeignOnly
+                    text: window.t("图标设置：", "Icon options: ") + (backend.state.selectionIconForeignOnly
                         ? window.t("非默认语种", "Other languages") : window.t("所有语种", "All languages"))
                     textPixelSize: 13; highlighted: window.iconOptionsOpen
                     onClicked: { window.iconOptionsOpen = !window.iconOptionsOpen; scroll.contentY = 0 }
@@ -136,7 +136,7 @@ Window {
                     Column {
                         id: iconOptions
                         x: 16; y: 16; width: parent.width - 32; spacing: 10
-                        Text { text: window.t("划词图标显示条件", "Selection icon visibility"); color: Theme.text; font.pixelSize: 17; font.weight: Font.DemiBold }
+                        Text { text: window.t("划词图标设置", "Selection icon settings"); color: Theme.text; font.pixelSize: 17; font.weight: Font.DemiBold }
                         ChoiceTabs {
                             objectName: "selection-icon-modes"
                             width: parent.width
@@ -158,6 +158,19 @@ Window {
                                 + window.iconLanguageLabels[Math.max(1, window.iconLanguageCodes.indexOf(backend.state.selectionIconResolvedLanguage))]
                                 + window.t("。跟随设置时采用目标语言；目标为自动时采用界面语言。按主要语种判断；仅非默认语种模式下，纯数字和符号不显示图标。保存后生效，快捷键不受影响。",
                                     ". Follow settings uses the target language, or the interface language when target is automatic. Uses the main language. Other-languages mode also hides numbers and symbols. Save to apply. Hotkeys are unaffected.")
+                        }
+                        FlatButton {
+                            objectName: "selection-icon-hover-toggle"
+                            visible: backend.state.selectionIconHoverTranslate !== undefined
+                            text: window.t("悬停图标自动翻译：", "Translate on icon hover: ")
+                                + (backend.state.selectionIconHoverTranslate ? window.t("开", "On") : window.t("关", "Off"))
+                            highlighted: !!backend.state.selectionIconHoverTranslate
+                            onClicked: backend.action("selectionIconHoverTranslate", !backend.state.selectionIconHoverTranslate)
+                        }
+                        Text {
+                            width: parent.width; wrapMode: Text.Wrap; font.pixelSize: 12; color: Theme.subtext
+                            text: window.t("默认关闭。开启后，鼠标在小译图标上停留 350 毫秒即可翻译；移开则取消，点击仍可立即翻译。保存后生效。",
+                                "Off by default. Stay over the translate icon for 350 ms to translate. Moving away cancels; clicking still translates immediately. Save to apply.")
                         }
                     }
                 }

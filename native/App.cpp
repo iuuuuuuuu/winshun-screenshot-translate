@@ -153,7 +153,9 @@ App::App(ws::captureplugin::Protocol& protocol,QString appDir,QJsonObject initia
             GetAncestor(m_foreground(),GA_ROOT)!=GetAncestor(m_iconTarget,GA_ROOT)||
             DWORD(GetTickCount()-m_iconShown)>15000)hideSelectionIcon();
     });
-    QObject::connect(&m_iconBackend,&Backend::invoked,this,[this](const QString& action,const QVariant&){if(action=="translate")translateIconSelection();});
+    QObject::connect(&m_iconBackend,&Backend::invoked,this,[this](const QString& action,const QVariant&){
+        if(action=="translate"||(action=="hoverTranslate"&&m_settings.value("selectionIconHoverTranslate").toBool(false)))translateIconSelection();
+    });
     m_primerWatchdog.setSingleShot(true);m_primerRestart.setSingleShot(true);
     QObject::connect(&m_selectionPrimer,&QProcess::started,this,[this]{
         m_selectionPrimer.write("{\"prime\":true,\"watch\":true}\n");m_primerWatchdog.start(4000);
@@ -578,7 +580,8 @@ void App::loadSelectionSettings()
         if(m_wordCancel)m_wordCancel->store(true);++m_wordEpoch;
         m_wordBackend.update({{"contextBefore",""},{"contextAfter",""},{"contextChars",0},{"loading",false},{"providerSwitching",false},{"status",m_chinese?"上下文设置已更新，可重试翻译":"Context settings updated. Retry translation."}});
     }
-    for(const auto key:{"selectionIconEnabled","selectionIconForeignOnly","selectionIconDefaultLanguage","aiContextEnabled","aiContextMaxChars"})m_settings[key]=routing.value(key);
+    for(const auto key:{"selectionIconEnabled","selectionIconHoverTranslate","selectionIconForeignOnly","selectionIconDefaultLanguage","aiContextEnabled","aiContextMaxChars"})m_settings[key]=routing.value(key);
+    m_iconBackend.update({{"hoverTranslate",m_settings.value("selectionIconHoverTranslate").toBool(false)}});
 }
 void App::updateSelectionMonitor()
 {
@@ -690,11 +693,13 @@ void App::readIconSelection()
 }
 void App::translateIconSelection()
 {
-    if(m_iconSelection.text.trimmed().isEmpty())return;
+    if(!m_icon.window||!m_icon.window->isVisible()||m_iconSelection.text.trimmed().isEmpty())return;
+    if(!m_settings.value("selectionIconEnabled").toBool(true)||!IsWindow(m_iconTarget)||
+        GetAncestor(m_foreground(),GA_ROOT)!=GetAncestor(m_iconTarget,GA_ROOT)||DWORD(GetTickCount()-m_iconShown)>15000){hideSelectionIcon();return;}
     auto selection=m_iconSelection;auto point=m_iconPoint;auto target=m_iconTarget;
     hideSelectionIcon();m_selectionTarget=target;
     openWord("jsel",point,selection.area);
-    // Confirm the final text on click. The passive snapshot supplies placement
+    // Confirm final text on click or opted-in hover. The passive snapshot supplies placement
     // only: it may be incomplete or already stale.
     m_iconClickFallback=selection;m_wordRequestPoint=point;m_selectionAttempts=0;
     m_selectionClipboardBaseline=m_clipboardSequence();
@@ -1617,7 +1622,7 @@ void App::configAction(const QString& name,const QVariant& value)
         else if(name=="cancelDictionary"){
             if(m_dictionaryCancel)m_dictionaryCancel->store(true);
         }
-        else if(name=="selectionIconEnabled"||name=="selectionIconForeignOnly"){
+        else if(name=="selectionIconEnabled"||name=="selectionIconForeignOnly"||name=="selectionIconHoverTranslate"){
             m_routingDraft[name]=value.toBool();publishTests();
         }
         else if(name=="selectionIconDefaultLanguage"){
@@ -1748,6 +1753,7 @@ void App::publishTests()
     m_configBackend.update({{"aiTests",aiTests},{"testResults",rows},{"testing",m_testRunning>0||!m_testQueue.isEmpty()},{"batch",m_batch},
         {"queue",queue},{"routingMode",m_routingDraft.value("mode").toString("manual")},{"readyCount",ready},{"coolingCount",cooling},{"unconfiguredCount",unconfigured},
         {"selectionIconEnabled",m_routingDraft.value("selectionIconEnabled").toBool(true)},
+        {"selectionIconHoverTranslate",m_routingDraft.value("selectionIconHoverTranslate").toBool(false)},
         {"aiContextEnabled",m_routingDraft.value("aiContextEnabled").toBool(false)},
         {"aiContextMaxChars",m_routingDraft.value("aiContextMaxChars").toInt(600)},
         {"selectionIconForeignOnly",m_routingDraft.value("selectionIconForeignOnly").toBool(true)},

@@ -1,4 +1,6 @@
-# 截图翻译 0.4.39：原生版构建与验证
+# 截图翻译 0.4.40：原生版构建与验证
+
+0.4.40 增加默认关闭的 `selectionIconHoverTranslate`。保存后作用于小译图标；进入图标停留 350 ms 后共用主动完整取词路径，移出、按下、隐藏、关闭开关均停止计时。后端再次检查原窗口、图标有效期及启用状态。`--selection-hover` 验证默认关闭、设置保存、移出/隐藏/换窗口取消、完整选区复核及只请求一次；发布流水线运行同一专项。
 
 0.4.39 修复多进程软件的复制来源识别：主窗口与剪贴板代理进程不必是同一个 PID，但必须在已核实的进程父子链上，且创建时间匹配；进程号复用、同名无关程序和兄弟进程均不放行。主动复制与手动复制接续共用规则。`--selection-release` 增加真实子进程复制、同名无关进程拒绝、取消还原及新复制优先测试；`native_tests --selection-owner-probe <HWND>` 只核对窗口/剪贴板进程元数据，不读取或修改剪贴板文字。
 
@@ -42,7 +44,7 @@ Firefox 选区回归：`python -B native/test_selection_firefox.py --driver <gec
 ## 安装和回退
 
 在 WinShun 设置 → 插件 → 从压缩包安装，选择
-`iuuuuuuuu.screenshot-translate-0.4.39.wsplugin`。运行时不检查或启动 Python。
+`iuuuuuuuu.screenshot-translate-0.4.40.wsplugin`。运行时不检查或启动 Python。
 包内包括启动器、应用 DLL、少量 Visual C++ 依赖、许可和文档；DLL 内包含 QML 控件与授权图标字体。
 现有渠道、热键、代理、偏好和 DPAPI 密钥格式保持兼容，不迁移或删除用户的数据目录。
 
