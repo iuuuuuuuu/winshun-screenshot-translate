@@ -394,10 +394,15 @@ def main():
                 "settings":{"provider":"zvo","fallbackEnabled":False}, "capabilities":{"hostHotkeys":True},
                 "probePointerFixtures":pointer_fixtures, "probeDictionaryEndpoint":base,
                 "probeMemory":"--memory" in sys.argv, "probeWindowFrame":"--window-frame" in sys.argv,
-                "probeWordPopup":"--word-popup" in sys.argv, "probeSettings":"--settings" in sys.argv
+                "probeWordPopup":"--word-popup" in sys.argv, "probeSettings":"--settings" in sys.argv,
+                "probeAiModels":"--ai-models" in sys.argv
             }, "--gpu" in sys.argv)
             report=json.loads((out/"report.json").read_text(encoding="utf-8"))
             assert report["passed"], report
+            if "--ai-models" in sys.argv:
+                print(json.dumps({k:v for k,v in report.items() if k.startswith("ai") or k in ("passed","qtVersion","pythonLoaded")},ensure_ascii=True))
+                server.shutdown()
+                return
             if "--settings" in sys.argv:
                 print(json.dumps({k:v for k,v in report.items() if k.startswith("settings") or k.startswith("unrelated") or k in ("passed","uiRenderer","fontPlatform")},ensure_ascii=True))
                 server.shutdown()

@@ -65,7 +65,7 @@ jobs:
         run: |
           python -X utf8 -B native/test_native.py --build "$env:RUNNER_TEMP\native-build" --runtime "$pwd\.test-output\selection-release\runtime" --core --output .test-output/core-release
           if ($LASTEXITCODE) { throw '原生核心验证失败' }
-          python -X utf8 -B native/test_native.py --build "$env:RUNNER_TEMP\native-build" --runtime "$pwd\.test-output\selection-release\runtime" --output .test-output/ui-release
+          python -X utf8 -B native/test_native.py --build "$env:RUNNER_TEMP\native-build" --runtime "$pwd\.test-output\selection-release\runtime" --ai-models --output .test-output/ui-release
           if ($LASTEXITCODE) { throw '原生界面验证失败' }
       - name: 验证 Firefox 跨组件完整选区和翻译入口
         shell: pwsh
