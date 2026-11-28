@@ -74,6 +74,8 @@ jobs:
         run: |
           npm install --prefix "$env:RUNNER_TEMP/passive-selection" --no-audit --no-fund electron@45.0.0
           if ($LASTEXITCODE) { throw 'Chromium 测试运行时安装失败' }
+          node "$env:RUNNER_TEMP/passive-selection/node_modules/electron/install.js"
+          if ($LASTEXITCODE -or !(Test-Path "$env:RUNNER_TEMP/passive-selection/node_modules/electron/dist/electron.exe")) { throw 'Chromium 测试程序下载失败' }
           python -X utf8 -B native/test_selection_passive.py --electron "$env:RUNNER_TEMP/passive-selection/node_modules/electron/dist/electron.exe" --build "$env:RUNNER_TEMP/native-build" --runtime "$pwd/.test-output/selection-release/runtime" --output .test-output/passive-release
           if ($LASTEXITCODE) { throw '被动划词范围验证失败' }
       - name: 验证 Firefox 跨组件完整选区和翻译入口
