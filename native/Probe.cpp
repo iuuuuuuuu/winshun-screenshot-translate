@@ -219,7 +219,12 @@ void Probe::run(App& app,const QJsonObject& params)
         auto testSelectionHover=[&]{
             const auto originalSettings=app.m_settings;auto originalForeground=app.m_foreground;
             auto originalReader=app.m_readSelection;auto originalActiveReader=app.m_readActiveSelection;
-            app.showSettings();app.configAction("home",{});pump(30);
+            app.showSettings();app.configAction("home",{});
+            // Full UI probes may leave a small, scrolled settings window behind.
+            // Start this independent mouse test with the option inside the viewport.
+            app.m_config.window->resize(940,700);
+            auto settingsScroll=app.m_config.window->findChild<QQuickItem*>("settings-scroll");
+            check(settingsScroll,"hover settings scroll exists");settingsScroll->setProperty("contentY",0);pump(30);
             check(!app.m_configBackend.values.value("selectionIconHoverTranslate").toBool(),"hover translation defaults off in UI");
             app.m_config.window->setProperty("iconOptionsOpen",true);pump(30);
             auto toggle=visualItem(app.m_config.window->contentItem(),"selection-icon-hover-toggle");
