@@ -218,6 +218,13 @@ void Probe::run(App& app,const QJsonObject& params)
         report["startupMemory"]=memory();
         auto testAiControls=[&]{
         app.showSettings();app.configSelect("ai");pump(30);
+        check(!app.m_configBackend.values.value("aiContextEnabled").toBool(),"context UI defaults off");
+        click(app.m_config.window,visualItem(app.m_config.window->contentItem(),"ai-context-enabled"));
+        check(app.m_routingDraft.value("aiContextEnabled").toBool()&&!app.m_settings.value("aiContextEnabled").toBool(),"context switch changes only draft");
+        app.configAction("aiContextMaxChars",200);
+        auto contextLimit=visualItem(app.m_config.window->contentItem(),"ai-context-limit");
+        check(contextLimit&&contextLimit->isVisible()&&contextLimit->property("current")==0,"context size control reflects choice");
+        app.m_config.window->grabWindow().save(out+"/settings-ai-context.png");
         auto initialChannels=app.m_configBackend.values.value("aiChannels").toList().size();
         app.aiAction("aiAdd",{});check(app.m_configBackend.values.value("aiChannels").toList().size()==initialChannels+1,"AI channel added");
         typeField(app.m_config.window,"ai-name","测试渠道");
@@ -284,6 +291,47 @@ void Probe::run(App& app,const QJsonObject& params)
         auto savedModels=app.m_services->profile("ai").value("channels").toArray()[catalogChannel].toObject().value("models").toArray();
         check(savedModels[2].toObject().value("cooldownMinutes")==120&&!savedModels[2].toObject().value("enabled").toBool(),"model cooldown and disabled state saved");
         app.configAction("close",{});report["aiChannelControls"]=true;
+        check(app.m_settings.value("aiContextEnabled").toBool()&&app.m_settings.value("aiContextMaxChars")==200,"saving applies context preference");
+        // Native read and UI tests use only a synthetic EDIT on this private desktop.
+        HWND fixture=CreateWindowExW(0,L"EDIT",L"They sat by the river bank before walking home.",WS_POPUP|ES_MULTILINE,0,0,400,100,nullptr,nullptr,nullptr,nullptr);
+        check(fixture,"context fixture created");SendMessageW(fixture,EM_SETSEL,22,26);
+        auto nearby=selectionContextAt({},fixture,"bank",200);
+        check(nearby.value("before").toString().contains("river")&&nearby.value("after").toString().contains("walking"),"native context reads both sides of exact selection");
+        check(selectionContextAt({},fixture,"wrong",200).isEmpty(),"native context rejects mismatched selection");
+        auto nativeRead=std::async(std::launch::async,[&]{return isolatedSelectionContext({},fixture,"bank",200,std::make_shared<std::atomic_bool>(false));});
+        check(until([&]{return nativeRead.wait_for(std::chrono::milliseconds(0))==std::future_status::ready;},2000),"isolated context worker completes");
+        check(nativeRead.get()==nearby,"isolated worker returns bounded context");
+        SetWindowLongPtrW(fixture,GWL_STYLE,GetWindowLongPtrW(fixture,GWL_STYLE)|ES_PASSWORD);
+        check(selectionContextAt({},fixture,"bank",200).isEmpty(),"password context blocked");
+        SetWindowLongPtrW(fixture,GWL_STYLE,GetWindowLongPtrW(fixture,GWL_STYLE)&~ES_PASSWORD);
+        const auto oldSettings=app.m_settings;auto oldReader=app.m_readContext;
+        int contextReads=0;app.m_readContext=[&](POINT,HWND,const QString&,int,Cancel){++contextReads;return nearby;};
+        app.openWord("jsel",{160,160},{});app.prepareWordContext("bank",{},fixture);
+        app.publishWordProviders();
+        for(auto it=app.m_wordProviderProfiles.begin();it!=app.m_wordProviderProfiles.end();++it)
+            if(it->value("channelId")==aiChannels.last().toObject().value("id")&&it->value("model")=="model-two")app.m_wordProviderChoice=it.key();
+        check(!app.m_wordProviderChoice.isEmpty(),"context probe selects configured AI model");
+        app.translateWord("bank");check(until([&]{return !app.m_wordBackend.values.value("loading").toBool();},4000),"context translation completes");
+        check(contextReads==1&&app.m_wordBackend.values.value("contextChars").toInt()>0,"AI translation publishes context preview");
+        click(app.m_word.window,visualItem(app.m_word.window->contentItem(),"word-context-toggle"));
+        check(app.m_word.window->property("contextExpanded").toBool(),"context preview expands");
+        app.m_word.window->grabWindow().save(out+"/word-context.png");
+        app.translateWord("bank",true);check(until([&]{return !app.m_wordBackend.values.value("loading").toBool();},4000)&&contextReads==1,"same source retry preserves context without reread");
+        app.wordAction("submitEdit","new source");check(!app.m_wordContext&&app.m_wordBackend.values.value("contextChars").toInt()==0,"editing drops stale context");
+        check(until([&]{return !app.m_wordBackend.values.value("loading").toBool();},4000),"edited source finishes");
+        app.closeWord();check(!app.m_wordContext&&app.m_wordContextSource.isEmpty(),"closing discards context");
+        std::atomic_bool readingContext=false,contextStopped=false;
+        app.m_readContext=[&](POINT,HWND,const QString&,int,Cancel cancel){
+            readingContext=true;while(!cancel->load())QThread::msleep(5);contextStopped=true;return nearby;
+        };
+        app.m_settings["provider"]="ai";app.m_settings["fallbackEnabled"]=false;
+        app.openWord("jsel",{160,160},{});app.prepareWordContext("cancel context",{},fixture);app.translateWord("cancel context");
+        check(until([&]{return readingContext.load();},1000),"context read started lazily for AI");
+        app.closeWord();check(until([&]{return contextStopped.load();},1000),"closing cancels context read");pump(30);
+        check(app.m_wordBackend.values.value("contextChars").toInt()==0&&!app.m_word.window->isVisible(),"cancelled context cannot reopen or repopulate popup");
+        app.m_settings=oldSettings;app.m_readContext=oldReader;DestroyWindow(fixture);
+        app.showSettings();app.configAction("aiContextEnabled",false);app.configAction("save",{});app.configAction("close",{});
+        report["aiContextSettings"]=true;report["aiContextNativeRead"]=true;report["aiContextPreviewAndInvalidation"]=true;report["aiContextCancellation"]=true;
         report["settingsSaveKeepsOpen"]=true;report["settingsSaveConfirmation"]=true;
         };
         if(params.value("probeAiModels").toBool()){

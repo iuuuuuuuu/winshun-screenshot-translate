@@ -27,6 +27,8 @@ struct Selection { QString text; QRect area; QRect endArea; bool needsManualCopy
 Selection selectionAt(POINT point,HWND target=nullptr,int warmupMs=0);
 HWND selectionTarget();
 Selection isolatedSelection(POINT point,HWND target,Cancel cancel,int timeoutMs=2200);
+QJsonObject selectionContextAt(POINT point,HWND target,const QString& expected,int maxChars);
+QJsonObject isolatedSelectionContext(POINT point,HWND target,const QString& expected,int maxChars,Cancel cancel,int timeoutMs=350);
 int selectionWorker();
 QImage translatedImage(const QImage& source, const QList<Block>& blocks, const QStringList& segments, bool dark,
     QList<ws::capture::RedactLine>* selectable=nullptr);

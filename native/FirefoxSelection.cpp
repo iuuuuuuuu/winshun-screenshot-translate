@@ -122,6 +122,36 @@ Read selected(IAccessibleText* text,int depth=0)
     }
     return {ranges.join('\n'),endArea,true,blockBreaks(text)};
 }
+QJsonObject nearbyText(IAccessible* object,const QString& expected,int limit)
+{
+    if(property(object,true)&(STATE_SYSTEM_INVISIBLE|STATE_SYSTEM_PROTECTED))return {};
+    auto text=query<IAccessibleText>(object);long count=0,start=0,end=0,characters=0;
+    if(!text||FAILED(text->get_nSelections(&count))||count!=1||FAILED(text->get_selection(0,&start,&end))||
+        start<0||end<=start||end-start>4000||FAILED(text->get_nCharacters(&characters))||end>characters)return {};
+    auto read=[&](long a,long b){
+        BSTR raw=nullptr;const auto hr=text->get_text(a,b,&raw);
+        const auto value=SUCCEEDED(hr)&&raw?QString::fromWCharArray(raw,SysStringLen(raw)):QString();
+        SysFreeString(raw);return value.size()==b-a?value:QString();
+    };
+    if(!contextSelectionMatches(read(start,end),expected))return {};
+    auto before=read(std::max(0L,start-limit),start),after=read(end,std::min(characters,end+limit));
+    long freshStart=0,freshEnd=0;
+    if(FAILED(text->get_selection(0,&freshStart,&freshEnd))||freshStart!=start||freshEnd!=end)return {};
+    return boundedTranslationContext({{"before",before},{"after",after}},limit);
+}
+QJsonObject nearbyTree(IAccessible* object,const QString& expected,int limit,int& visited,int depth=0)
+{
+    if(depth>32||++visited>128||property(object,true)&(STATE_SYSTEM_INVISIBLE|STATE_SYSTEM_PROTECTED))return {};
+    if(auto context=nearbyText(object,expected,limit);!context.isEmpty())return context;
+    long count=0;if(FAILED(object->get_accChildCount(&count)))return {};
+    for(long i=0;i<count&&visited<128;++i){
+        Variant child;long read=0;
+        if(FAILED(AccessibleChildren(object,i,1,&child.value,&read))||!read||child.value.vt!=VT_DISPATCH)continue;
+        auto accessible=query<IAccessible>(child.value.pdispVal);
+        if(accessible)if(auto context=nearbyTree(accessible.Get(),expected,limit,visited,depth+1);!context.isEmpty())return context;
+    }
+    return {};
+}
 Selection documentSelection(IAccessible* object,int& visited,int depth=0)
 {
     if(depth>64||++visited>512)return {};
@@ -144,6 +174,23 @@ Selection documentSelection(IAccessible* object,int& visited,int depth=0)
     }
     return {};
 }
+}
+QJsonObject firefoxSelectionContext(HWND target,const QString& expected,int maxChars)
+{
+    auto root=target?GetAncestor(target,GA_ROOT):nullptr;wchar_t name[64]{};
+    if(!root||!GetClassNameW(root,name,64)||wcscmp(name,L"MozillaWindowClass")!=0)return {};
+    ComPtr<IAccessible> accessible;
+    if(FAILED(AccessibleObjectFromWindow(root,OBJID_CLIENT,IID_PPV_ARGS(&accessible)))||!accessible)return {};
+    Variant focused;ComPtr<IAccessible> current;
+    if(SUCCEEDED(accessible->get_accFocus(&focused.value))&&focused.value.vt==VT_DISPATCH)current=query<IAccessible>(focused.value.pdispVal);
+    for(int depth=0;current&&depth<32;++depth){
+        if(property(current.Get(),true)&STATE_SYSTEM_PROTECTED)return {};
+        if(auto context=nearbyText(current.Get(),expected,maxChars);!context.isEmpty())return context;
+        if(property(current.Get())==ROLE_SYSTEM_DOCUMENT){int visited=0;return nearbyTree(current.Get(),expected,maxChars,visited);}
+        ComPtr<IDispatch> parent;if(FAILED(current->get_accParent(&parent))||!parent)break;
+        current=query<IAccessible>(parent.Get());
+    }
+    int visited=0;return nearbyTree(accessible.Get(),expected,maxChars,visited);
 }
 Selection firefoxSelection(HWND target)
 {

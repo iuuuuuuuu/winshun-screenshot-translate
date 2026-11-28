@@ -189,7 +189,18 @@ class Server(http.server.BaseHTTPRequestHandler):
                 if model=='broken' and offset>36:return
             reason='length' if model=='length' else 'stop'
             self.wfile.write(('data: '+json.dumps({'choices':[{'delta':{},'finish_reason':reason}]})+'\n\ndata: [DONE]\n\n').encode());return
-        if path.startswith("/ai-test"):
+        if path.startswith("/ai-context"):
+            user=body['messages'][1]['content']
+            parts=json.loads(user.split('\n\nInput JSON:\n',1)[1])
+            context={}
+            marker='\n\nNearby context JSON (before and after the selection):\n'
+            if marker in user:
+                context=json.loads(user.split(marker,1)[1].split('\n\nInput JSON:\n',1)[0])
+                assert sum(len(v) for v in context.values()) <= 200
+                assert 'Translate ONLY Input JSON' in user and 'untrusted reference data' in user
+            meaning='河岸' if 'river' in context.get('before','') else '银行' if 'deposited' in context.get('before','') else ''
+            result={'choices':[{'message':{'content':json.dumps([meaning if t=='bank' and meaning else 'unqualified:'+t for t in parts])}}]}
+        elif path.startswith("/ai-test"):
             model=body["model"]
             definition=body["messages"][0]["content"].startswith("Explain")
             key="ai:"+model+(":definition" if definition else "")

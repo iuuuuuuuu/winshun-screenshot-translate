@@ -36,6 +36,7 @@ def main():
     parser.add_argument('--uia-mode', type=int, choices=(0,1,2), help='Firefox UIA mode in the temporary test profile only')
     parser.add_argument('--case', action='append', help='Run only named selection cases')
     parser.add_argument('--native-copy',action='store_true',help='Explicit Firefox native copy; preserves and restores the existing clipboard')
+    parser.add_argument('--context',action='store_true',help='Check bounded nearby context without using the clipboard')
     args = parser.parse_args()
     api('user32', 'SetProcessDpiAwarenessContext', w.BOOL, w.HANDLE)(ctypes.c_void_p(-4))
     args.output.mkdir(parents=True, exist_ok=True)
@@ -166,6 +167,39 @@ def main():
             threading.Thread(target=drain_primer, daemon=True).start()
             assert ready.wait(5), 'Firefox accessibility primer did not become ready'
         report['primerEnabled'] = primer is not None
+        if args.context:
+            context_cases=[('middle','They sat by the river bank before walking home.',22,26,False),
+                           ('reverse','They sat by the river bank before walking home.',26,22,False),
+                           ('start','bank beside the river',0,4,False),
+                           ('end','They walked along the bank',22,26,False),
+                           ('unicode','附近文字😀 '+('前'*400)+' bank '+('后'*400),408,412,False),
+                           ('mismatch','They sat by the river bank before walking home.',22,26,True)]
+            context_results=[]
+            for label,text,start,end,mismatch in context_cases:
+                expected=command('POST','/execute/sync',{'script': '''
+                const old=document.getElementById('source'),source=document.createElement('div');source.id='source';old.replaceWith(source);
+                source.textContent=arguments[0];document.activeElement.blur();
+                const s=window.getSelection();s.removeAllRanges();s.setBaseAndExtent(source.firstChild,arguments[1],source.firstChild,arguments[2]);
+                return s.toString();''','args':[text,start,end]})
+                assert expected, label
+                with (args.output/('context-'+label+'.log')).open('wb') as log:
+                    started=time.monotonic()
+                    reader=NativeProcess([str(args.build.resolve()/'ScreenshotTranslate.exe'),'--selection-worker'],env,desktop_name,log)
+                output=[];drain=threading.Thread(target=lambda:output.append(reader.stdout.read()),daemon=True);drain.start()
+                try:
+                    reader.stdin.write(json.dumps({'context':True,'target':str(target),'expected':'wrong selection' if mismatch else expected,'maxChars':200}).encode()+b'\n');reader.stdin.close()
+                    code=reader.wait(3);drain.join(2);value=json.loads(b''.join(output)).get('context',{})
+                finally:
+                    reader.kill();reader.close()
+                passed=code==0 and (not value if mismatch else bool(value)) and sum(len(t) for t in value.values())<=200
+                if not mismatch:
+                    # Browser offsets count UTF-16 code units. Compare nearby suffix/prefix.
+                    units=text.encode('utf-16-le');before=units[:min(start,end)*2].decode('utf-16-le');after=units[max(start,end)*2:].decode('utf-16-le')
+                    passed=passed and before.rstrip().endswith(value.get('before','')) and after.lstrip().startswith(value.get('after',''))
+                row={'name':'context-'+label,'passed':passed,'characters':sum(len(t) for t in value.values()),'ms':round((time.monotonic()-started)*1000)}
+                context_results.append(row);print(json.dumps(row),flush=True)
+            report['contextCases']=context_results
+            assert all(row['passed'] for row in context_results), context_results
         for name, x, y in [('primary-cold', 100, 100), ('primary-retry', 100, 100), ('primary-reselect', 100, 100),
                             ('secondary', 2700, 100), ('secondary-repeat', 2700, 100),
                             ('inline-release', 100, 100), ('inline-reverse', 100, 100),

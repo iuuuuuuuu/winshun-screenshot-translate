@@ -24,6 +24,30 @@ Column {
     function t(zh,en) { return chinese ? zh : en }
     function field(key,value) { backend.action("aiField", {key:key,value:value}) }
     function modelField(index,key,value) { backend.action("aiModelField", {index:index,key:key,value:value}) }
+    Rectangle {
+        width: parent.width; height: contextOptions.implicitHeight + 24; radius: Theme.cardRadius
+        color: Theme.card; border.color: Theme.cardBorder
+        Column {
+            id: contextOptions; x: 12; y: 12; width: parent.width - 24; spacing: 8
+            FlatButton {
+                objectName: "ai-context-enabled"
+                text: editor.t("少量上下文：", "Nearby context: ") + (backend.state.aiContextEnabled ? editor.t("开", "On") : editor.t("关", "Off"))
+                highlighted: !!backend.state.aiContextEnabled
+                onClicked: backend.action("aiContextEnabled", !backend.state.aiContextEnabled)
+            }
+            ChoiceTabs {
+                objectName: "ai-context-limit"; width: parent.width; height: 32
+                visible: !!backend.state.aiContextEnabled
+                labels: editor.chinese ? ["最多 200 字", "最多 600 字", "最多 1000 字"] : ["200 chars", "600 chars", "1000 chars"]
+                current: Math.max(0, [200, 600, 1000].indexOf(backend.state.aiContextMaxChars || 600))
+                onActivated: index => backend.action("aiContextMaxChars", [200, 600, 1000][index])
+            }
+            Text {
+                width: parent.width; wrapMode: Text.Wrap; font.pixelSize: 12; color: Theme.subtext
+                text: editor.t("默认关闭。划词翻译使用 AI 时，附带选区前后少量文字，合计不超过所选上限。附近文字会发给当前 AI 服务，不保存到历史。读不到就正常翻译；超过 2000 字的选区直接使用原文，不另取上下文。保存后生效。", "Off by default. Selection translation can send a small amount of surrounding text to the chosen AI service, within the combined limit. Context is not saved in history. Unavailable context is skipped; selections over 2000 characters use the selected text alone. Save to apply.")
+            }
+        }
+    }
     Text {
         width: parent.width; wrapMode: Text.Wrap; color: Theme.subtext; font.pixelSize: 13
         text: editor.t("可从服务获取模型并勾选添加。手动模式按顺序尝试；自动权重优先近期表现好的模型。故障按模型独立冷却，其他模型仍可使用。", "Fetch and select models from your service. Manual mode follows order; automatic mode uses recent performance. Each model cools down independently.")

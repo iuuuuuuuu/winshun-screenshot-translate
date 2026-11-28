@@ -1400,12 +1400,16 @@ int selectionPrimer(HWND initial,bool watch)
 int selectionWorker()
 {
     QFile input;input.open(stdin,QIODevice::ReadOnly);
-    auto request=QJsonDocument::fromJson(input.readLine(4096)).object();
+    auto request=QJsonDocument::fromJson(input.readLine(32768)).object();
     auto target=reinterpret_cast<HWND>(quintptr(request.value("target").toString().toULongLong()));
     if(request.value("prime").toBool())return selectionPrimer(target,request.value("watch").toBool());
     if(!target||!IsWindow(target))return 2;
     QJsonObject response;
     try{
+        if(request.value("context").toBool()){
+            response["context"]=selectionContextAt(POINT{request.value("x").toInt(),request.value("y").toInt()},target,
+                request.value("expected").toString(),request.value("maxChars").toInt(600));
+        }else{
         auto result=request.value("copyFirefox").toBool()?copyFirefoxSelection(target,std::make_shared<std::atomic_bool>(false)):selectionAt(POINT{request.value("x").toInt(),request.value("y").toInt()},target,
             std::clamp(request.value("warmupMs").toInt(600),0,600));
         // Some providers expose read-only text even across integrity levels.
@@ -1415,6 +1419,7 @@ int selectionWorker()
         else response={{"text",result.text},{"copyShortcutEligible",result.copyShortcutEligible},
             {"area",QJsonArray{result.area.x(),result.area.y(),result.area.width(),result.area.height()}},
             {"endArea",QJsonArray{result.endArea.x(),result.endArea.y(),result.endArea.width(),result.endArea.height()}}};
+        }
     }catch(...){response={{"error","read failed"}};}
     auto data=QJsonDocument(response).toJson(QJsonDocument::Compact);
     std::fwrite(data.constData(),1,size_t(data.size()),stdout);std::fflush(stdout);

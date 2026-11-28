@@ -23,6 +23,22 @@ inline const QStringList endpoints{
 QString canonicalProvider(const QString& provider);
 QString configurationError(const QJsonObject& profile);
 using Cancel = std::shared_ptr<std::atomic_bool>;
+// Ephemeral reference text: read lazily, once per selection, only for AI.
+QJsonObject boundedTranslationContext(const QJsonObject& value,int maxChars);
+bool contextSelectionMatches(const QString& actual,const QString& expected);
+void testTranslationContext(const QString& base);
+class TranslationContext {
+public:
+    explicit TranslationContext(std::function<QJsonObject(Cancel)> reader,int limit=600):m_read(std::move(reader)),m_limit(limit){}
+    QJsonObject get(Cancel cancel);
+    QJsonObject snapshot();
+private:
+    std::mutex m_mutex;
+    std::function<QJsonObject(Cancel)> m_read;
+    QJsonObject m_value;
+    int m_limit;
+    bool m_done=false;
+};
 struct Translation {
     QStringList segments;
     QString source, target, provider, preferred, channelId, channelName, model;
@@ -57,11 +73,11 @@ public:
         std::function<void(QJsonObject)> progress={});
     Translation translate(const QJsonObject& settings, const QStringList& parts,
         const QString& source, const QString& target, Cancel cancel, QJsonObject draft = {},
-        std::function<void(const Translation&,int,int)> progress = {});
+        std::function<void(const Translation&,int,int)> progress = {},std::shared_ptr<TranslationContext> context = {});
 private:
     Translation translateBatch(const QJsonObject& settings,const QStringList& parts,
         const QString& source,const QString& target,Cancel cancel,QJsonObject draft,int workers=4,
-        std::function<void(const Translation&)> preview={});
+        std::function<void(const Translation&)> preview={},std::shared_ptr<TranslationContext> context = {});
     Translation route(const QJsonObject& profile, const QStringList& parts,
         const QString& source, const QString& target, Cancel cancel, int budget, int workers=4,
         std::function<void(const Translation&)> preview={});

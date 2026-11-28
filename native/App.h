@@ -71,6 +71,7 @@ private:
     void wordAction(const QString& name,const QVariant& value);
     void editWord(bool editing);
     void translateWord(QString text,bool retainResult=false);
+    void prepareWordContext(const QString& text,POINT point,HWND target);
     void publishWordProviders();
     void publishProviders(Backend& backend,QString& choice,QHash<QString,QJsonObject>& profiles);
     void readSelection(bool follow=false);
@@ -152,6 +153,9 @@ private:
     QPoint m_wordAnchor,m_wordRequestPoint;
     QRect m_wordSelection;
     QString m_wordMode,m_wordSource,m_lastSelection;
+    QString m_wordContextSource;
+    std::shared_ptr<TranslationContext> m_wordContext;
+    std::function<QJsonObject(POINT,HWND,const QString&,int,Cancel)> m_readContext=[](POINT p,HWND target,const QString& text,int limit,Cancel cancel){return isolatedSelectionContext(p,target,text,limit,cancel);};
     QString m_wordProviderChoice;
     QHash<QString,QJsonObject> m_wordProviderProfiles;
     QString m_pinProviderChoice;

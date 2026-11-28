@@ -70,7 +70,7 @@ jobs:
       - name: 验证 Firefox 跨组件完整选区和翻译入口
         shell: pwsh
         run: |
-          python -X utf8 -B native/test_selection_firefox.py --driver "$env:RUNNER_TEMP\geckodriver\geckodriver.exe" --firefox 'C:\Program Files\Mozilla Firefox\firefox.exe' --build "$env:RUNNER_TEMP\native-build" --runtime "$pwd\.test-output\selection-release\runtime" --uia-mode 1 --case mouse-shadow-forward --case mouse-shadow-reverse --case inline-links-partial --case long-over-100k --native-copy --icon-click --output .test-output/firefox-release
+          python -X utf8 -B native/test_selection_firefox.py --driver "$env:RUNNER_TEMP\geckodriver\geckodriver.exe" --firefox 'C:\Program Files\Mozilla Firefox\firefox.exe' --build "$env:RUNNER_TEMP\native-build" --runtime "$pwd\.test-output\selection-release\runtime" --uia-mode 1 --case mouse-shadow-forward --case mouse-shadow-reverse --case inline-links-partial --case long-over-100k --native-copy --icon-click --context --output .test-output/firefox-release
           if ($LASTEXITCODE) { throw 'Firefox 完整选区验证失败' }
       - name: 保留取词测试报告
         if: always()

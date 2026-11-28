@@ -1,4 +1,8 @@
-# 截图翻译 0.4.37：原生版构建与验证
+# 截图翻译 0.4.38：原生版构建与验证
+
+0.4.38 增加默认关闭的 AI 少量上下文：`TranslationContext` 延迟到 AI 候选才读取，跨模型复用一次结果；`SelectionContext.cpp` 使用隔离进程、原窗口/进程校验、完整选区匹配、字符边界和时间上限。UIA 只扩展选区附近范围；Firefox IA2 读取同一节点的附近偏移，不展开整个页面。标准 EDIT 只允许读取至多 4000 字的小字段，长字段交给 UIA 或跳过。缓存包含上下文摘要键，健康状态不受上下文改变影响；上下文不进入历史或磁盘。
+
+`--core` 覆盖关闭/非 AI 不读取、600 字默认和上限、Unicode、缓存隔离、取消和不可用回退；`--ai-models` 同时覆盖设置保存、真实隔离 EDIT 读取、预览与编辑/关闭失效。`test_selection_firefox.py --context` 在新浏览器配置中覆盖正反向选词、首尾、Unicode 和错配，发布流水线同时运行。
 
 0.4.37 增加模型列表发现、异步取消、搜索多选和独立冷却 UI；核心测试验证地址归一化、去重、错误/重定向/取消、冷却持久化和重置。`native_tests --ai-smoke <endpoint>` 从标准输入读取测试密钥，仅输出模型数量、时间和通过状态，使用临时数据目录验证流式/普通翻译，不输出原密钥或译文。普通 UI 测试在私有桌面使用只读选区夹具，真实复制仍使用发布专用的可销毁 Windows runner。
 
@@ -36,7 +40,7 @@ Firefox 选区回归：`python -B native/test_selection_firefox.py --driver <gec
 ## 安装和回退
 
 在 WinShun 设置 → 插件 → 从压缩包安装，选择
-`iuuuuuuuu.screenshot-translate-0.4.37.wsplugin`。运行时不检查或启动 Python。
+`iuuuuuuuu.screenshot-translate-0.4.38.wsplugin`。运行时不检查或启动 Python。
 包内包括启动器、应用 DLL、少量 Visual C++ 依赖、许可和文档；DLL 内包含 QML 控件与授权图标字体。
 现有渠道、热键、代理、偏好和 DPAPI 密钥格式保持兼容，不迁移或删除用户的数据目录。
 

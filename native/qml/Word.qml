@@ -9,6 +9,9 @@ AdaptiveWindow {
     readonly property bool sourceDirty: editor.text !== sourceText
     readonly property bool animations: backend.state.animations !== false
     property bool sourceExpanded: false
+    property bool contextExpanded: false
+    readonly property bool hasContext: (backend.state.contextChars || 0) > 0 && !sourceDirty
+    onHasContextChanged: if (!hasContext) contextExpanded = false
     property bool syncingSource: false
     property bool acceptsInput: false
     property bool resetting: false
@@ -21,7 +24,7 @@ AdaptiveWindow {
     readonly property real expandedSourceLimit: Math.max(60, Math.min(180, heightLimit * 0.32))
     preferredWidth: 28 + Math.sqrt(1.5 * (Math.min(sourceMeasure.contentHeight, 66) * sourceMeasure.width
                                        + meaningMeasure.contentHeight * meaningMeasure.width))
-    contentHeight: sourceArea.height + body.implicitHeight + 77 + footerHeight
+    contentHeight: sourceArea.height + contextArea.height + body.implicitHeight + 77 + footerHeight
     visible: false
     flags: Qt.Tool | Qt.WindowStaysOnTopHint | Qt.FramelessWindowHint | (acceptsInput ? 0 : Qt.WindowDoesNotAcceptFocus)
     // Keep the opaque backing store; App applies the same rounded window mask.
@@ -110,6 +113,7 @@ AdaptiveWindow {
         syncingSource = false
     }
     function resetInteraction() {
+        contextExpanded = false
         resetting = true
         blurSubmit.stop(); providerMenu.hide()
         acceptsInput = false; editor.focus = false; sourceExpanded = false; selectionSide = ""
@@ -281,10 +285,31 @@ AdaptiveWindow {
             onClicked: wordWindow.restoreSource()
         }
     }
-    Rectangle { x: 16; y: sourceArea.y + sourceArea.height + 10; width: parent.width - 32; height: 1; color: Theme.divider }
+    Item {
+        id: contextArea; objectName: "word-context"
+        x: 16; y: sourceArea.y + sourceArea.height; width: parent.width - 32
+        visible: wordWindow.hasContext; height: visible ? 32 + (wordWindow.contextExpanded ? Math.min(94, contextText.implicitHeight) + 6 : 0) : 0
+        FlatButton {
+            objectName: "word-context-toggle"; y: 4; height: 26
+            text: (backend.state.chinese ? "已参考附近 " : "Used nearby ") + (backend.state.contextChars || 0)
+                + (backend.state.chinese ? " 字 · " : " chars · ")
+                + (wordWindow.contextExpanded ? (backend.state.chinese ? "收起" : "Hide") : (backend.state.chinese ? "查看" : "View"))
+            onClicked: wordWindow.contextExpanded = !wordWindow.contextExpanded
+        }
+        Flickable {
+            id: contextScroll; y: 34; width: parent.width; height: Math.min(94, contextText.implicitHeight); visible: wordWindow.contextExpanded
+            clip: true; contentWidth: width; contentHeight: contextText.implicitHeight; boundsBehavior: Flickable.StopAtBounds
+            Text {
+                id: contextText; width: parent.width - 8; font.pixelSize: 12; color: Theme.subtext; wrapMode: Text.Wrap; textFormat: Text.PlainText
+                text: (backend.state.contextBefore || "") + (backend.state.chinese ? "\n〔选中文字〕\n" : "\n[Selected text]\n") + (backend.state.contextAfter || "")
+            }
+        }
+        ListScrollBar { flickable: contextScroll; visible: wordWindow.contextExpanded && contextScroll.contentHeight > contextScroll.height; anchors.right: contextScroll.right; anchors.top: contextScroll.top; anchors.bottom: contextScroll.bottom }
+    }
+    Rectangle { x: 16; y: sourceArea.y + sourceArea.height + contextArea.height + 10; width: parent.width - 32; height: 1; color: Theme.divider }
     Flickable {
         id: scroll; objectName: "word-scroll"
-        x: 16; y: sourceArea.y + sourceArea.height + 23; width: parent.width - 32; height: Math.max(28, parent.height - y - wordWindow.footerHeight - 8)
+        x: 16; y: sourceArea.y + sourceArea.height + contextArea.height + 23; width: parent.width - 32; height: Math.max(28, parent.height - y - wordWindow.footerHeight - 8)
         contentWidth: width; contentHeight: body.implicitHeight; clip: true; boundsBehavior: Flickable.StopAtBounds
         onContentHeightChanged: if (!wordWindow.editing) contentY = 0
         Column {

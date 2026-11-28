@@ -528,6 +528,7 @@ int main(int argc,char** argv)
         if(reopened.profile("openai").value("apiKey").toString()!="native-test-密钥")throw std::runtime_error("DPAPI");
         if(args.contains("--endpoint")){
             auto base=args.value(args.indexOf("--endpoint")+1);
+            st::testTranslationContext(base);
             auto freshCancel=[] {return std::make_shared<std::atomic_bool>(false);};
             {
                 auto check=[](bool ok,const char* why){if(!ok)throw std::runtime_error(why);};

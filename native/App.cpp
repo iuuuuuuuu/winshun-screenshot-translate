@@ -573,7 +573,12 @@ void App::ensureRaw()
 void App::loadSelectionSettings()
 {
     const auto routing=m_services->routing();
-    for(const auto key:{"selectionIconEnabled","selectionIconForeignOnly","selectionIconDefaultLanguage"})m_settings[key]=routing.value(key);
+    if(m_wordContext&&(m_settings.value("aiContextEnabled")!=routing.value("aiContextEnabled")||m_settings.value("aiContextMaxChars")!=routing.value("aiContextMaxChars"))){
+        m_wordContext.reset();m_wordContextSource.clear();
+        if(m_wordCancel)m_wordCancel->store(true);++m_wordEpoch;
+        m_wordBackend.update({{"contextBefore",""},{"contextAfter",""},{"contextChars",0},{"loading",false},{"providerSwitching",false},{"status",m_chinese?"上下文设置已更新，可重试翻译":"Context settings updated. Retry translation."}});
+    }
+    for(const auto key:{"selectionIconEnabled","selectionIconForeignOnly","selectionIconDefaultLanguage","aiContextEnabled","aiContextMaxChars"})m_settings[key]=routing.value(key);
 }
 void App::updateSelectionMonitor()
 {
@@ -928,9 +933,10 @@ void App::openWord(QString mode,QPoint anchor,QRect selection)
     if(m_wordCancel)m_wordCancel->store(true);m_wordCancel=token();++m_wordEpoch;
     m_wordMode=mode;
     if(!m_wordPinned&&!m_wordPlacementFrozen){m_wordAnchor=anchor;m_wordSelection=selection;}
-    m_wordSource.clear();m_lastSelection.clear();m_wordOpened=GetTickCount();
+    m_wordSource.clear();m_lastSelection.clear();m_wordOpened=GetTickCount();m_wordContext.reset();m_wordContextSource.clear();
     m_followBaseline=m_wordPinned&&mode!="jsel";
     m_wordBackend.update({{"mode",mode},{"sourceText",""},{"translatedText",""},{"alignmentSource",""},{"alignmentRows",QVariantList()},
+        {"contextBefore",""},{"contextAfter",""},{"contextChars",0},
         {"providerSwitching",false},{"providerSwitchError",false},{"provider",""},{"providerNote",""},{"providerFallback",false},{"loading",true},
         {"awaitingSelectionCopy",false},{"status",mode=="jsel"?"正在读取选中文字…":mode=="ocr"?"正在识别鼠标处的短句…":"正在翻译…"}});
     publishWordProviders();
@@ -989,7 +995,8 @@ void App::closeWord(bool animated)
     editWord(false);
     if(m_wordCancel)m_wordCancel->store(true);++m_wordEpoch;
     m_wordPinned=false;m_wordPlacementFrozen=false;m_followSelection.stop();m_wordSource.clear();m_lastSelection.clear();
-    m_wordProviderChoice.clear();m_wordProviderProfiles.clear();
+    m_wordProviderChoice.clear();m_wordProviderProfiles.clear();m_wordContext.reset();m_wordContextSource.clear();
+    m_wordBackend.update({{"contextBefore",""},{"contextAfter",""},{"contextChars",0}});
     m_wordBackend.update({{"pinned",false},{"loading",false},{"providerSwitching",false},{"awaitingSelectionCopy",false}});
     if(!m_pin&&!m_settings.value("selectionIconEnabled").toBool(true))m_raw.reset();
 }
@@ -1081,7 +1088,7 @@ void App::readSelection(bool follow)
             if(!follow)return activeReader(POINT{point.x(),point.y()},target,selectionCancel,hint,reader);
             return reader(POINT{point.x(),point.y()},target,selectionCancel);
         },
-        [this,follow,epoch,cancel,selectionCancel](Selection selection,QString error){
+        [this,follow,epoch,cancel,selectionCancel,point,target](Selection selection,QString error){
             m_selectionReading=false;
             auto pending=m_selectionPendingEpoch;m_selectionPendingEpoch=0;
             if(pending&&pending==m_wordEpoch){readSelection();return;}
@@ -1117,6 +1124,8 @@ void App::readSelection(bool follow)
             }
             m_lastSelection=text;
             if(!m_wordPinned){m_wordSelection=selection.area;placeWord();}
+            // Automatic pinned polling does not collect neighbouring text.
+            prepareWordContext(text,POINT{point.x(),point.y()},follow?nullptr:target);
             translateWord(text);
         });
 }
@@ -1137,7 +1146,8 @@ void App::readCopiedSelection()
     }
     const auto text=m_readClipboard();if(text.isEmpty())return;
     if(sequence!=m_clipboardSequence())return;
-    m_copySelectionTimer.stop();m_wordBackend.update({{"awaitingSelectionCopy",false}});translateWord(text);
+    m_copySelectionTimer.stop();m_wordBackend.update({{"awaitingSelectionCopy",false}});
+    prepareWordContext(text,POINT{m_wordRequestPoint.x(),m_wordRequestPoint.y()},m_selectionTarget);translateWord(text);
 }
 void App::publishWordProviders()
 {
@@ -1173,10 +1183,28 @@ void App::publishProviders(Backend& backend,QString& choice,QHash<QString,QJsonO
     for(auto value:rows){auto row=value.toMap();if(row.value("id").toString()==choice){name=row.value("name").toString();break;}}
     backend.update({{"providerOptions",rows},{"providerChoice",choice},{"providerChoiceLabel",name}});
 }
+void App::prepareWordContext(const QString& text,POINT point,HWND target)
+{
+    m_wordContext.reset();m_wordContextSource.clear();
+    if(!target||m_wordMode!="jsel"||!m_settings.value("aiContextEnabled").toBool()||text.isEmpty()||text.size()>2000)return;
+    const int limit=m_settings.value("aiContextMaxChars").toInt(600);auto reader=m_readContext;
+    // Capture the original process as well as its HWND so a recycled handle
+    // cannot attach text from a different application on a later channel switch.
+    DWORD pid=0;GetWindowThreadProcessId(target,&pid);
+    m_wordContextSource=text;
+    m_wordContext=std::make_shared<TranslationContext>([reader,text,point,target,limit,pid](Cancel cancel){
+        DWORD current=0;GetWindowThreadProcessId(target,&current);
+        if(!pid||pid!=current)return QJsonObject();
+        return reader(point,target,text,limit,cancel);
+    },limit);
+}
 void App::translateWord(QString text,bool retainResult)
 {
     m_copySelectionTimer.stop();m_wordBackend.update({{"awaitingSelectionCopy",false}});
     text=text.trimmed();if(m_wordCancel)m_wordCancel->store(true);m_wordCancel=token();auto cancel=m_wordCancel;auto epoch=++m_wordEpoch;
+    if(text!=m_wordContextSource||!m_settings.value("aiContextEnabled").toBool()){m_wordContext.reset();m_wordContextSource.clear();}
+    auto context=m_wordContext;
+    m_wordBackend.update({{"contextBefore",""},{"contextAfter",""},{"contextChars",0}});
     if(!retainResult)m_wordRecord={};m_wordBackend.update({{"notice",""}});
     m_wordSource=text;m_wordBackend.update({{"sourceText",text},
         {"loading",!text.isEmpty()},{"status",text.isEmpty()?"没有读取到剪贴板文字":"正在翻译…"}});
@@ -1190,7 +1218,10 @@ void App::translateWord(QString text,bool retainResult)
         settings["requestedChannelId"]=profile.value("channelId");settings["requestedModel"]=profile.value("model");
     }
     const auto parts=sentenceParts(text);
-    auto publish=[this,text,parts](const QJsonObject& data){
+    auto publish=[this,text,parts,context](const QJsonObject& data){
+        auto nearby=context&&data.value("provider")=="ai"?context->snapshot():QJsonObject();
+        auto before=nearby.value("before").toString(),after=nearby.value("after").toString();
+        m_wordBackend.update({{"contextBefore",before},{"contextAfter",after},{"contextChars",before.size()+after.size()}});
         QVariantList rows;int sourceOffset=0,targetOffset=0;const auto segments=data.value("segments").toArray();
         for(int i=0;i<parts.size()&&i<segments.size();++i){
             const auto translated=segments[i].toString();const auto at=text.indexOf(parts[i],sourceOffset);
@@ -1201,7 +1232,7 @@ void App::translateWord(QString text,bool retainResult)
         m_wordBackend.update({{"translatedText",data.value("translated").toString()},{"alignmentSource",text},{"alignmentRows",rows},
             {"provider",providerLabel(data)},{"providerNote",providerNote(data)},{"providerFallback",data.value("fallback").toBool()}});
     };
-    background([this,services,settings,text,parts,cancel,epoch,publish]{
+    background([this,services,settings,text,parts,cancel,epoch,publish,context]{
         return services->translate(settings,parts,"auto",targetFor(text,settings.value("target").toString()),cancel,{},
             [this,parts,cancel,epoch,publish](const Translation& result,int done,int total){
                 auto data=result.json(parts);
@@ -1211,7 +1242,7 @@ void App::translateWord(QString text,bool retainResult)
                     publish(data);m_wordBackend.update({{"streaming",data.value("preview").toBool()},
                         {"status",data.value("preview").toBool()?QString("正在接收译文…"):QString("已翻译 %1 / %2 段").arg(done).arg(total)}});
                 },Qt::QueuedConnection);
-            }).json(parts);
+            },context).json(parts);
     },[this,epoch,cancel,command,publish](QJsonObject data,QString error){
         if(epoch!=m_wordEpoch||cancel->load())return;
         if(error.isEmpty()){publish(data);m_wordRecord=data;}
@@ -1566,6 +1597,11 @@ void App::configAction(const QString& name,const QVariant& value)
     try{
         if(name=="openPanel"){showPanel();return;}
         if(name=="openHistory"){showHistory();return;}
+        if(name=="aiContextEnabled"||name=="aiContextMaxChars"){
+            if(name=="aiContextEnabled")m_routingDraft[name]=value.toBool();
+            else if(QList<int>{200,600,1000}.contains(value.toInt()))m_routingDraft[name]=value.toInt();
+            publishTests();return;
+        }
         if(name.startsWith("ai")){aiAction(name,value);return;}
         if(name=="enabled"){
             auto data=value.toMap();auto provider=data.value("provider").toString();if(!providers.contains(provider))return;
@@ -1713,6 +1749,8 @@ void App::publishTests()
     m_configBackend.update({{"aiTests",aiTests},{"testResults",rows},{"testing",m_testRunning>0||!m_testQueue.isEmpty()},{"batch",m_batch},
         {"queue",queue},{"routingMode",m_routingDraft.value("mode").toString("manual")},{"readyCount",ready},{"coolingCount",cooling},{"unconfiguredCount",unconfigured},
         {"selectionIconEnabled",m_routingDraft.value("selectionIconEnabled").toBool(true)},
+        {"aiContextEnabled",m_routingDraft.value("aiContextEnabled").toBool(false)},
+        {"aiContextMaxChars",m_routingDraft.value("aiContextMaxChars").toInt(600)},
         {"selectionIconForeignOnly",m_routingDraft.value("selectionIconForeignOnly").toBool(true)},
         {"selectionIconDefaultLanguage",m_routingDraft.value("selectionIconDefaultLanguage").toString("auto")},
         {"selectionIconResolvedLanguage",selectionDefaultLanguage(m_routingDraft.value("selectionIconDefaultLanguage").toString("auto"),

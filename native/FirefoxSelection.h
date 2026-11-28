@@ -3,4 +3,5 @@
 namespace st {
 // Called in the isolated COM selection worker. Reads only selected IA2 ranges.
 Selection firefoxSelection(HWND target);
+QJsonObject firefoxSelectionContext(HWND target,const QString& expected,int maxChars);
 }
