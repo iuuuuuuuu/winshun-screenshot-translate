@@ -265,11 +265,28 @@ void Probe::run(App& app,const QJsonObject& params)
             check(fixture,"hover source window exists");
             auto text=std::make_shared<QString>("Hover snapshot");auto reads=std::make_shared<std::atomic_int>(0);
             app.m_foreground=[fixture]{return fixture;};app.m_settings["provider"]="google";app.m_settings["fallbackEnabled"]=false;
-            app.m_readSelection=[text](POINT,HWND,Cancel){return Selection{*text,{120,120,150,24},{230,120,40,24}};};
+            app.m_readSelection=[text](POINT,HWND,Cancel,bool){return Selection{*text,{120,120,150,24},{230,120,40,24}};};
             // Only native window events and fixture selection reads; no clipboard writes.
             app.m_readActiveSelection=[reads](POINT p,HWND target,Cancel cancel,const Selection&,const SelectionReader& reader){
                 ++*reads;return reader(p,target,cancel);
             };
+            // A scrollbar gesture can leave a selection in another pane. Only
+            // explicit translation may use that broader retained selection.
+            auto normalReader=app.m_readSelection;
+            auto passiveReads=std::make_shared<std::atomic_int>(0);
+            app.m_readSelection=[passiveReads](POINT,HWND,Cancel,bool passive){
+                if(passive){++*passiveReads;return Selection{};}
+                return Selection{"Retained editor selection",{120,120,150,24},{230,120,40,24}};
+            };
+            app.hideSelectionIcon();app.m_iconTarget=fixture;app.m_iconPoint={450,180};app.readIconSelection();
+            check(until([&]{return !app.m_iconReading;})&&passiveReads->load()==1&&
+                (!app.m_icon.window||!app.m_icon.window->isVisible()),"unrelated retained selection cannot show passive icon");
+            app.m_selectionTarget=fixture;app.openWord("jsel",{450,180});app.readSelection();
+            check(until([&]{return app.m_wordSource=="Retained editor selection"&&!app.m_wordBackend.values.value("loading").toBool();}),
+                "explicit translation retains the broader selection reader");
+            check(passiveReads->load()==1&&reads->load()==1,"passive scope never leaks into explicit selection");
+            app.closeWord();app.m_readSelection=normalReader;reads->store(0);
+            report["selectionIconPassiveScope"]=true;
             auto leave=[&]{QEvent event(QEvent::Leave);QCoreApplication::sendEvent(app.m_icon.window,&event);pump(10);};
             QPoint releasePoint{180,180};
             auto show=[&]{
@@ -312,7 +329,7 @@ void Probe::run(App& app,const QJsonObject& params)
                     releasePoint=origin+(release-origin)*monitor->devicePixelRatio();
                     // Both forward and reverse drags return the same document-ordered bounds.
                     // Make those deliberately distant so using the text tail cannot pass.
-                    app.m_readSelection=[](POINT,HWND,Cancel){return Selection{"Complete selection remains near the release point.",{700,600,300,500},{900,1080,100,20}};};
+                    app.m_readSelection=[](POINT,HWND,Cancel,bool){return Selection{"Complete selection remains near the release point.",{700,600,300,500},{900,1080,100,20}};};
                     for(int trigger=0;trigger<3;++trigger){
                         app.m_settings["selectionIconHoverTranslate"]=trigger==1;
                         app.m_iconBackend.update({{"hoverTranslate",trigger==1}});
@@ -515,7 +532,9 @@ void Probe::run(App& app,const QJsonObject& params)
             GetUserObjectInformationW(GetThreadDesktop(GetWindowThreadProcessId(target,nullptr)),UOI_NAME,browserDesktop,sizeof browserDesktop,&bytes);
             GetUserObjectInformationW(GetThreadDesktop(GetCurrentThreadId()),UOI_NAME,ownDesktop,sizeof ownDesktop,&bytes);
             check(IsWindow(target)&&QString::fromWCharArray(browserDesktop)==QString::fromWCharArray(ownDesktop),"Firefox fixture is on this private desktop");
-            app.m_foreground=[target]{return target;};app.m_iconTarget=target;app.m_iconPoint={400,280};
+            const auto pointer=params.value("probeSelectionPoint").toArray();
+            check(pointer.size()==2,"Firefox fixture supplies an actual selected text point");
+            app.m_foreground=[target]{return target;};app.m_iconTarget=target;app.m_iconPoint={pointer[0].toInt(),pointer[1].toInt()};
             app.readIconSelection();check(until([&]{return app.m_icon.window&&app.m_icon.window->isVisible();},6000),"Firefox selection shows actual icon");
             report["initialSelection"]=app.m_iconSelection.text;
             check(app.m_iconSelection.text==params.value("probeInitialSelection").toString().trimmed(),"Firefox icon captures the initial partial range");
@@ -1205,7 +1224,8 @@ void Probe::run(App& app,const QJsonObject& params)
             return resolveSelection([&]{return reader(p,target,cancel);},[](SelectionCopyMode){return SelectionCopyResult{};},cancel);
         };
         auto foregroundBefore=GetForegroundWindow();pump(50);
-        app.m_iconTarget=edit;app.m_iconPoint={560,340};
+        POINT editPoint{10,8};ClientToScreen(edit,&editPoint);
+        app.m_iconTarget=edit;app.m_iconPoint={editPoint.x,editPoint.y};
         auto healthSnapshot=[&]{
             auto queue=app.m_services->queue(app.m_settings);
             for(int i=0;i<queue.size();++i){auto entry=queue[i].toObject();entry.remove("retrySeconds");entry.remove("probeSeconds");queue[i]=entry;}
@@ -1246,7 +1266,7 @@ void Probe::run(App& app,const QJsonObject& params)
         const auto originalIconLanguage=app.m_settings.value("selectionIconDefaultLanguage"),originalIconTarget=app.m_settings.value("target");
         auto checkIconLanguage=[&](QString text,bool expected){
             app.hideSelectionIcon();
-            app.m_readSelection=[text](POINT,HWND,Cancel){return Selection{text,{500,320,120,20},{580,320,40,20}};};
+            app.m_readSelection=[text](POINT,HWND,Cancel,bool){return Selection{text,{500,320,120,20},{580,320,40,20}};};
             app.readIconSelection();check(until([&]{return !app.m_iconReading;},6000),"local icon language detection completes");
             check(app.m_icon.window->isVisible()==expected,"icon visibility follows configured language policy");
         };
@@ -1261,13 +1281,13 @@ void Probe::run(App& app,const QJsonObject& params)
         app.m_settings["target"]=originalIconTarget;app.m_settings["selectionIconDefaultLanguage"]=originalIconLanguage;
         check(healthSnapshot()==beforeLanguageFilter,"language filtering sends no translation requests");
         app.m_settings["selectionIconDefaultLanguage"]="en";
-        app.m_readSelection=[](POINT,HWND,Cancel){return Selection{"Hello",{500,320,120,20},{580,320,40,20}};};
+        app.m_readSelection=[](POINT,HWND,Cancel,bool){return Selection{"Hello",{500,320,120,20},{580,320,40,20}};};
         app.dispatch({},"hotkey",{{"key",app.m_settings.value("selectionHotkey")}});
         check(until([&]{return !app.m_wordBackend.values.value("loading").toBool()&&app.m_wordSource=="Hello";}),"explicit selection hotkey bypasses language icon filtering");
         app.closeWord();app.m_settings["selectionIconDefaultLanguage"]=originalIconLanguage;
         app.hideSelectionIcon();app.m_readSelection=iconReader;
         report["selectionIconLanguageFilter"]=true;
-        app.m_readSelection=[](POINT,HWND,Cancel){QThread::msleep(180);return Selection{"stale",{500,320,120,20},{580,320,40,20}};};
+        app.m_readSelection=[](POINT,HWND,Cancel,bool){QThread::msleep(180);return Selection{"stale",{500,320,120,20},{580,320,40,20}};};
         app.readIconSelection();app.hideSelectionIcon();
         check(until([&]{return !app.m_iconReading;})&&!app.m_icon.window->isVisible(),"cancelled icon read cannot reappear");
         app.m_readSelection=iconReader;SendMessageW(edit,EM_SETSEL,0,5);app.readIconSelection();
@@ -1283,7 +1303,7 @@ void Probe::run(App& app,const QJsonObject& params)
                 const auto origin=monitor->geometry().topLeft();
                 const auto physical=origin+(release-origin)*monitor->devicePixelRatio();
                 app.m_iconPoint=physical;
-                app.m_readSelection=[](POINT,HWND,Cancel){
+                app.m_readSelection=[](POINT,HWND,Cancel,bool){
                     QThread::msleep(60);
                     return Selection{"Hello",{500,320,300,60},{740,360,60,20}};
                 };
@@ -1313,7 +1333,7 @@ void Probe::run(App& app,const QJsonObject& params)
         auto copied=std::make_shared<QString>("old clipboard must never be sent");
         app.m_readActiveSelection=[](POINT,HWND,Cancel,const Selection&,const SelectionReader&){return Selection{{},{},{},true};};
         app.m_clipboardSequence=[copySequence]{return *copySequence;};app.m_clipboardOwnerProcess=[copyOwner]{return *copyOwner;};
-        app.m_readClipboard=[copied]{return *copied;};app.m_readSelection=[](POINT,HWND,Cancel){return Selection{};};
+        app.m_readClipboard=[copied]{return *copied;};app.m_readSelection=[](POINT,HWND,Cancel,bool){return Selection{};};
         app.m_selectionTarget=edit;app.m_foreground=[parent]{return parent;};
         app.m_selectionClipboardBaseline=10;app.openWord("jsel",{400,180});app.readSelection();
         check(until([&]{return app.m_wordBackend.values.value("awaitingSelectionCopy").toBool();}),"unsupported selection offers copy compatibility");
@@ -1458,7 +1478,7 @@ void Probe::run(App& app,const QJsonObject& params)
         PostMessageW(app.m_raw->m_hwnd,WM_INPUT,0,1);
         check(until([&]{return !app.m_word.window->isVisible();},300),"unpinned word closes independently of screenshot setting");
         auto originalReader=app.m_readSelection;
-        app.m_readSelection=[](POINT,HWND,Cancel){return Selection{};};
+        app.m_readSelection=[](POINT,HWND,Cancel,bool){return Selection{};};
         for(const auto& mode:QStringList{"clip","ocr","jsel"}){
             app.openWord(mode,{400,180});app.translateWord("Hello + 100%");
             check(until([&]{return !app.m_wordBackend.values.value("loading").toBool();}),"outside close fixture translates");
@@ -1501,7 +1521,7 @@ void Probe::run(App& app,const QJsonObject& params)
         auto retryTargets=std::make_shared<std::atomic_bool>(true);
         auto originalTarget=HWND(quintptr(0x1234)); // used only by the injected reader
         app.m_mouse=[] {return QPoint(400,180);};
-        app.m_readSelection=[retryReads,retryTargets,originalTarget](POINT point,HWND target,Cancel){
+        app.m_readSelection=[retryReads,retryTargets,originalTarget](POINT point,HWND target,Cancel,bool){
             int attempt=retryReads->fetch_add(1);
             if(attempt>=3&&(target!=originalTarget||point.x!=400||point.y!=180))retryTargets->store(false);
             return attempt<6?Selection{}:Selection{"Settings",QRect(540,220,100,30)};
@@ -1538,7 +1558,7 @@ void Probe::run(App& app,const QJsonObject& params)
         app.closeWord();app.m_mouse=[] {return QPoint(400,180);};
         auto readAttempts=std::make_shared<std::atomic_int>(0);
         auto readCancelled=std::make_shared<std::atomic_bool>(false);
-        app.m_readSelection=[readAttempts,readCancelled](POINT,HWND,Cancel cancel){
+        app.m_readSelection=[readAttempts,readCancelled](POINT,HWND,Cancel cancel,bool){
             if(readAttempts->fetch_add(1)==0){
                 QElapsedTimer wait;wait.start();
                 while(!cancel->load()&&wait.elapsed()<2000)QThread::msleep(5);
@@ -1558,7 +1578,7 @@ void Probe::run(App& app,const QJsonObject& params)
         auto iconStarted=std::make_shared<std::atomic_bool>(false);
         auto fakeTarget=HWND(quintptr(0x1234));
         app.m_foreground=[fakeTarget]{return fakeTarget;};app.m_iconTarget=fakeTarget;
-        app.m_readSelection=[activeReaders,readerOverlap,iconStarted](POINT,HWND,Cancel cancel){
+        app.m_readSelection=[activeReaders,readerOverlap,iconStarted](POINT,HWND,Cancel cancel,bool){
             if(activeReaders->fetch_add(1))readerOverlap->store(true);
             if(!iconStarted->exchange(true)){
                 QElapsedTimer wait;wait.start();
@@ -1573,7 +1593,7 @@ void Probe::run(App& app,const QJsonObject& params)
         check(!readerOverlap->load()&&!app.m_iconReading&&!app.m_selectionReading,"icon and hotkey never overlap selection readers");
         report["wordIconReadSerialization"]=true;app.m_foreground=originalForeground;app.closeWord();
         auto firstRead=std::make_shared<std::atomic_int>(0);
-        app.m_readSelection=[firstRead](POINT,HWND,Cancel){
+        app.m_readSelection=[firstRead](POINT,HWND,Cancel,bool){
             if(firstRead->fetch_add(1)==0)return Selection{};
             return Selection{"Settings",QRect(540,220,100,30)};
         };
@@ -1585,7 +1605,7 @@ void Probe::run(App& app,const QJsonObject& params)
         check(firstRead->load()==2,"selection recovers on the second read without a second hotkey");
         report["wordSelectionAutomaticRetry"]=true;app.closeWord();
         auto selectedIndex=std::make_shared<std::atomic_int>(0);
-        app.m_readSelection=[selectedIndex](POINT,HWND,Cancel){
+        app.m_readSelection=[selectedIndex](POINT,HWND,Cancel,bool){
             return Selection{selectedIndex->load()==0?"Hello + 100%":"Settings",QRect(540,220,100,30)};
         };
         app.dispatch({},"hotkey",{{"key","Alt+Shift+S"}});

@@ -1085,8 +1085,9 @@ Block recognizeAt(const QImage& image,Cancel cancel,QPointF point)
     if(recovered.text.size()>=original.text.size()&&!recovered.text.isEmpty())return recovered;
     return original;
 }
-Selection selectionAt(POINT point,HWND target,int warmupMs)
+Selection selectionAt(POINT point,HWND target,int warmupMs,bool passive)
 {
+    if(qEnvironmentVariableIsSet("ST_SELECTION_TRACE"))std::fprintf(stderr,"[selection] passive=%d point=%ld,%ld\n",passive,point.x,point.y);
     QElapsedTimer timing;timing.start();
     auto trace=[&](const char* phase){
         if(qEnvironmentVariableIsSet("ST_SELECTION_TRACE")){
@@ -1100,6 +1101,16 @@ Selection selectionAt(POINT point,HWND target,int warmupMs)
     if(!reading.compare_exchange_strong(idle,true))throw std::runtime_error("上一次划词读取尚未结束，请稍后重试");
     struct ReadGuard{std::atomic_bool& flag;~ReadGuard(){flag=false;}} guard{reading};
     HWND focus=target;
+    if(passive){
+        // Automatic icons belong to the pointer's control, never another
+        // control that happens to retain keyboard focus or an old selection.
+        auto under=WindowFromPoint(point);auto root=target?GetAncestor(target,GA_ROOT):GetForegroundWindow();
+        if(!under||GetAncestor(under,GA_ROOT)!=root)return {};
+        DWORD_PTR hit=0;
+        if(SendMessageTimeoutW(under,WM_NCHITTEST,0,MAKELPARAM(point.x,point.y),SMTO_ABORTIFHUNG|SMTO_BLOCK,100,&hit)&&
+            (LRESULT(hit)==HTVSCROLL||LRESULT(hit)==HTHSCROLL||LRESULT(hit)==HTSIZE||LRESULT(hit)==HTCAPTION))return {};
+        focus=under;
+    }
     if(!focus){
         GUITHREADINFO info{sizeof info};auto foreground=GetForegroundWindow();
         if(foreground&&GetGUIThreadInfo(GetWindowThreadProcessId(foreground,nullptr),&info))focus=info.hwndFocus;
@@ -1145,7 +1156,7 @@ Selection selectionAt(POINT point,HWND target,int warmupMs)
     trace("create automation");
     HRESULT hr=CoInitializeEx(nullptr,COINIT_MULTITHREADED);bool initialized=SUCCEEDED(hr);
     struct Cleanup{bool initialized;~Cleanup(){if(initialized)CoUninitialize();}} cleanup{initialized};
-    if(auto result=firefoxSelection(target?target:GetForegroundWindow());!result.text.isEmpty())return result;
+    if(auto result=firefoxSelection(target?target:GetForegroundWindow(),passive?&point:nullptr);!result.text.isEmpty())return result;
     using Microsoft::WRL::ComPtr;
     ComPtr<IUIAutomation2> automation2;ComPtr<IUIAutomation> automation;ComPtr<IUIAutomationTreeWalker> walker;
     if(SUCCEEDED(CoCreateInstance(__uuidof(CUIAutomation8),nullptr,CLSCTX_INPROC_SERVER,IID_PPV_ARGS(&automation2)))){
@@ -1154,6 +1165,8 @@ Selection selectionAt(POINT point,HWND target,int warmupMs)
     automation->get_RawViewWalker(&walker);
     auto selected=[&](IUIAutomationElement* element)->Selection {
             if(qEnvironmentVariableIsSet("ST_SELECTION_TRACE")){
+                RECT rect{};CONTROLTYPEID type=0;element->get_CurrentBoundingRectangle(&rect);element->get_CurrentControlType(&type);
+                std::fprintf(stderr,"[selection] element type=%d rect=%ld,%ld,%ld,%ld\n",type,rect.left,rect.top,rect.right,rect.bottom);
                 BSTR description=nullptr;
                 if(SUCCEEDED(element->get_CurrentProviderDescription(&description))&&description){
                     std::fprintf(stderr,"[selection] provider %s\n",qPrintable(QString::fromWCharArray(description,SysStringLen(description))));
@@ -1162,15 +1175,65 @@ Selection selectionAt(POINT point,HWND target,int warmupMs)
             }
             BOOL password=FALSE;
             if(FAILED(element->get_CurrentIsPassword(&password))||password)return {};
+            if(passive){
+                BOOL offscreen=TRUE;RECT box{};
+                if(FAILED(element->get_CurrentIsOffscreen(&offscreen))||offscreen||
+                    FAILED(element->get_CurrentBoundingRectangle(&box))||!PtInRect(&box,point))return {};
+            }
             int pid=0;element->get_CurrentProcessId(&pid);
             if(!target&&pid==int(GetCurrentProcessId()))return {};
             ComPtr<IUIAutomationTextPattern> pattern;ComPtr<IUIAutomationTextRangeArray> ranges;
             if(SUCCEEDED(element->GetCurrentPatternAs(UIA_TextPatternId,IID_PPV_ARGS(&pattern)))&&pattern&&
                 SUCCEEDED(pattern->GetSelection(&ranges))&&ranges){
                 int length=0;ranges->get_Length(&length);QStringList pieces;QRectF bounds,endArea;
+                if(qEnvironmentVariableIsSet("ST_SELECTION_TRACE"))std::fprintf(stderr,"[selection] ranges=%d\n",length);
                 for(int i=0;i<length;++i){
                     ComPtr<IUIAutomationTextRange> range;BSTR text=nullptr;
                     if(FAILED(ranges->GetElement(i,&range))||!range)continue;
+                    if(passive){
+                        int span=0;
+                        if(FAILED(range->CompareEndpoints(TextPatternRangeEndpoint_Start,range.Get(),TextPatternRangeEndpoint_End,&span))||span>=0)continue;
+                        // Validate only a character-sized rectangle. The user's
+                        // release is usually at one end; Chromium's RangeFromPoint
+                        // can time out on huge selections, so check endpoints first.
+                        auto touchesPoint=[&](IUIAutomationTextRange* part){
+                            SAFEARRAY* rects=nullptr;bool touches=false;
+                            if(SUCCEEDED(part->GetBoundingRectangles(&rects))&&rects){
+                                LONG lower=0,upper=-1;double* data=nullptr;
+                                SafeArrayGetLBound(rects,1,&lower);SafeArrayGetUBound(rects,1,&upper);
+                                if(SUCCEEDED(SafeArrayAccessData(rects,reinterpret_cast<void**>(&data)))){
+                                    const auto pad=std::max(2.,GetDpiForWindow(focus?focus:target)*4./96.);
+                                    for(LONG j=0;j+3<=upper-lower;j+=4){
+                                        QRectF cell(data[j],data[j+1],data[j+2],data[j+3]);
+                                        touches|=!cell.isEmpty()&&cell.adjusted(-pad,-pad,pad,pad).contains(QPointF(point.x,point.y));
+                                    }
+                                    SafeArrayUnaccessData(rects);
+                                }
+                                SafeArrayDestroy(rects);
+                            }
+                            return touches;
+                        };
+                        auto touchesEdge=[&](bool first){
+                            ComPtr<IUIAutomationTextRange> edge;int moved=0;
+                            const auto moving=first?TextPatternRangeEndpoint_End:TextPatternRangeEndpoint_Start;
+                            const auto fixed=first?TextPatternRangeEndpoint_Start:TextPatternRangeEndpoint_End;
+                            return SUCCEEDED(range->Clone(&edge))&&edge&&
+                                SUCCEEDED(edge->MoveEndpointByRange(moving,range.Get(),fixed))&&
+                                SUCCEEDED(edge->MoveEndpointByUnit(moving,TextUnit_Character,first?1:-1,&moved))&&moved!=0&&touchesPoint(edge.Get());
+                        };
+                        bool touches=touchesEdge(true)||touchesEdge(false);
+                        if(!touches){
+                            ComPtr<IUIAutomationTextRange> nearbyRange;int fromStart=0,toEnd=0,moved=0;
+                            if(FAILED(pattern->RangeFromPoint(point,&nearbyRange))||!nearbyRange||
+                                FAILED(nearbyRange->CompareEndpoints(TextPatternRangeEndpoint_Start,range.Get(),TextPatternRangeEndpoint_Start,&fromStart))||fromStart<0||
+                                FAILED(nearbyRange->CompareEndpoints(TextPatternRangeEndpoint_Start,range.Get(),TextPatternRangeEndpoint_End,&toEnd))||toEnd>0)continue;
+                            if(FAILED(nearbyRange->MoveEndpointByRange(TextPatternRangeEndpoint_End,nearbyRange.Get(),TextPatternRangeEndpoint_Start)))continue;
+                            const auto hr=toEnd==0?nearbyRange->MoveEndpointByUnit(TextPatternRangeEndpoint_Start,TextUnit_Character,-1,&moved):
+                                nearbyRange->MoveEndpointByUnit(TextPatternRangeEndpoint_End,TextUnit_Character,1,&moved);
+                            touches=SUCCEEDED(hr)&&moved!=0&&touchesPoint(nearbyRange.Get());
+                        }
+                        if(!touches)continue;
+                    }
                     trace("selected range text");
                     if(SUCCEEDED(range->GetText(-1,&text))&&text){
                         auto value=QString::fromWCharArray(text,SysStringLen(text));SysFreeString(text);
@@ -1218,7 +1281,7 @@ Selection selectionAt(POINT point,HWND target,int warmupMs)
     ComPtr<IUIAutomationElement> rootElement;
     trace("root element");
     if(root)automation->ElementFromHandle(root,&rootElement);
-    if(rootElement){
+    if(rootElement&&!passive){
         // Start with the document rather than hit-testing a potentially
         // offscreen, stale or unrelated focused link after focus returns.
         trace("document selections");
@@ -1234,12 +1297,18 @@ Selection selectionAt(POINT point,HWND target,int warmupMs)
         }
     }
     for(int route=0;route<3;++route){
+        if(passive&&route!=1)continue;
         trace(route==0?"target route":route==1?"point route":"focus route");
         ComPtr<IUIAutomationElement> element;
         if(route==0&&target)automation->ElementFromHandle(target,&element);
         else if(route==1&&GetAncestor(WindowFromPoint(point),GA_ROOT)==root)automation->ElementFromPoint(point,&element);
         else if(route==2&&GetAncestor(GetForegroundWindow(),GA_ROOT)==root)automation->GetFocusedElement(&element);
         for(int depth=0;element&&depth<12;++depth){
+            if(passive){
+                CONTROLTYPEID type=0;element->get_CurrentControlType(&type);
+                if(type==UIA_ScrollBarControlTypeId||type==UIA_ThumbControlTypeId||type==UIA_SeparatorControlTypeId||
+                    type==UIA_ButtonControlTypeId||type==UIA_SliderControlTypeId)return {};
+            }
             if(auto result=selected(element.Get());!result.text.isEmpty())return result;
             BOOL isRoot=FALSE;
             if(rootElement&&SUCCEEDED(automation->CompareElements(element.Get(),rootElement.Get(),&isRoot))&&isRoot)break;
@@ -1248,7 +1317,7 @@ Selection selectionAt(POINT point,HWND target,int warmupMs)
             element=parent;
         }
     }
-    if(rootElement){
+    if(rootElement&&!passive){
         trace("descendant text patterns");
         VARIANT available{};available.vt=VT_BOOL;available.boolVal=VARIANT_TRUE;
         ComPtr<IUIAutomationCondition> condition;
@@ -1313,7 +1382,7 @@ QString selectionAccessProblem(HWND target)
     return problem;
 }
 }
-Selection isolatedSelection(POINT point,HWND target,Cancel cancel,int timeoutMs)
+Selection isolatedSelection(POINT point,HWND target,Cancel cancel,int timeoutMs,bool passive)
 {
     if(!target||!IsWindow(target)||cancel->load())return {};
     QProcess worker;
@@ -1328,7 +1397,7 @@ Selection isolatedSelection(POINT point,HWND target,Cancel cancel,int timeoutMs)
     worker.start(QCoreApplication::applicationDirPath()+"/ScreenshotTranslate.exe",{"--selection-worker"});
     if(!worker.waitForStarted(800))throw std::runtime_error("无法启动选区读取，请重试");
     QJsonObject request{{"x",int(point.x)},{"y",int(point.y)},{"target",QString::number(quintptr(target))},
-        {"warmupMs",std::clamp(timeoutMs-500,0,600)}};
+        {"warmupMs",std::clamp(timeoutMs-500,0,600)},{"passive",passive}};
     worker.write(QJsonDocument(request).toJson(QJsonDocument::Compact)+"\n");worker.closeWriteChannel();
     QElapsedTimer elapsed;elapsed.start();
     while(!worker.waitForFinished(25)){
@@ -1411,7 +1480,7 @@ int selectionWorker()
                 request.value("expected").toString(),request.value("maxChars").toInt(600));
         }else{
         auto result=request.value("copyFirefox").toBool()?copyFirefoxSelection(target,std::make_shared<std::atomic_bool>(false)):selectionAt(POINT{request.value("x").toInt(),request.value("y").toInt()},target,
-            std::clamp(request.value("warmupMs").toInt(600),0,600));
+            std::clamp(request.value("warmupMs").toInt(600),0,600),request.value("passive").toBool());
         // Some providers expose read-only text even across integrity levels.
         // Try the actual read first; report access restrictions only on failure.
         auto problem=result.text.isEmpty()?selectionAccessProblem(target):QString();

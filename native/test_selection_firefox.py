@@ -37,7 +37,10 @@ def main():
     parser.add_argument('--case', action='append', help='Run only named selection cases')
     parser.add_argument('--native-copy',action='store_true',help='Explicit Firefox native copy; preserves and restores the existing clipboard')
     parser.add_argument('--context',action='store_true',help='Check bounded nearby context without using the clipboard')
+    parser.add_argument('--passive',action='store_true',help='Require a visible selected character at the pointer; no clipboard access')
     args = parser.parse_args()
+    if args.passive and (args.native_copy or args.icon_click):
+        parser.error('--passive must run without active copy/icon translation')
     api('user32', 'SetProcessDpiAwarenessContext', w.BOOL, w.HANDLE)(ctypes.c_void_p(-4))
     args.output.mkdir(parents=True, exist_ok=True)
     desktop_name = 'WinShun_ST_Probe_' + uuid.uuid4().hex
@@ -312,6 +315,15 @@ def main():
             if args.native_copy:command('POST','/execute/sync',{'script':'document.activeElement.blur();','args':[]})
             rect = w.RECT()
             api('user32', 'GetWindowRect', w.BOOL, w.HWND, ctypes.POINTER(w.RECT))(target, ctypes.byref(rect))
+            point=[rect.left+150,rect.top+180]
+            if args.passive:
+                point=command('POST','/execute/sync',{'script': '''
+                    const r=Array.from(window.getSelection().getRangeAt(0).getClientRects())
+                        .find(r=>r.width>3&&r.top>=0&&r.bottom<=innerHeight&&r.left>=0&&r.left<innerWidth);
+                    if(!r)throw new Error('No visible selected text in fixture');
+                    return [Math.round((mozInnerScreenX+r.left+3)*devicePixelRatio),
+                            Math.round((mozInnerScreenY+r.top+r.height/2)*devicePixelRatio)];
+                    ''','args':[]})
             with (args.output/(name+'.log')).open('wb') as log:
                 reader = NativeProcess([str(args.build.resolve()/'ScreenshotTranslate.exe'), '--selection-worker'], env, desktop_name, log)
             started = time.monotonic()
@@ -319,7 +331,8 @@ def main():
             drain = threading.Thread(target=lambda: output.append(reader.stdout.read()), daemon=True)
             drain.start()
             try:
-                reader.stdin.write(json.dumps({'target': str(target), 'x': rect.left+150, 'y': rect.top+180,'copyFirefox':args.native_copy}).encode()+b'\n')
+                reader.stdin.write(json.dumps({'target': str(target), 'x': point[0], 'y': point[1],
+                    'passive':args.passive,'copyFirefox':args.native_copy}).encode()+b'\n')
                 reader.stdin.close()
                 try:
                     code = reader.wait(8)
@@ -354,6 +367,11 @@ def main():
                 window.scrollTo(0,0); const selection=window.getSelection();
                 selection.setBaseAndExtent(source.firstChild.firstChild,0,source.childNodes[1],10);
                 return selection.toString();''', 'args': []})
+                icon_point=command('POST','/execute/sync',{'script': '''
+                    const r=window.getSelection().getRangeAt(0).getClientRects()[0];
+                    return [Math.round((mozInnerScreenX+r.left+3)*devicePixelRatio),
+                            Math.round((mozInnerScreenY+r.top+r.height/2)*devicePixelRatio)];
+                    ''','args':[]})
                 server=ThreadingHTTPServer(('127.0.0.1',0),Server)
                 server.daemon_threads=True
                 threading.Thread(target=server.serve_forever,daemon=True).start()
@@ -373,7 +391,7 @@ def main():
                             params={'dataDir':str(data),'probeOutput':str(icon_out),'probeRuntime':str(runtime),
                                 'locale':'zh','appearance':{'theme':'light','renderer':'software'},
                                 'settings':{'provider':'google','fallbackEnabled':False},'capabilities':{'hostHotkeys':True},
-                                'probeFirefoxTarget':str(target),'probeInitialSelection':initial,
+                                'probeFirefoxTarget':str(target),'probeInitialSelection':initial,'probeSelectionPoint':icon_point,
                                 'probeFinalSelection':'iuuuuuuuu released this 1 hour ago' if args.native_copy else 'iuuuuuuuu released this 17 minutes ago'}
                             probe.stdin.write(json.dumps({'jsonrpc':'2.0','id':1,'method':'initialize','params':params}).encode()+b'\n')
                             probe.stdin.flush()

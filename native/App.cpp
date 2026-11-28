@@ -666,7 +666,7 @@ void App::readIconSelection()
     if(!m_icon.window)QTimer::singleShot(0,this,&App::prepareSelectionIcon);
     auto timing=std::make_shared<QElapsedTimer>();timing->start();
     background([reader,at,target,cancel,language,foreignOnly]{
-            auto selection=reader(POINT{at.x(),at.y()},target,cancel);
+            auto selection=reader(POINT{at.x(),at.y()},target,cancel,true);
             if(cancel->load()||!selectionIconAllowed(selection.text,language,foreignOnly))return Selection{};
             return selection;
         },
@@ -1090,7 +1090,8 @@ void App::readSelection(bool follow)
         return;
     }
     auto target=follow?selectionTarget():m_selectionTarget;
-    m_selectionReading=true;auto epoch=m_wordEpoch;auto reader=m_readSelection;
+    m_selectionReading=true;auto epoch=m_wordEpoch;
+    SelectionReader reader=[read=m_readSelection](POINT point,HWND target,Cancel cancel){return read(point,target,cancel,false);};
     auto point=follow?m_mouse():m_wordRequestPoint;auto cancel=m_wordCancel;
     m_selectionCancel=token();auto selectionCancel=m_selectionCancel;
     auto activeReader=m_readActiveSelection;auto hint=m_iconClickFallback;

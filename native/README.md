@@ -1,4 +1,8 @@
-# 截图翻译 0.4.41：原生版构建与验证
+# 截图翻译 0.4.42：原生版构建与验证
+
+0.4.42 将自动小译读取与主动取词分开：`passive` 模式只检查鼠标命中的控件及其祖先，拒绝滚动条、分隔线、隐藏/密码字段和空选区，并校验可见选中文字的位置。UIA 先检查首尾单字符，避免长选区的 `RangeFromPoint` 超时；Firefox IA2 使用字符偏移与屏幕坐标。主动取词仍保留原有完整读取与兼容回退。
+
+`python -B native/test_selection_passive.py --electron <electron.exe> --build <build-or-stage> --runtime <WinShun> --output <report-dir>` 使用真实 Chromium、私有桌面和合成数据，覆盖正反选、6 万字、滚动条、无语义滚动条、分隔线、其他面板与隐藏输入框，不访问剪贴板；发布流水线使用固定 Electron 45.0.0。Firefox 的 `--passive` 验证可见字符命中，`--selection-hover` 另检查被动空选区不能唤起图标、主动取词仍可用。
 
 0.4.41 修复划词结果窗口使用文档顺序的选区边界而跳到尾部：点击、悬停、快捷键和异步结果都保留捕获的鼠标锚点，新选区清除旧拖动/重试位置。悬停开关直接显示于首页顶部，小窗口自动换行。`--selection-hover` 同时验证三种入口、正反向位置、多个屏幕、边缘避让、结果扩展以及折叠设置下开关可见。
 
@@ -46,7 +50,7 @@ Firefox 选区回归：`python -B native/test_selection_firefox.py --driver <gec
 ## 安装和回退
 
 在 WinShun 设置 → 插件 → 从压缩包安装，选择
-`iuuuuuuuu.screenshot-translate-0.4.41.wsplugin`。运行时不检查或启动 Python。
+`iuuuuuuuu.screenshot-translate-0.4.42.wsplugin`。运行时不检查或启动 Python。
 包内包括启动器、应用 DLL、少量 Visual C++ 依赖、许可和文档；DLL 内包含 QML 控件与授权图标字体。
 现有渠道、热键、代理、偏好和 DPAPI 密钥格式保持兼容，不迁移或删除用户的数据目录。
 

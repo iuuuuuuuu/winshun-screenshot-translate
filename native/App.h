@@ -162,7 +162,7 @@ private:
     QStringList m_pinRequestParts;
     QHash<QString,QJsonObject> m_pinProviderProfiles;
     HWND m_selectionTarget=nullptr;
-    std::function<Selection(POINT,HWND,Cancel)> m_readSelection=[](POINT p,HWND target,Cancel cancel){return isolatedSelection(p,target,cancel);};
+    std::function<Selection(POINT,HWND,Cancel,bool)> m_readSelection=[](POINT p,HWND target,Cancel cancel,bool passive){return isolatedSelection(p,target,cancel,2200,passive);};
     std::function<Selection(POINT,HWND,Cancel,const Selection&,const SelectionReader&)> m_readActiveSelection=readSelectionForTranslation;
     std::function<QString()> m_readClipboard;
     std::function<DWORD()> m_clipboardSequence=[] {return GetClipboardSequenceNumber();};

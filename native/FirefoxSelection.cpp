@@ -192,11 +192,41 @@ QJsonObject firefoxSelectionContext(HWND target,const QString& expected,int maxC
     }
     int visited=0;return nearbyTree(accessible.Get(),expected,maxChars,visited);
 }
-Selection firefoxSelection(HWND target)
+Selection firefoxSelection(HWND target,const POINT* pointer)
 {
     auto root=target?GetAncestor(target,GA_ROOT):nullptr;
     wchar_t name[64]{};
     if(!root||!GetClassNameW(root,name,64)||wcscmp(name,L"MozillaWindowClass")!=0)return {};
+    if(pointer){
+        // Automatic icons stay in the pointed document and require a selected
+        // visible character there. A toolbar/scrollbar must not revive another
+        // document's retained selection.
+        ComPtr<IAccessible> current;Variant child;
+        if(FAILED(AccessibleObjectFromPoint(*pointer,&current,&child.value))||!current)return {};
+        bool touches=false;
+        const int pad=std::max(2,int(GetDpiForWindow(root)*4/96));
+        for(int depth=0;current&&depth<64;++depth){
+            const auto role=property(current.Get()),state=property(current.Get(),true);
+            if(state&(STATE_SYSTEM_INVISIBLE|STATE_SYSTEM_PROTECTED)||role==ROLE_SYSTEM_SCROLLBAR||
+                role==ROLE_SYSTEM_GRIP||role==ROLE_SYSTEM_SEPARATOR||role==ROLE_SYSTEM_PUSHBUTTON||role==ROLE_SYSTEM_SLIDER)return {};
+            if(auto text=query<IAccessibleText>(current.Get());text&&!touches){
+                long offset=-1,count=0;
+                if(SUCCEEDED(text->get_offsetAtPoint(pointer->x,pointer->y,IA2_COORDTYPE_SCREEN_RELATIVE,&offset))&&offset>=0&&
+                    SUCCEEDED(text->get_nSelections(&count))){
+                    for(long i=0;i<count;++i){
+                        long start=0,end=0,x=0,y=0,w=0,h=0;
+                        if(FAILED(text->get_selection(i,&start,&end))||end<=start||offset<start||offset>end)continue;
+                        if(SUCCEEDED(text->get_characterExtents(std::min(offset,end-1),IA2_COORDTYPE_SCREEN_RELATIVE,&x,&y,&w,&h))&&w>0&&h>0)
+                            touches|=QRect(x,y,w,h).adjusted(-pad,-pad,pad,pad).contains(QPoint(pointer->x,pointer->y));
+                    }
+                }
+            }
+            if(role==ROLE_SYSTEM_DOCUMENT){int visited=0;return touches?documentSelection(current.Get(),visited):Selection{};}
+            ComPtr<IDispatch> parent;if(FAILED(current->get_accParent(&parent))||!parent)break;
+            current=query<IAccessible>(parent.Get());
+        }
+        return {};
+    }
     ComPtr<IAccessible> accessible;
     if(FAILED(AccessibleObjectFromWindow(root,OBJID_CLIENT,IID_PPV_ARGS(&accessible)))||!accessible)return {};
     // Go straight from the focused object to its containing document. Walking
